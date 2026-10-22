@@ -8,6 +8,8 @@
 
 ## 審核規範
 
+共通規範在工作區 repo [JE-Chen/Codes](https://github.com/JE-Chen/Codes) 的 `docs/code-review-standard.md`。下面留下 2026-10-22 這次審核所用的條款，讓審核紀錄的依據對得上那一次。之後的審核以工作區那份為準。本專案更嚴的條款仍以本節與本專案的 `CLAUDE.md` 為準。
+
 更嚴的數字從嚴。與已知產品差異（含對另一專案的契約差異）不記成缺陷。
 
 1. 設計：分層、一個平台一個行程、bot 與 webrunner 只經磁碟與被動共用模組溝通，跨專案邊界以 `architecture.md` §6 為準。
