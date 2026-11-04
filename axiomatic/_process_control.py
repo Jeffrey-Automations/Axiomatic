@@ -575,6 +575,7 @@ STALE_COMPONENTS = {
         'axiomatic/_claude_local_usage.py',
         'axiomatic/_code_fingerprint.py',
         'axiomatic/_connectivity.py',
+        'axiomatic/_deepseek_chat.py',
         'axiomatic/_dorossi_gemini.py',
         'axiomatic/_external_apis.py',
         'axiomatic/_gui_control.py',

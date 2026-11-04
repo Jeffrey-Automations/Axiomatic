@@ -1844,3 +1844,41 @@ def test_cross_provider_model_directive_dispatches_with_effort(turn_env):
     assert _kwargs_of(turn_env)["effort"] == "high"
     assert _kwargs_of(turn_env)["model"] == db.dorossi_resolve_model("codex", "sol")
     assert _slot(turn_env)["ai_provider"] == "codex"
+
+
+def test_cancelling_finalize_while_progress_cleans_up_propagates():
+    async def scenario():
+        entered = asyncio.Event()
+        child_cancelled = asyncio.Event()
+        release = asyncio.Event()
+        edits = []
+
+        class Message:
+            async def edit(self, *, content):
+                edits.append(content)
+                if content == "進度":
+                    entered.set()
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        child_cancelled.set()
+                        await release.wait()
+                        raise
+
+        live = b._DorossiLiveMessage(Message())
+        live.update("進度")
+        await entered.wait()
+        final = asyncio.create_task(live.finalize("最終答案"))
+        await child_cancelled.wait()
+        final.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await final
+        live.update("取消後的進度")
+        assert edits == ["進度"]
+        assert not [task for task in asyncio.all_tasks()
+                    if task is not asyncio.current_task() and not task.done()]
+
+    async def bounded():
+        await asyncio.wait_for(scenario(), timeout=2)
+
+    asyncio.run(bounded())

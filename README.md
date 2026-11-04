@@ -95,7 +95,7 @@ import those, because they are standalone, stateless, driver-agnostic code.
 
 | File | Purpose |
 |---|---|
-| `axiomatic/discord_bot.py` | 13 top-level slash commands and 25 command groups (272 slash sub-commands in total), the identity gates, desktop and host control, batch supervision, answering-backend orchestration, the single-image queue |
+| `axiomatic/discord_bot.py` | 14 top-level slash commands and 25 command groups (273 slash sub-commands in total), the identity gates, desktop and host control, batch supervision, answering-backend orchestration, the single-image queue |
 | `axiomatic/_gui_control.py` | The desktop-automation façade (mouse, keyboard, windows, clipboard, OCR, image location) |
 | `axiomatic/dorossi_backend.py` | The answering backend and its sessions — several backends behind one interface |
 
@@ -320,7 +320,7 @@ boot: the batch needs a real interactive desktop for the browser.
 | `batch_config.json` | Batch generation parameters: images per pair, waits, work/rest hours, periodic browser restart | Yes |
 | `bot_config.json` | Channel and owner ids, roles, answering-backend tuning, the launch whitelist, `platforms.*` | No (template: `bot_config.example.json`) |
 | `presence_games.json`, `presence_music.json`, `presence_rpc.json` | Local presence mapping | No (templates: `*.example.json`) |
-| `bot_prompts/` | 10 plain-text prompt files (persona, self-driving loop guidance, the default style suffix for single images) | Yes |
+| `bot_prompts/` | 11 plain-text prompt files (persona, self-driving loop guidance, the default style suffix for single images) | Yes |
 
 `bot_config.json` is read **once at startup** — `/sys restart` to apply an
 edit. Unknown keys are ignored with one warning line, because a typo looks
@@ -362,8 +362,8 @@ On a platform with a native slash menu the commands are **slash commands**:
 typing `/` autocompletes them and arguments are type- and range-checked before
 they are sent. On a platform without one, the same commands are reached through
 the text surface (see below) — one implementation, one set of permission gates. There are
-**13 top-level slash commands** and **25 command groups** (37 top-level
-entries; the platform limit is 100) holding **272 slash sub-commands**.
+**14 top-level slash commands** and **25 command groups** (39 top-level
+entries; the platform limit is 100) holding **273 slash sub-commands**.
 
 A group costs one top-level slot no matter how many sub-commands it has, so
 folding low-traffic commands into groups is the only way to keep growing. Per
@@ -424,6 +424,7 @@ command detail is in [`COMMANDS.md`](COMMANDS.md), in
 
 | Command | What it does |
 |---|---|
+| `/chat` | 🔑 Owner only: chat with one optional image, or `mode=image` to queue one generation from the request |
 | `/booru` | Image-board search: a random hit for a tag (fuzzy allowed; a default image with no tag) |
 | `/e621` | A random image from the furry-oriented board (NSFW by default; add rating:safe for SFW) |
 | `/grid` | The four newest hits as a 2×2 mosaic |
@@ -446,9 +447,26 @@ command detail is in [`COMMANDS.md`](COMMANDS.md), in
 Questions have one entry point: `/dorossi ask`. An autonomous loop starts from
 it too, and a question sent to a session whose loop is running is taken as a
 mid-task note and carried into the next round. **Mentioning the bot is not a
-question**: a mention, with or without text after it, only gets a random
-default gallery picture (general rating). Replying to one of its messages with
-the ping left on counts as a mention too.
+question**: an empty mention, or the owner's mention with text, only gets a
+random default gallery picture (general rating). Replying to one of its
+messages with the ping left on counts as a mention too.
+
+On the platform with a native slash menu, **anyone else** who mentions the bot
+with text gets a single-turn chat with a separate little-whale persona; command
+words are treated as chat text. The owner can use `/chat <prompt> [image]
+[mode]` in any channel: the default `mode=chat` streams an answer and can read
+one attached image, and `mode=image` turns the request (and the optional
+reference) into a prompt, queues one image and posts it when done. References
+guide a new generation, not pixel editing. The image must be one static JPEG,
+PNG or WebP, up to 10 MB and 16 million pixels. This chat reads no other
+sessions and has no tools; each request waits up to 5 minutes, and an
+interrupted reply keeps the received text, marked incomplete.
+
+It needs `NVIDIA_API_KEY`, or `NVIDIA_API_KEY_FILE` pointing at a plain-text key
+file outside the repo (restart the launcher after changing its environment).
+The persona lives in `bot_prompts/deepseek_system.md`; restart the bot after
+editing it. Error logs carry only fixed categories and status codes, never the
+key or the conversation.
 
 ### Reactions
 

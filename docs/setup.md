@@ -15,11 +15,12 @@
 | **至少一個聊天平台的 bot 帳號與 token** | bot 要有地方上線；預設是有原生斜線選單的那個平台 | bot 起不來 |
 | **出圖服務的帳號** | webrunner 要登入才能產圖 | 批次產圖用不了 |
 
-下面三項是**選用**的，缺了只會少一組功能，不影響其他部分：
+下面四項是**選用**的，缺了只會少一組功能，不影響其他部分：
 
 | 選用 | 給哪個功能 | 怎麼裝 |
 |---|---|---|
 | 對話後端 CLI（`claude` 之類） | `/dorossi` 對話問答的 `claude_code` 後端 | 裝好它自己的 CLI 並登入；或改用 `api` 後端（`ANTHROPIC_API_KEY` 環境變數） |
+| 公開聊天的 API 金鑰 | 非擁有者標記 bot 的單輪聊天與擁有者的 `/chat` | 設 `NVIDIA_API_KEY` 環境變數，或用 `NVIDIA_API_KEY_FILE` 指到 repo 外的純文字金鑰檔 |
 | Tesseract OCR | `/screen text`、`/locate text` 之類的畫面文字辨識 | 裝 Tesseract，或設 `TESSERACT_CMD` 指到它的 exe |
 | Discord 桌面版 | 本機 Rich Presence（把你自己的狀態換成正在跑的遊戲／音樂） | 開著並登入，再填 `presence_rpc.json` |
 

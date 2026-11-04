@@ -40,7 +40,7 @@
 | `axiomatic/discord_bot.py` | 意圖層（模組名是歷史遺留，它不綁任何平台）：指令樹與文字相容層、身分閘、佇列編輯、webrunner 監督、單張產圖佇列、Dorossi 編排、presence 與背景任務 |
 | `axiomatic/_webrunner_shared.py` | 瀏覽器流程核心，不 import 任何 driver：DOM 操作、佇列 I/O、輸出資料夾分配、產圖迴圈、單圖服務、`run_batch` |
 | `axiomatic/_batch_config.py`、`_bot_config.py`、`_queue_consume.py`、`_run_progress.py`、`_supervisor.py`、`_chrome_slot.py`、`_code_fingerprint.py`、`_warn_dedup.py`、`_process_job.py`、`_webrunner_location.py` | 無狀態的共用模組：設定載入、佇列消耗決策、續跑檢查點、退避與單一實例鎖、跨行程瀏覽器槽鎖、程式碼指紋、警告去重（允許當第三通道的完整清單以 `CLAUDE.md`「Module boundaries」為準） |
-| `axiomatic/_process_control.py`、`_gui_control.py`、`_external_apis.py`、`_help_strings.py`、`_bot_prompts.py`、`dorossi_backend.py`、`_dorossi_gemini.py`、`presence_probe.py`、`discord_rpc.py`、`_resource_report.py`、`_reply_card.py`、`_reply_pager.py`、`_reply_confirm.py` | bot 專屬模組：行程探查與終止、桌面自動化門面、外部圖庫／web API、說明文字資料、外部化 prompt 載入、Dorossi 後端與工作階段、Gemini CLI 串流與用量解析、本機狀態探測、本機 Rich Presence、依角色分組的行程數與資源占用（`/proc usage`，只讀作業系統行程表，只回數字與角色代號、不組送出字串）、回覆的卡片原語與分頁回覆（見 §4「回覆版面」） |
+| `axiomatic/_process_control.py`、`_gui_control.py`、`_external_apis.py`、`_help_strings.py`、`_bot_prompts.py`、`dorossi_backend.py`、`_dorossi_gemini.py`、`presence_probe.py`、`discord_rpc.py`、`_resource_report.py`、`_reply_card.py`、`_reply_pager.py`、`_reply_confirm.py`、`_deepseek_chat.py` | bot 專屬模組：行程探查與終止、桌面自動化門面、外部圖庫／web API、說明文字資料、外部化 prompt 載入、Dorossi 後端與工作階段、Gemini CLI 串流與用量解析、本機狀態探測、本機 Rich Presence、依角色分組的行程數與資源占用（`/proc usage`，只讀作業系統行程表，只回數字與角色代號、不組送出字串）、回覆的卡片原語與分頁回覆（見 §4「回覆版面」）、獨立的單輪公開聊天與附圖驗證（見 §4「公開聊天」） |
 | `axiomatic/_chat_platform.py`、`_telegram_transport.py`、`_platform_runtime.py` | bot 專屬的對話平台層：介接接縫（身分映射、能力旗標——含 `slash_commands` 與 `buttons`，每個 transport 都明寫——、送出引數正規化與嵌入訊息攤平、沒有斜線選單時的指令提示改寫、transport 註冊表）、逐平台 transport（一個平台一個 `_*_transport.py`）、行程的平台身分與它自己的狀態／鎖／記錄檔位置 |
 | `start_platforms.py`、`start_discord_bot.py`、`start_webrunner.py`、`run_batch.py`、`install_autostart.py`、`wake_autostart.py` | repo 根目錄的啟動器：把每個開著的平台各起一個受監督行程、單一平台的監督迴圈（`--platform`）、批次監督迴圈、一鍵批次入口、Windows 工作排程器自動啟動的註冊與手動叫醒 |
 | `axiomatic/verify_*.py`、`dashboard_server.py` | 手動驗證腳本（瀏覽器、外部 API、額度對話框、後端 CLI）與本機狀態儀表板與指令主控台 |
@@ -115,6 +115,15 @@
    階段 slot → 取 per-session 鎖 → `dorossi_backend.py` 串流叫用後端並套兩段式看門狗 →
    即時更新單一訊息 → 記錄用量、存 `dorossi_session.json`。`/dorossi abort` 中止進行中的單輪回合或自走
    迴圈：設旗標，當場砍掉後端行程與它已經起的子孫行程（`dorossi_backend._dorossi_kill_backend_tree`，是 `_process_control.kill_child_process_tree` 的別名）。後端逾時、取消、查詢收尾與主機指令逾時也共用這支；每條父子邊比出生時間，先列再砍根與子孫，避免 PID 重用誤殺。看門狗指定 `raise_backend_error=True`，根 kill 失敗時仍先清子孫再拋出錯誤。
+3a. **公開聊天（非擁有者標記＋文字、擁有者的 `/chat`）**：只在原生平台的標記路徑（`question_entry=False`）
+   對非擁有者生效，控制字也當聊天文字；擁有者的 `/chat` 由 `_OWNER_ONLY_SLASH` 在派發前限制、
+   `_chat_request` 再驗身分。`_deepseek_chat.completion` 單輪串流，不讀工作階段、沒有工具，
+   金鑰由 `NVIDIA_API_KEY`／`NVIDIA_API_KEY_FILE` 讀，錯誤只帶固定分類代碼。附圖由
+   `_read_chat_image` 限平台 CDN，以 `Attachment.read()` 下載（不另開 session，所以不必在呼叫點
+   帶 UA、也不必讓外部 API 驗證腳本照抄逾時），受 `CHAT_IMAGE_DOWNLOAD_TIMEOUT_SEC` 約束，
+   再由 `prepare_image` 在執行緒驗格式／像素並重編碼成 JPEG。`mode=image` 經
+   `generation_prompt` 取得單一提示詞後交給 `mcmd_generate`，結果沿既有 `single_image_done`
+   回傳，不改磁碟協定。
 4. **回覆版面**：狀態類回覆（`/sys health`、`/gen plan`、`/dorossi running`、`/out stats`）由
    `_reply_card.card(title, status=, description=, fields=, footer=)` 組成卡片——狀態決定顏色
    （`ok`／`warn`／`bad`／`info`／`idle`），平台的長度上限在這裡一次處理，放不下的欄位不送、頁尾講

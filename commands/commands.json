@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "source": "axiomatic/discord_bot.py",
-  "count": 272,
+  "count": 273,
   "commands": [
     {
       "name": "/booru",
@@ -28,6 +28,34 @@
           "type": "是／否",
           "required": false,
           "description": "抓 4 張拼成 2x2 上傳"
+        }
+      ]
+    },
+    {
+      "name": "/chat",
+      "group": null,
+      "description": "與小鯨魚聊天、看圖或產圖（限擁有者）",
+      "access": "owner",
+      "owner_gate": "before_dispatch",
+      "public": true,
+      "params": [
+        {
+          "name": "prompt",
+          "type": "文字",
+          "required": true,
+          "description": "提問或想產生的圖片描述"
+        },
+        {
+          "name": "image",
+          "type": "附件",
+          "required": false,
+          "description": "參考圖片：JPEG / PNG / WebP，最多 10 MB、1600 萬像素"
+        },
+        {
+          "name": "mode",
+          "type": "選項：`聊天／看圖` / `產圖`",
+          "required": false,
+          "description": "聊天會解讀附圖；產圖會依描述及參考圖重新生成圖片（預設 `chat`）"
         }
       ]
     },

@@ -91,6 +91,7 @@ from _webrunner_location import (WEBRUNNER_SOURCE_ENV, WEBRUNNER_SOURCE_CONFIG,
 # 外部化的 prompt 文字載入器（passive、stdlib-only，同 _bot_config 類）。開機時把
 # bot_prompts/ 下的檔讀進來；缺檔／壞檔回退到內建 _DEFAULT_* 預設值。
 from _bot_prompts import load_prompt
+import _deepseek_chat
 from _help_strings import HELPS
 import _external_apis
 from _external_apis import (
@@ -594,6 +595,7 @@ _OWNER_ONLY_GROUPS = frozenset({
     "launcher",
 })
 _OWNER_ONLY_SLASH = frozenset({
+    "chat",
     "sys restart", "sys git_pull", "sys undo", "sys audit",
     "sys cleanup_debug", "sys introspect_dom", "sys dashboard",
     "sys backfill_paths",
@@ -5880,13 +5882,15 @@ class _DorossiLiveMessage:
     （不受節流限制）。所有 edit 都被 try/except 包住，訊息被刪也不會讓事件迴圈崩。
     """
 
-    __slots__ = ("message", "_pending", "_rendered", "_last_edit", "_task", "_closed")
+    __slots__ = ("message", "_pending", "_rendered", "_last_edit", "_task", "_closed",
+                 "_allowed_mentions")
 
-    def __init__(self, message, prime: str | None = None) -> None:
+    def __init__(self, message, prime: str | None = None, *, allowed_mentions=None) -> None:
         # `message` 可為 None（連 fallback send 都失敗），此時所有操作皆為 no-op。
         # `prime` 是該訊息目前已顯示的內容，種進去當去重基準，避免第一次串流 edit
         # 與初始佔位字串相同而被當成 no-op。
         self.message = message
+        self._allowed_mentions = allowed_mentions
         self._pending: str | None = None    # 最新「目標」渲染內容，尚未送出
         self._rendered: str | None = prime   # 上次成功 edit 出去的內容（去重用）
         self._last_edit = 0.0
@@ -5897,7 +5901,8 @@ class _DorossiLiveMessage:
         if self.message is None or content == self._rendered:
             return False
         try:
-            await self.message.edit(content=content)
+            kwargs = {} if self._allowed_mentions is None else {"allowed_mentions": self._allowed_mentions}
+            await self.message.edit(content=content, **kwargs)
             self._rendered = content
             return True
         except Exception:  # pylint: disable=broad-except
@@ -5963,10 +5968,7 @@ class _DorossiLiveMessage:
         self._pending = None
         if task is not None and not task.done():
             task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # pylint: disable=broad-except
-                pass
+            await asyncio.gather(task, return_exceptions=True)
         await self._do_edit(content)
         return self.message is not None and self._rendered == content
 
@@ -14110,9 +14112,115 @@ async def mcmd_yield(message: discord.Message, rest: str = "") -> None:
 # 不是提問入口的表面上（見 `_handle_mention` 的 `question_entry`），它跟任何非指令文字
 # 一樣不進提問。列舉會過期，所以 `test_slash_gate` 拿它跟派發表對帳。
 _MENTION_QUESTION_KEYS = frozenset({"dorossi"})
-# 「標記 bot、打了不是控制字的文字、而這個表面不是提問入口」的計數鍵。括號讓它不可能
-# 撞到任何控制字（那些是英數與底線）。
+# 公開聊天與擁有者非控制文字共用的計數鍵；括號避免撞到控制字。
 _MENTION_TEXT_METRIC = "@(text)"
+_DEEPSEEK_ERROR_MESSAGES = {
+    "configuration": "小鯨魚還沒準備好，請稍後再試。",
+    "input": "這段太長啦，請縮短一點再傳給我。",
+    "busy": "小鯨魚現在有點忙，等一下再叫我吧。",
+    "timeout": "回覆等待逾時，這次連線已結束。請稍後再試。",
+    "image": "圖片無法讀取。請附上 10 MB、1600 萬像素以內的單張 JPEG、PNG 或 WebP。",
+    "generation": "這次未取得完整有效的產圖提示詞，沒有排入產圖佇列。請調整描述後再試。",
+    "filtered": "這次回覆被內容篩選中止。請調整描述後再試。",
+    "unsupported_output": "這次回覆要求使用未提供的工具。請改寫需求後再試。",
+    "resource_limit": "回覆服務暫時沒有足夠資源。請稍後再試。",
+    "aborted": "回覆服務已中止這次請求。請稍後再試。",
+}
+
+
+CHAT_IMAGE_DOWNLOAD_TIMEOUT_SEC = 30
+
+
+async def _read_chat_image(attachment: discord.Attachment) -> _deepseek_chat.ChatImage:
+    content_type = (attachment.content_type or "").split(";", 1)[0].strip().lower()
+    try:
+        parsed = urllib.parse.urlsplit(attachment.url)
+        port = parsed.port
+    except ValueError:
+        raise _deepseek_chat.ChatUnavailable("image") from None
+    if (content_type not in _deepseek_chat.IMAGE_FORMATS
+            or not 0 < attachment.size <= _deepseek_chat.MAX_IMAGE_BYTES
+            or parsed.scheme != "https"
+            or parsed.hostname not in {"cdn.discordapp.com", "media.discordapp.net"}
+            or parsed.username is not None or parsed.password is not None
+            or port not in (None, 443)):
+        raise _deepseek_chat.ChatUnavailable("image")
+    # 用平台函式庫自己的 `Attachment.read()`（bot 其他讀附件的地方也是這樣），不另開
+    # `ClientSession`：自己開的 session 要在呼叫點帶 UA、逾時要有具名常數並由外部 API
+    # 驗證腳本照抄（`test_external_apis` 兩支守門），而這裡下載的是對話平台自己的
+    # CDN，不是第三方 API，驗證腳本也沒有一個不會過期的附件網址可以探。大小在上面
+    # 已用平台給的 `attachment.size` 擋過，讀回來再驗一次實際長度。
+    try:
+        data = await asyncio.wait_for(attachment.read(),
+                                      timeout=CHAT_IMAGE_DOWNLOAD_TIMEOUT_SEC)
+    except (discord.HTTPException, aiohttp.ClientError, OSError, ValueError,
+            asyncio.TimeoutError):
+        raise _deepseek_chat.ChatUnavailable("image") from None
+    if not 0 < len(data) <= _deepseek_chat.MAX_IMAGE_BYTES:
+        raise _deepseek_chat.ChatUnavailable("image")
+    return await asyncio.to_thread(_deepseek_chat.prepare_image, data, content_type)
+
+
+async def _chat_request(message: discord.Message, prompt: str, mode: str) -> None:
+    if not _is_owner(message):
+        await safe_reply(message, OWNER_ONLY_DENIED)
+        return
+    if mode not in {"chat", "image"}:
+        await safe_reply(message, "請選擇聊天或產圖模式。")
+        return
+    try:
+        attachments = getattr(message, "attachments", None) or []
+        image = await _read_chat_image(attachments[0]) if attachments else None
+        if mode == "chat":
+            await _reply_public_chat(message, prompt, image=image)
+            return
+        await safe_reply(message, "正在整理產圖提示詞……", allowed_mentions=discord.AllowedMentions.none())
+        generated = await _deepseek_chat.generation_prompt(prompt, image=image)
+    except _deepseek_chat.ChatUnavailable as error:
+        notice = _DEEPSEEK_ERROR_MESSAGES.get(
+            error.args[0] if error.args else "", "這次請求失敗，請稍後再試。")
+        if mode == "image" and "沒有排入產圖佇列" not in notice:
+            notice += "\n沒有排入產圖佇列。"
+        await safe_reply(message, notice)
+        return
+    await mcmd_generate(message, generated)
+
+
+async def _reply_public_chat(message: discord.Message, payload: str, *,
+                              image: _deepseek_chat.ChatImage | None = None) -> None:
+    """獨立文字聊天的串流回覆，供標記與斜線入口共用。"""
+    no_mentions = discord.AllowedMentions.none()
+    placeholder = "正在準備回覆……"
+    sent = await safe_reply(message, placeholder, allowed_mentions=no_mentions)
+    live = _DorossiLiveMessage(sent, prime=placeholder, allowed_mentions=no_mentions)
+    partial = ""
+
+    def on_text(text):
+        nonlocal partial
+        partial = text
+        live.update(text)
+
+    answer = "回覆已中止。"
+    try:
+        try:
+            image_args = {} if image is None else {"image": image}
+            answer = await _deepseek_chat.completion(payload, on_text=on_text, **image_args)
+        except _deepseek_chat.ChatUnavailable as error:
+            answer = _DEEPSEEK_ERROR_MESSAGES.get(
+                error.args[0] if error.args else "", "小鯨魚暫時回不了話，請稍後再試。")
+            if partial:
+                answer = "（回覆中斷，以下內容尚未完成。）\n\n" + partial + "\n\n" + answer
+        except asyncio.CancelledError:
+            if partial:
+                answer = "（回覆已中止，以下內容尚未完成。）\n\n" + partial
+            raise
+    finally:
+        chunks = _chunk_for_discord(answer)
+        delivered = await live.finalize(chunks[0])
+    if not delivered:
+        await safe_reply(message, chunks[0], allowed_mentions=no_mentions)
+    for chunk in chunks[1:]:
+        await safe_reply(message, chunk, allowed_mentions=no_mentions)
 
 
 async def _mention_default_picture(message: discord.Message) -> None:
@@ -14120,7 +14228,7 @@ async def _mention_default_picture(message: discord.Message) -> None:
 
     查詢是**固定**的，使用者打的字不會進來：沒有分級字樣，所以 `_send_danbooru_single`
     會補上普遍級；沒有旗標，所以走的是隨機那一支，不是最新、也不是拼圖。只標記不打字，
-    以及不是提問入口的表面上「標記＋非指令文字」，都是這一個動作。"""
+    以及擁有者在原生平台上的「標記＋非指令文字」，都是這一個動作。"""
     await _send_danbooru_image(message, "rossi_(arknights)")
 
 
@@ -14131,7 +14239,8 @@ async def _handle_mention(message: discord.Message, *, question_entry: bool) -> 
     必須明講，**沒有預設值**（猜錯的兩個方向都沒有症狀：一邊是多一個會起後端的入口，
     另一邊是一個平台沒有任何提問入口）：
 
-    * `on_message`（這個平台原生的標記）傳 False——擁有者裁定 2026-10-01：提問只留
+    * 非擁有者的原生標記加文字先走獨立公開聊天，控制字也只當文字，不進任務後端。
+    * `on_message`（這個平台原生的標記）傳 False——擁有者的提問只留
       `/dorossi ask`。非指令文字與 `_MENTION_QUESTION_KEYS` 裡的鍵都改成回預設圖，
       不呼叫 `mcmd_dorossi`（所以不記 `prompt_received`、不佔 Dorossi 的鎖與佇列、
       不起後端）。自走任務的入口、進行中任務的中途補充、`/new` 之類的重置字、
@@ -14140,13 +14249,19 @@ async def _handle_mention(message: discord.Message, *, question_entry: bool) -> 
     * `dispatch_external_message`（沒有斜線選單的平台）傳 True——那裡文字是唯一的
       入口，非指令文字照舊是提問。
 
-    控制字（ping、help、abort、status、session…）與擁有者閘在兩種表面上完全相同。
+    擁有者與外部平台仍使用控制字（ping、help、abort、status、session…）及原有權限閘。
     這裡**不**看訊息的型別來猜它是哪個平台來的。"""
     content = message.content
     if client.user:
         for m in (f"<@{client.user.id}>", f"<@!{client.user.id}>"):
             content = content.replace(m, "")
     payload = content.strip()
+    if payload and not question_entry and message.author.id != OWNER_USER_ID:
+        if getattr(message.author, "bot", False) or getattr(message, "webhook_id", None):
+            return
+        _METRICS_CMD_COUNTS[_MENTION_TEXT_METRIC] += 1
+        await _reply_public_chat(message, payload)
+        return
     # 指令關鍵字（head / head_lower）一律從「原始」payload 解析，路由不受
     # code fence 影響。只把要餵給 handler 的「參數字串」做派發層的 fence 正
     # 規化：known handler 收 `rest`、Dorossi-default 收整段 `payload`，兩者都
@@ -25366,10 +25481,8 @@ async def on_message(message: discord.Message) -> None:
     content = message.content
     is_mention = bool(client.user and client.user in message.mentions)
 
-    # @-mention triggers a small utility dispatcher (ping / uptime / help and
-    # the other control words). Works in any channel — not gated by CHANNEL_ID.
-    # 標記在這個平台上**不是**提問入口（擁有者裁定 2026-10-01）：不是控制字的文字
-    # 回一張預設圖，提問只留 `/dorossi ask`。
+    # 原生標記在任何頻道都有效，先於 CHANNEL_ID 閘派發。
+    # 非擁有者的標記文字走獨立聊天；擁有者的非控制文字仍回預設圖。
     if is_mention and not content.startswith("!"):
         await _handle_mention(message, question_entry=False)
         return
@@ -26242,6 +26355,21 @@ async def slash_help(interaction: discord.Interaction, lang: str = "") -> None:
     proxy = _InteractionMessageProxy(interaction)
     await _send_help(proxy, include_channel_only=in_channel,
                      lang=_resolve_lang(lang))
+
+
+@tree.command(name="chat", description="與小鯨魚聊天、看圖或產圖（限擁有者）",
+              extras={"public": True})
+@discord.app_commands.describe(
+    prompt="提問或想產生的圖片描述", image="參考圖片：JPEG / PNG / WebP，最多 10 MB、1600 萬像素",
+    mode="聊天會解讀附圖；產圖會依描述及參考圖重新生成圖片")
+@discord.app_commands.choices(mode=[
+    discord.app_commands.Choice(name="聊天／看圖", value="chat"),
+    discord.app_commands.Choice(name="產圖", value="image"),
+])
+async def slash_chat(interaction: discord.Interaction, prompt: str,
+                     image: discord.Attachment | None = None, mode: str = "chat") -> None:
+    await _slash_run_with_file(interaction, image, _chat_request, prompt, mode,
+                               detach_ack="已收下產圖請求，處理中……" if mode == "image" else None)
 
 
 # ---------- 對話後端：/dorossi ----------------------------------------------
@@ -28680,7 +28808,7 @@ tree.add_command(launcher_group)
 # （`/tool say` 限 server owner）沿用 mcmd_say 內建的閘。
 #
 # ⚠️ 對話平台每個應用程式的指令上限是 **100 個頂層指令**（指令群的子指令不各自
-# 計數、一個群算一個）。**目前 38/100**（13 個直接指令 ＋ 24 個指令群，底下
+# 計數、一個群算一個）。**目前 39/100**（14 個直接指令 ＋ 25 個指令群，底下
 # 合計 261 個子指令）。超過的話 `tree.sync()` 會被整批拒絕——壞掉的不是新指令，
 # 而是**全部**斜線指令。要加就把低頻指令收進既有指令群，不要往頂層長。這個數字
 # 由 `test_docs_sync.py` 守著（超過會紅）。

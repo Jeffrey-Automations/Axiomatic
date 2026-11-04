@@ -220,7 +220,7 @@ fail-closed：不在清單裡、或根本取不到身分，一律不是擁有者
 | 受閘範圍 | 內容 |
 |---|---|
 | 整群（新增子指令自動受閘） | `/input`、`/screen`、`/win`、`/clip`、`/locate`、`/macro`、`/watch`、`/proc`、`/host`、`/schedule`、`/launcher` |
-| 零散指令 | `/sys restart`、`/sys git_pull`、`/sys undo`、`/sys audit`、`/sys cleanup_debug`、`/sys introspect_dom`、`/sys dashboard`、`/sys backfill_paths`、`/sys churn`、`/out debug_show`、`/config set`、`/config reset`、`/config reload`、`/log clear`、`/gen image`、`/gen image_queue` |
+| 零散指令 | `/chat`、`/sys restart`、`/sys git_pull`、`/sys undo`、`/sys audit`、`/sys cleanup_debug`、`/sys introspect_dom`、`/sys dashboard`、`/sys backfill_paths`、`/sys churn`、`/out debug_show`、`/config set`、`/config reset`、`/config reload`、`/log clear`、`/gen image`、`/gen image_queue` |
 
 不在此列的（產圖佇列、批次控制、唯讀診斷、跨頻道工具）仍走頻道＋角色閘。`/dorossi`
 的大部分子指令另外在指令內部只認擁有者（見 {doc}`dorossi`）。這張表與程式裡的

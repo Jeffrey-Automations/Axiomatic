@@ -43,6 +43,7 @@ CHANNEL_HELP_SECTIONS: list[str] = [
     ),
     (
         "## Direct commands\n"
+        "- `/chat <prompt> [image] [mode]` — Owner-only chat with optional image; mode=image queues generation and returns the image. Static JPEG/PNG/WebP, up to 10 MB / 16 MP; references guide regeneration, not pixel editing.\n"
         "- `/eta` — Estimated completion time (counted only up to an end marker if one is set)\n"
         "- `/latest` — Upload the most recent N output images\n"
         "- `/queue` — Remaining count per queue and the pairs that will actually run\n"
@@ -173,6 +174,7 @@ CHANNEL_HELP_SECTIONS_ZH_TW: list[str] = [
     ),
     (
         "## 直接指令\n"
+        "- `/chat <prompt> [image] [mode]` — 限擁有者；可附圖聊天，mode=image 排入產圖並回傳圖片。靜態 JPEG/PNG/WebP，上限 10 MB、1600 萬像素；參考圖重新生成，不做像素編修。\n"
         "- `/eta` — 預估完成時間（有終止標記只算到標記為止）\n"
         "- `/latest` — 上傳最近 N 張產出圖\n"
         "- `/queue` — 各佇列剩餘筆數與實際會跑的配對數\n"
@@ -303,6 +305,7 @@ CHANNEL_HELP_SECTIONS_ZH_CN: list[str] = [
     ),
     (
         "## 直接命令\n"
+        "- `/chat <prompt> [image] [mode]` — 仅限拥有者；可附图聊天，mode=image 加入产图队列并返回图片。静态 JPEG/PNG/WebP，上限 10 MB、1600 万像素；参考图重新生成，不做像素编辑。\n"
         "- `/eta` — 预估完成时间（有终止标记只算到标记为止）\n"
         "- `/latest` — 上传最近 N 张产出图\n"
         "- `/queue` — 各队列剩余条数与实际会跑的配对数\n"

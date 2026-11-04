@@ -196,8 +196,13 @@ class _FakeMessage:
         self.replies: list = []
 
     async def reply(self, content=None, **kwargs):
+        index = len(self.replies)
         self.replies.append(content)
-        return types.SimpleNamespace(id=1)
+
+        async def edit(*, content, **kwargs):
+            self.replies[index] = content
+
+        return types.SimpleNamespace(id=1, edit=edit)
 
 
 def _bang(content: str, uid: int, channel_id: int) -> _FakeMessage:
@@ -231,6 +236,15 @@ def armed(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(b, "_pending_confirmations", {})
     touched: list[str] = []
+    chats: list[str] = []
+
+    async def chat(prompt, *, on_text=None):
+        chats.append(prompt)
+        if on_text is not None:
+            on_text("小鯨魚回覆")
+        return "小鯨魚回覆"
+
+    monkeypatch.setattr(b._deepseek_chat, "completion", chat)
 
     for name in _HANDLERS_TO_DISARM:
         assert hasattr(b, name), (
@@ -260,7 +274,7 @@ def armed(monkeypatch, tmp_path):
     # 角色系統預設是停用的（三份清單都空）。每一支測試都從那個狀態開始，
     # 角色閘要另外自己打開。
     monkeypatch.setattr(b, "USER_ROLES", {})
-    return types.SimpleNamespace(touched=touched,
+    return types.SimpleNamespace(touched=touched, chats=chats,
                                  audit=tmp_path / "audit.ndjson")
 
 
@@ -378,44 +392,14 @@ def test_the_owner_keeps_the_cross_channel_bypass_on_the_bang_surface(armed):
 # ---------------------------------------------------------------------------
 # B. `@bot` 表面（`_handle_mention`）
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("key", LOCKED_MENTIONS)
-def test_a_stranger_cannot_run_a_locked_mention_command(key, armed):
-    message = _mention(key, STRANGER, b.CHANNEL_ID)
-    _deliver(message)
-    assert armed.touched == [], (
-        f"`@bot {key}` 真的被執行了——mention 那條路的擁有者閘沒擋住。")
-    assert message.replies == [b.OWNER_ONLY_DENIED], message.replies
-
-
-@pytest.mark.parametrize("key", LOCKED_MENTIONS)
-def test_the_mention_gate_fires_before_the_channel_gate(key, armed):
-    """**順序本身就是歷史缺陷所在。**
-
-    `on_message` 先把 mention 交給 `_handle_mention` 然後 `return`，整段在頻道
-    閘**之前**——所以 mention 在任何頻道都會被派發出去。證明方式是那兩道閘的
-    症狀不一樣：頻道閘靜默丟掉（見上面那一筆），擁有者閘會回一句話。在**不是**
-    設定的那個頻道收到那句話，就代表擋住它的一定是擁有者閘。
-    """
-    message = _mention(key, STRANGER, OTHER_CHANNEL)
+@pytest.mark.parametrize("key", sorted(MENTION_ROUTES))
+@pytest.mark.parametrize("channel_id", [b.CHANNEL_ID, OTHER_CHANNEL])
+def test_non_owner_mentions_chat_instead_of_executing_commands(key, channel_id, armed):
+    message = _mention(key, STRANGER, channel_id)
     _deliver(message)
     assert armed.touched == []
-    assert message.replies == [b.OWNER_ONLY_DENIED], (
-        f"`@bot {key}` 在非設定頻道既沒被擋也沒回話——那代表這條路只剩下"
-        "「碰巧沒人叫得到」在保護，而它其實在任何伺服器都叫得到。")
-
-
-def test_the_mention_surface_really_is_not_channel_gated(armed):
-    """上一筆的前提：mention 真的不受頻道閘管。
-
-    少了這一筆，`test_the_mention_gate_fires_before_the_channel_gate` 就可能只是
-    在測「頻道閘擋住了它」——那樣把擁有者閘整個拿掉也會是綠的（訊息會被靜默丟
-    掉，`touched` 一樣是空的），完全反過來。
-    """
-    message = _mention(UNLOCKED_MENTION, STRANGER, OTHER_CHANNEL)
-    _deliver(message)
-    assert armed.touched == MENTION_ROUTES[UNLOCKED_MENTION], (
-        "非設定頻道的 `@bot ping` 應該照樣執行——mention 刻意不限頻道。"
-        "如果這裡開始被擋，上面那筆順序測試就失去了意義，要一起重想。")
+    assert armed.chats == [key]
+    assert message.replies == ["小鯨魚回覆"]
 
 
 @pytest.mark.parametrize("key", LOCKED_MENTIONS)
@@ -425,27 +409,13 @@ def test_the_owner_still_reaches_every_locked_mention_handler(key, armed):
     assert armed.touched == MENTION_ROUTES[key], armed.touched
 
 
-def test_a_refused_mention_is_not_counted(armed):
-    """mention 面的擁有者閘同樣排在計數之前。"""
-    _deliver(_mention("restart", STRANGER, b.CHANNEL_ID))
-    assert b._METRICS_CMD_COUNTS == Counter(), b._METRICS_CMD_COUNTS
-
-
-def test_free_text_mentions_are_public_and_never_reach_the_question_entry_point(armed,
-                                                                                gallery):
-    """2026-10-01 之前這一支釘的是相反的事：標記 bot 加一段文字＝提問，「不得被擁有者閘
-    掃到」的理由是它要進 `mcmd_dorossi`（權限閘在那裡面）。
-
-    擁有者裁定之後，這個平台上標記不再是提問入口：非指令的文字跟「只標記不打字」是同一個
-    動作，回一張預設圖。所以現在釘的是兩件事——它**仍然是公開的**（陌生人在任何頻道都
-    得到那張圖，不是擁有者閘的那句拒絕），而且**一次都不會**走到提問那支。
-    """
+def test_public_chat_is_counted_without_entering_the_task_backend(armed, gallery):
     message = _mention("今天天氣如何", STRANGER, OTHER_CHANNEL)
     _deliver(message)
-    assert armed.touched == [], armed.touched
-    assert b.OWNER_ONLY_DENIED not in message.replies
-    assert len(message.replies) == 1 and _PICTURE_URL in message.replies[0], message.replies
-    assert b._METRICS_CMD_COUNTS == Counter({"@(text)": 1}), b._METRICS_CMD_COUNTS
+    assert armed.touched == []
+    assert armed.chats == ["今天天氣如何"]
+    assert message.replies == ["小鯨魚回覆"]
+    assert b._METRICS_CMD_COUNTS == Counter({"@(text)": 1})
 
 
 # ---------------------------------------------------------------------------
@@ -529,18 +499,25 @@ def test_the_question_keys_were_actually_derived():
         "少列一個＝那個鍵在這個平台上照樣進提問，而且沒有任何症狀")
 
 
-@pytest.mark.parametrize("uid", [STRANGER, b.OWNER_USER_ID], ids=["stranger", "owner"])
+@pytest.mark.parametrize("text", _NOT_A_CONTROL_WORD,
+                         ids=[f"text{n}" for n in range(len(_NOT_A_CONTROL_WORD))])
+@pytest.mark.parametrize("nickname_mention", [False, True])
+def test_non_owner_prompt_reaches_only_public_chat(text, nickname_mention, armed, gallery):
+    message = _mention(text, STRANGER, OTHER_CHANNEL)
+    if nickname_mention:
+        message.content = message.content.replace(f"<@{BOT_UID}>", f"<@!{BOT_UID}>")
+    _deliver(message)
+    assert armed.chats == [text.strip()]
+    assert armed.touched == []
+    assert message.replies == ["小鯨魚回覆"]
+
+
 @pytest.mark.parametrize("text", _NOT_A_CONTROL_WORD,
                          ids=[f"text{n}" for n in range(len(_NOT_A_CONTROL_WORD))])
 def test_a_mention_with_anything_but_a_control_word_gets_the_default_picture(
-        text, uid, armed, gallery):
-    """自由文字、`dorossi <提問>`、重置字、微調 token、帶自走片語的句子——全部回圖。
-
-    擁有者也一樣（這個入口對誰都關了），陌生人不再收到「僅限特定使用者」。提問那支
-    一次都沒有被呼叫：`prompt_received`、per-session 鎖、排隊與後端全在那一支裡面，
-    所以「沒被呼叫」就是「什麼都沒發生」。
-    """
-    message = _mention(text, uid, OTHER_CHANNEL)
+        text, armed, gallery):
+    """擁有者的標記自由文字仍然不進入任務後端。"""
+    message = _mention(text, b.OWNER_USER_ID, OTHER_CHANNEL)
     _deliver(message)
     assert armed.touched == [], f"`@bot {text}` 進了：{armed.touched}"
     _got_the_default_picture(message, gallery)
