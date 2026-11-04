@@ -113,6 +113,9 @@ bot runtime 設定，**啟動時讀一次**，改了要 `/sys restart` 才生效
 - `api_contact`（預設空字串）— 放進對外 User-Agent 的聯絡方式（網址或信箱）。有些外部
   站台拒絕只有描述的 User-Agent、回 403，直到裡面有聯絡得到人的方式；空字串＝不帶，
   那些站台就繼續 403。這個字串會送到第三方，所以刻意留給你自己填
+- `models_site_url`（預設空字串）— `/3d` 貼的 3D 模型分享網站（結尾的 `/` 可省略）。網站根目錄要有列出
+  模型的 `models.json`（`name` 是模型頁的資料夾、`title` 是顯示名稱），模型頁在 `models/<name>/`；
+  空字串＝`/3d` 只回一句沒有可分享的模型
 - `default_help_lang`（預設 `zh-tw`）— `/help` 預設語言（`zh-tw` / `zh-cn` / `en`）
 - `daily_health_report` — 選用的每日健康報告（見下面的巢狀區段）
 - `dorossi_model_check` — 每日一次的後端模型目錄檢查（掛在健康迴圈上，但有自己

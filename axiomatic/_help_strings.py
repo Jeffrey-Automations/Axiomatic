@@ -435,6 +435,7 @@ MENTION_HELP_SECTIONS: list[str] = [
     ),
     (
         "## Direct commands\n"
+        "- `/3d` — Post a 3D model link: open the preview card to turn, zoom and switch poses\n"
         "- `/booru` — Gallery image search: a random image by tag (fuzzy allowed; no tag uses the default image)\n"
         "- `/e621` — A random image from a furry-oriented gallery (NSFW by default; add rating:safe for SFW only)\n"
         "- `/grid` — Stitch the latest 4 gallery images into a 2x2 and upload (same as /booru with latest and grid on)\n"
@@ -489,6 +490,7 @@ MENTION_HELP_SECTIONS_ZH_TW: list[str] = [
     ),
     (
         "## 直接指令\n"
+        "- `/3d` — 貼出 3D 模型的網址：預覽卡片點開就能轉動、縮放、切換姿勢\n"
         "- `/booru` — 圖庫搜圖：tag 隨機一張（可模糊；不帶 tag 用預設圖）\n"
         "- `/e621` — furry 取向圖庫隨機一張（預設 NSFW；加 rating:safe 限 SFW）\n"
         "- `/grid` — 圖庫最新 4 張拼 2x2 上傳（等同 /booru 同時開 latest 與 grid）\n"
@@ -543,6 +545,7 @@ MENTION_HELP_SECTIONS_ZH_CN: list[str] = [
     ),
     (
         "## 直接命令\n"
+        "- `/3d` — 贴出 3D 模型的网址：预览卡片点开就能转动、缩放、切换姿势\n"
         "- `/booru` — 图库搜图：tag 随机一张（可模糊；不带 tag 用默认图）\n"
         "- `/e621` — furry 取向图库随机一张（默认 NSFW；加 rating:safe 限 SFW）\n"
         "- `/grid` — 图库最新 4 张拼 2x2 上传（等同 /booru 同时开 latest 与 grid）\n"

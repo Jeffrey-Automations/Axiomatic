@@ -9,6 +9,7 @@
 
 ## 直接指令
 
+- `/3d [model]` — 貼出 3D 模型的網址：預覽卡片點開就能在瀏覽器裡轉動、縮放、切換姿勢。`model` 挑一個模型（自動完成列出網站上分享過的模型），不填就貼列出全部模型的首頁。網站在設定的 `models_site_url`；沒設定時只回一句沒有可分享的模型。
 - `/booru [tags] [latest] [grid]` — 圖庫搜圖：tag 隨機一張（可模糊；不帶 tag 用預設圖）
 - `/e621 <tags>` — furry 取向圖庫隨機一張（預設 NSFW；加 rating:safe 限 SFW）
 - `/grid <tags>` — 圖庫最新 4 張拼 2x2 上傳（等同 /booru 同時開 latest 與 grid）

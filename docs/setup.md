@@ -226,4 +226,4 @@ py -3 start_discord_bot.py --platform discord --presence-only
 py -3 wake_autostart.py --presence-only
 ```
 
-使用 `--presence-only` 只執行本機狀態偵測、bot 活動更新與本機 RPC。指令、批次監督、排程與其他平台服務均不啟動。此模式只支援 Discord。註冊時會停用其他既有 Axiomatic 登入工作，包含批次，不會停止正在執行的程式。叫醒指令要求工作已註冊為此模式。直接執行 `start_discord_bot.py` 時省略旗標即可完整執行；再次以 `--install` 註冊會恢復設定中的登入工作。叫醒工作一律沿用註冊模式。
+使用 `--presence-only` 只執行本機狀態偵測、bot 活動更新與本機 RPC。指令（`/3d` 除外，它只貼 3D 模型網址）、批次監督、排程與其他平台服務均不啟動。此模式只支援 Discord。註冊時會停用其他既有 Axiomatic 登入工作，包含批次，不會停止正在執行的程式。叫醒指令要求工作已註冊為此模式。直接執行 `start_discord_bot.py` 時省略旗標即可完整執行；再次以 `--install` 註冊會恢復設定中的登入工作。叫醒工作一律沿用註冊模式。

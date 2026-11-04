@@ -218,6 +218,10 @@ _DEFAULT_BOT_CONFIG: dict = {
     # returning 403. What to put here is the owner's decision, not something the
     # code should presume — this string is sent to third-party sites.
     "api_contact": "",
+    # The 3D model sharing site `/3d` posts (the trailing `/` may be omitted); its root must
+    # hold `models.json` and each model page lives at `models/<name>/`. Empty string
+    # (default) = no site, and `/3d` replies that there is nothing to share.
+    "models_site_url": "",
     # Which user's Discord presence to mirror; empty string (default) = no
     # mirroring.
     "target_presence_username": "",
@@ -924,6 +928,8 @@ _COERCERS: dict = {
     # `_coerce_str` (see that helper's docstring: the real config file carries
     # `""`, and `_coerce_str` would emit a false warning on every load).
     "api_contact": (_coerce_optional_str, {}),
+    # An empty string is the meaningful "no site" value, for the same reason as `api_contact`
+    "models_site_url": (_coerce_optional_str, {}),
     "target_presence_username": (_coerce_optional_str, {}),
     "default_help_lang": (_coerce_help_lang, {}),
     "presence_probe_interval_sec": (_coerce_positive_num, {}),

@@ -21484,5 +21484,76 @@ def test_a_spawn_during_a_stop_is_refused_before_it_touches_anything(
     assert b._webrunner_log_handle is None
 
 
+# ---------- /3d：貼 3D 模型網址 ----------------------------------------------
+
+class _Answer3d:
+    """`interaction.response` 與 `followup` 的替身，記下送出的內容。"""
+
+    def __init__(self):
+        self.sent, self.deferred = [], False
+
+    async def send_message(self, content, ephemeral=False):
+        self.sent.append((content, ephemeral))
+
+    async def defer(self, thinking=False):
+        self.deferred = True
+
+    async def send(self, content, ephemeral=False):
+        self.sent.append((content, ephemeral))
+
+
+def _interaction_3d(owner=False):
+    answer = _Answer3d()
+    who = types.SimpleNamespace(id=b.OWNER_USER_ID if owner else 1)
+    return types.SimpleNamespace(response=answer, followup=answer, user=who), answer
+
+
+def _models_3d(monkeypatch, site, listing, status=200):
+    monkeypatch.setitem(b.BOT_CONFIG, "models_site_url", site)
+    monkeypatch.setattr(b, "_models_list_cache", {"site": "", "at": 0.0, "entries": []})
+    asked = []
+
+    async def fake_get(url, **_kwargs):
+        asked.append(url)
+        return status, listing
+
+    monkeypatch.setattr(b, "_http_get_json", fake_get)
+    return asked
+
+
+def test_3d_posts_the_site_or_a_models_page(monkeypatch):
+    asked = _models_3d(monkeypatch, "https://me.example/models-site",
+                       [{"name": "c_lenna", "title": "Lenna SSR01"}, {"title": "no name"}, "junk"])
+    interaction, answer = _interaction_3d()
+    asyncio.run(b.slash_3d.callback(interaction))
+    assert answer.sent == [("https://me.example/models-site/", False)]          # no model: the front page
+    for typed in ("c_lenna", "lenna ssr01"):                                     # by its folder or its title
+        interaction, answer = _interaction_3d()
+        asyncio.run(b.slash_3d.callback(interaction, typed))
+        assert answer.deferred and answer.sent == [("https://me.example/models-site/models/c_lenna/", False)]
+    interaction, answer = _interaction_3d()
+    asyncio.run(b.slash_3d.callback(interaction, "nobody"))
+    assert answer.sent[0][1] and "找不到" in answer.sent[0][0]                    # said only to the asker
+    assert asked == ["https://me.example/models-site/models.json"]               # the list read once: cached
+    choices = asyncio.run(b._slash_3d_models(interaction, "lenna"))
+    assert [(c.name, c.value) for c in choices] == [("Lenna SSR01", "c_lenna")]
+
+
+def test_3d_without_a_site_says_so_and_only_the_owner_learns_the_setting(monkeypatch):
+    _models_3d(monkeypatch, "", [])
+    for owner in (False, True):
+        interaction, answer = _interaction_3d(owner)
+        asyncio.run(b.slash_3d.callback(interaction))
+        (text, ephemeral), = answer.sent
+        assert ephemeral and ("models_site_url" in text) == owner
+    assert asyncio.run(b._slash_3d_models(interaction, "")) == []
+
+
+def test_3d_an_unreadable_models_list_is_empty_not_an_error(monkeypatch):
+    _models_3d(monkeypatch, "https://me.example/s/", None, status=404)
+    assert asyncio.run(b._shared_models("https://me.example/s/")) == []
+
+
+
 if __name__ == "__main__":
     sys.exit(main())

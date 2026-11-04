@@ -124,6 +124,9 @@
    再由 `prepare_image` 在執行緒驗格式／像素並重編碼成 JPEG。`mode=image` 經
    `generation_prompt` 取得單一提示詞後交給 `mcmd_generate`，結果沿既有 `single_image_done`
    回傳，不改磁碟協定。
+3b. **`/3d`**：只貼網址，不碰主機或佇列。網站來自 `bot_config` 的 `models_site_url`；`model` 的自動完成與比對讀
+   網站根目錄的 `models.json`（經 `_http_get_json`、快取 `_MODELS_LIST_TTL_SEC` 秒），模型頁是
+   `<網站>models/<name>/`。沒設定網站時回一句泛用說明，只有擁有者看得到要設哪個鍵。
 4. **回覆版面**：狀態類回覆（`/sys health`、`/gen plan`、`/dorossi running`、`/out stats`）由
    `_reply_card.card(title, status=, description=, fields=, footer=)` 組成卡片——狀態決定顏色
    （`ok`／`warn`／`bad`／`info`／`idle`），平台的長度上限在這裡一次處理，放不下的欄位不送、頁尾講
@@ -202,4 +205,4 @@ Windows 子行程由 `_process_job.py` 的工作物件管理，先指派、再�
 
 ### Presence-only startup
 
-`--presence-only` is a process startup mode for Discord. The supervisor forwards it to every child restart. The bot reuses its presence initialization and probe loop, including local RPC, and blocks command and reaction entry points. Ready and resumed events cannot restore batch or conversation jobs in this mode. Registration enables only the Discord task and disables the other existing application tasks without ending running processes. Wake validates the stored mode before requesting the Discord task. Full registration restores the configured tasks.
+`--presence-only` is a process startup mode for Discord. The supervisor forwards it to every child restart. The bot reuses its presence initialization and probe loop, including local RPC, and blocks command and reaction entry points except the commands in `_PRESENCE_ONLY_COMMANDS` (today only `/3d`, which posts a 3D model link); before the presence start it trims the command tree to that set and syncs it through `_sync_slash_commands`, the same helper the full start uses. Ready and resumed events cannot restore batch or conversation jobs in this mode. Registration enables only the Discord task and disables the other existing application tasks without ending running processes. Wake validates the stored mode before requesting the Discord task. Full registration restores the configured tasks.

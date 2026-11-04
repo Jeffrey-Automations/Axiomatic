@@ -39,10 +39,37 @@ def test_presence_ready_initializes_mirror_without_other_startup(presence_only,
     monkeypatch.setattr(b, "_matches_target_user", lambda item: item is member)
     monkeypatch.setattr(b, "_mirror_member_presence", mirror)
     monkeypatch.setattr(b, "_ensure_background_tasks_alive", revive)
+    keep, sync = Mock(), AsyncMock()
+    monkeypatch.setattr(b, "_keep_only_commands", keep)
+    monkeypatch.setattr(b, "_sync_slash_commands", sync)
     asyncio.run(b.on_ready())
     mirror.assert_awaited_once_with(member)
     revive.assert_called_once_with(source="on_ready")
     assert b._last_mirrored_presence_key is None
+    # the commands this mode still takes are synced, and only those
+    keep.assert_called_once_with(b.tree, b._PRESENCE_ONLY_COMMANDS)
+    sync.assert_awaited_once()
+
+
+def test_presence_mode_keeps_only_its_commands_on_the_tree():
+    tree = b.discord.app_commands.CommandTree(b.discord.Client(intents=b.discord.Intents.none()))
+
+    async def handler(interaction):
+        return None
+
+    for name in ("3d", "run", "help"):
+        tree.add_command(b.discord.app_commands.Command(name=name, description="x", callback=handler))
+    b._keep_only_commands(tree, b._PRESENCE_ONLY_COMMANDS)
+    assert [command.name for command in tree.get_commands()] == ["3d"]
+    assert "3d" in {command.name for command in b.tree.get_commands()}    # the real /3d is in that set
+
+
+def test_presence_mode_takes_only_its_commands(presence_only):
+    def asked(name):
+        return asyncio.run(b._tree_check(SimpleNamespace(
+            type=b.discord.InteractionType.application_command, command=SimpleNamespace(qualified_name=name))))
+    assert asked("3d")
+    assert not asked("run") and not asked("dorossi ask")
 
 
 def test_presence_background_recovery_starts_only_probe(presence_only, monkeypatch):

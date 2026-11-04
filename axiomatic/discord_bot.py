@@ -24996,6 +24996,49 @@ async def _daily_health_loop() -> None:
 
 
 _PRESENCE_ONLY = False
+# 僅狀態模式仍註冊並受理的斜線指令：只貼網址、不碰批次／佇列／主機／對話的那幾個。其他指令
+# 在這個模式下不受理，所以同步時也不留在平台上——留著只會讓人點了沒反應。
+_PRESENCE_ONLY_COMMANDS = frozenset({"3d"})
+
+
+def _keep_only_commands(command_tree, names) -> None:
+    """把 *command_tree* 頂層裡名字不在 *names* 的指令拿掉（僅狀態模式同步前用）。"""
+    for command in list(command_tree.get_commands()):
+        if command.name not in names:
+            command_tree.remove_command(command.name)
+
+
+async def _sync_slash_commands() -> None:
+    """把指令樹同步到平台：優先同步到 CHANNEL_ID 所在的伺服器（即時），頻道還沒快取就全域同步
+    （約一小時才生效）。兩種啟動模式共用這一份。"""
+    global _METRICS_ERRORS
+    try:
+        guild_obj = None
+        ch = client.get_channel(CHANNEL_ID)
+        if ch is not None and ch.guild is not None:
+            guild_obj = discord.Object(id=ch.guild.id)
+        expected = len(tree.get_commands())
+        if guild_obj:
+            tree.copy_global_to(guild=guild_obj)
+            synced = await tree.sync(guild=guild_obj)
+            print(f"slash commands synced to guild {ch.guild.id}: "
+                  f"{len(synced)}/{expected}")
+        else:
+            synced = await tree.sync()
+            print(f"slash commands synced globally: {len(synced)}/{expected}")
+        # 部分同步以前完全看不見：`tree.sync()` 回傳被接受的清單，數量不對也不會
+        # 丟例外，而底下只印一個沒人比對的數字。指令是唯一的對外介面，少掉一半
+        # 使用者只會覺得「怎麼找不到」。
+        if len(synced) != expected:
+            print(f"※ slash sync accepted {len(synced)} of {expected} "
+                  "top-level commands — some are missing",
+                  file=sys.stderr)
+            _METRICS_ERRORS += 1
+    except Exception as error:  # pylint: disable=broad-except
+        # 同步失敗＝**全部**斜線指令都不在，而斜線是唯一對外介面。以前這裡只印
+        # stderr、不累加錯誤計數，所以 `/sys metrics` 與 `/sys doctor` 都看不到。
+        print(f"slash sync failed: {error!r}", file=sys.stderr)
+        _METRICS_ERRORS += 1
 
 
 async def _initialize_presence() -> None:
@@ -25042,6 +25085,8 @@ async def on_ready() -> None:
     print(f"logged in as {client.user} (id={client.user.id if client.user else '?'})")
     print(f"watching channel id {CHANNEL_ID}")
     if _PRESENCE_ONLY:
+        _keep_only_commands(tree, _PRESENCE_ONLY_COMMANDS)
+        await _sync_slash_commands()
         await _initialize_presence()
         _ensure_background_tasks_alive(source="on_ready")
         return
@@ -25106,36 +25151,7 @@ async def on_ready() -> None:
     # `_ensure_background_tasks_alive` near the end of on_ready (after slash
     # sync + initial presence mirror) covers both event_watcher and
     # presence_probe — see helper definition below.
-    # Sync slash commands. Prefer per-guild sync (instant) for the guild
-    # that owns CHANNEL_ID; fall back to global sync (~1h propagation) if
-    # the channel isn't cached yet.
-    try:
-        guild_obj = None
-        ch = client.get_channel(CHANNEL_ID)
-        if ch is not None and ch.guild is not None:
-            guild_obj = discord.Object(id=ch.guild.id)
-        expected = len(tree.get_commands())
-        if guild_obj:
-            tree.copy_global_to(guild=guild_obj)
-            synced = await tree.sync(guild=guild_obj)
-            print(f"slash commands synced to guild {ch.guild.id}: "
-                  f"{len(synced)}/{expected}")
-        else:
-            synced = await tree.sync()
-            print(f"slash commands synced globally: {len(synced)}/{expected}")
-        # 部分同步以前完全看不見：`tree.sync()` 回傳被接受的清單，數量不對也不會
-        # 丟例外，而底下只印一個沒人比對的數字。指令是唯一的對外介面，少掉一半
-        # 使用者只會覺得「怎麼找不到」。
-        if len(synced) != expected:
-            print(f"※ slash sync accepted {len(synced)} of {expected} "
-                  "top-level commands — some are missing",
-                  file=sys.stderr)
-            _METRICS_ERRORS += 1
-    except Exception as error:  # pylint: disable=broad-except
-        # 同步失敗＝**全部**斜線指令都不在，而斜線是唯一對外介面。以前這裡只印
-        # stderr、不累加錯誤計數，所以 `/sys metrics` 與 `/sys doctor` 都看不到。
-        print(f"slash sync failed: {error!r}", file=sys.stderr)
-        _METRICS_ERRORS += 1
+    await _sync_slash_commands()
     await _initialize_presence()
     _dorossi_restore_queued_turns_once()
     # 啟動本機 presence probe loop + event watcher。Probe 即使目標使用者
@@ -26139,7 +26155,8 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
     brand strings into other channels.
     """
     if _PRESENCE_ONLY:
-        return False
+        # 只受理 `_PRESENCE_ONLY_COMMANDS`；其餘（含自動完成）一律不受理
+        return getattr(getattr(interaction, "command", None), "qualified_name", None) in _PRESENCE_ONLY_COMMANDS
     # ⚠️ `CommandTree._call` invokes this on its FIRST line, while the
     # autocomplete branch sits ~24 lines further down — so this hook fires on
     # every KEYSTROKE in an autocomplete field, not only on invocation.
@@ -26370,6 +26387,70 @@ async def slash_chat(interaction: discord.Interaction, prompt: str,
                      image: discord.Attachment | None = None, mode: str = "chat") -> None:
     await _slash_run_with_file(interaction, image, _chat_request, prompt, mode,
                                detach_ack="已收下產圖請求，處理中……" if mode == "image" else None)
+
+
+# /3d 貼的是分享 3D 模型的網站（`bot_config` 的 `models_site_url`）：平台把網址展開成預覽卡片，點開在
+# 瀏覽器裡轉動、縮放、切換姿勢。網站根目錄的 `models.json` 列出分享過的模型（`name` 是網址上的資料夾、
+# `title` 是顯示名稱），模型頁在 `<網站>models/<name>/`。清單經 `_http_get_json`（唯一補 User-Agent 的出口）
+# 讀、快取 `_MODELS_LIST_TTL_SEC` 秒，自動完成不必每個按鍵都去抓一次。
+_MODELS_LIST_TTL_SEC = 300.0
+_models_list_cache: dict = {"site": "", "at": 0.0, "entries": []}
+
+
+def _models_site() -> str:
+    """設定的 3D 模型網站，結尾補上 `/`；沒設定回空字串。"""
+    site = str(BOT_CONFIG.get("models_site_url") or "").strip()
+    return site if not site or site.endswith("/") else site + "/"
+
+
+async def _shared_models(site: str) -> list[dict]:
+    """*site* 的 `models.json`：`[{name, title}]`，讀不到就是空清單（細節進 log）。"""
+    cache = _models_list_cache
+    if cache["site"] == site and time.monotonic() - cache["at"] < _MODELS_LIST_TTL_SEC:
+        return cache["entries"]
+    status, data = await _http_get_json(f"{site}models.json")
+    entries = [{"name": item["name"], "title": str(item.get("title") or item["name"])}
+               for item in (data if status == 200 and isinstance(data, list) else [])
+               if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"]]
+    if status != 200:
+        print(f"/3d models list: status {status}", file=sys.stderr)
+    cache.update(site=site, at=time.monotonic(), entries=entries)
+    return entries
+
+
+@tree.command(name="3d", description="貼出 3D 模型的網址：預覽卡片點開就能轉動、縮放、切換姿勢",
+              extras={"public": True})
+@discord.app_commands.describe(model="要貼哪個模型（不填就貼列出全部模型的首頁）")
+async def slash_3d(interaction: discord.Interaction, model: str = "") -> None:
+    # 不走 `_slash_run`：它的回覆管線服務的是文字指令的 handler，這裡只貼一個網址。沒有 `!` 對應
+    # （斜線是唯一對外介面），extras 標 public：看模型不涉及主機或佇列，任何頻道都能用，僅狀態模式也受理。
+    site = _models_site()
+    if not site:
+        await interaction.response.send_message(
+            _owner_detail(interaction, "還沒設定 3D 模型網站：設定檔的 `models_site_url` 是空的。",
+                          "目前沒有可以分享的 3D 模型。"), ephemeral=True)
+        return
+    if not model.strip():
+        await interaction.response.send_message(site)
+        return
+    await interaction.response.defer(thinking=True)
+    wanted = model.strip().casefold()
+    entries = await _shared_models(site)
+    match = next((e for e in entries if wanted in (e["name"].casefold(), e["title"].casefold())), None)
+    if match is None:
+        await interaction.followup.send("找不到這個模型；不填 model 可以看全部。", ephemeral=True)
+        return
+    await interaction.followup.send(f"{site}models/{match['name']}/")
+
+
+@slash_3d.autocomplete("model")
+async def _slash_3d_models(interaction: discord.Interaction, current: str) -> list:
+    site = _models_site()
+    if not site:
+        return []
+    typed = current.casefold()
+    found = [e for e in await _shared_models(site) if typed in e["title"].casefold() or typed in e["name"].casefold()]
+    return [discord.app_commands.Choice(name=e["title"][:100], value=e["name"]) for e in found[:25]]
 
 
 # ---------- 對話後端：/dorossi ----------------------------------------------
@@ -28808,7 +28889,7 @@ tree.add_command(launcher_group)
 # （`/tool say` 限 server owner）沿用 mcmd_say 內建的閘。
 #
 # ⚠️ 對話平台每個應用程式的指令上限是 **100 個頂層指令**（指令群的子指令不各自
-# 計數、一個群算一個）。**目前 39/100**（14 個直接指令 ＋ 25 個指令群，底下
+# 計數、一個群算一個）。**目前 40/100**（15 個直接指令 ＋ 25 個指令群，底下
 # 合計 261 個子指令）。超過的話 `tree.sync()` 會被整批拒絕——壞掉的不是新指令，
 # 而是**全部**斜線指令。要加就把低頻指令收進既有指令群，不要往頂層長。這個數字
 # 由 `test_docs_sync.py` 守著（超過會紅）。

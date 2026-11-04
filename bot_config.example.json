@@ -8,6 +8,8 @@
   "path_reveal_channel_ids": [],
   "_api_contact_comment": "對外 HTTP 請求的 User-Agent 裡要附的聯絡方式（URL 或 email）。有些站台只吃這個：Wikimedia 的 REST API 對純描述式 UA 回 403，訊息叫你留下聯絡得到人的方式。空字串 ＝不附，那些站台會繼續 403。這個字串會被送到第三方站台，所以留給你自己決定。",
   "api_contact": "",
+  "_models_site_url_comment": "/3d 貼的 3D 模型分享網站（結尾的 / 可省略）。網站根目錄要有列出模型的 models.json（name 是模型頁的資料夾、title 是顯示名稱），模型頁在 models/<name>/。空字串（預設）＝/3d 只回一句沒有可分享的模型。",
+  "models_site_url": "",
   "_presence_comment": "要把誰的 Discord 狀態鏡像到 bot 身上（使用者名稱，不分大小寫，開頭的點會被去掉）。空字串（預設）＝不鏡像。本機的遊戲／音樂偵測不受這個值影響。",
   "target_presence_username": "",
   "_help_lang_comment": "/help 的預設語言。合法值：en、zh-tw、zh-cn。",

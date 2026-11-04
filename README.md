@@ -95,7 +95,7 @@ import those, because they are standalone, stateless, driver-agnostic code.
 
 | File | Purpose |
 |---|---|
-| `axiomatic/discord_bot.py` | 14 top-level slash commands and 25 command groups (273 slash sub-commands in total), the identity gates, desktop and host control, batch supervision, answering-backend orchestration, the single-image queue |
+| `axiomatic/discord_bot.py` | 15 top-level slash commands and 25 command groups (274 slash sub-commands in total), the identity gates, desktop and host control, batch supervision, answering-backend orchestration, the single-image queue |
 | `axiomatic/_gui_control.py` | The desktop-automation façade (mouse, keyboard, windows, clipboard, OCR, image location) |
 | `axiomatic/dorossi_backend.py` | The answering backend and its sessions — several backends behind one interface |
 
@@ -296,7 +296,7 @@ py -3 start_discord_bot.py --platform discord --presence-only
 py -3 wake_autostart.py --presence-only
 ```
 
-Use `--presence-only` to run local status detection, bot activity updates, and local RPC only. Commands, batch supervision, scheduled work, and other platform transports remain off. The mode supports Discord only. Registration disables the other existing Axiomatic logon tasks, including Batch, without stopping running processes. The wake command requires a task already registered in this mode. Omit the flag when directly running `start_discord_bot.py` for full operation; register again with `--install` to restore the configured logon tasks. Wake always uses the registered mode.
+Use `--presence-only` to run local status detection, bot activity updates, and local RPC only. Commands (except `/3d`, which only posts a 3D model link), batch supervision, scheduled work, and other platform transports remain off. The mode supports Discord only. Registration disables the other existing Axiomatic logon tasks, including Batch, without stopping running processes. The wake command requires a task already registered in this mode. Omit the flag when directly running `start_discord_bot.py` for full operation; register again with `--install` to restore the configured logon tasks. Wake always uses the registered mode.
 
 ### Start automatically at logon (Windows)
 
@@ -362,8 +362,8 @@ On a platform with a native slash menu the commands are **slash commands**:
 typing `/` autocompletes them and arguments are type- and range-checked before
 they are sent. On a platform without one, the same commands are reached through
 the text surface (see below) — one implementation, one set of permission gates. There are
-**14 top-level slash commands** and **25 command groups** (39 top-level
-entries; the platform limit is 100) holding **273 slash sub-commands**.
+**15 top-level slash commands** and **25 command groups** (40 top-level
+entries; the platform limit is 100) holding **274 slash sub-commands**.
 
 A group costs one top-level slot no matter how many sub-commands it has, so
 folding low-traffic commands into groups is the only way to keep growing. Per
@@ -425,6 +425,7 @@ command detail is in [`COMMANDS.md`](COMMANDS.md), in
 | Command | What it does |
 |---|---|
 | `/chat` | 🔑 Owner only: chat with one optional image, or `mode=image` to queue one generation from the request |
+| `/3d` | Post a 3D model's link (`model` picks one, with autocomplete; empty posts the front page listing them all); its preview card opens a viewer to turn, zoom and switch poses. The site is the `models_site_url` setting |
 | `/booru` | Image-board search: a random hit for a tag (fuzzy allowed; a default image with no tag) |
 | `/e621` | A random image from the furry-oriented board (NSFW by default; add rating:safe for SFW) |
 | `/grid` | The four newest hits as a 2×2 mosaic |
