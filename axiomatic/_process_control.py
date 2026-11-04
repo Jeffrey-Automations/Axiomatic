@@ -13,7 +13,7 @@ task）糾纏的監督迴圈」留在 bot。
 那些「給定參數就能算、完全不碰 bot 全域」的葉子函式。
 
 模組邊界（CLAUDE.md 硬規則）：這是 **bot 側模組**，可被 bot import；它**不可**
-`import discord_bot`（循環），也**不可** `from webrunner_novelai import …`
+`import discord_bot`（循環），也**不可** `from webrunner_je_only import …`
 （bot↔webrunner 只透過磁碟檔溝通）。本模組純 stdlib ＋ 選用 psutil，無此風險。
 
 不洩漏規則：本模組回給呼叫端的 status lines 都是 bot 自行撰寫、known-safe 的泛
@@ -24,12 +24,159 @@ Discord。新增字串時務必維持這個分界。
 from __future__ import annotations
 
 import asyncio
+if __package__:
+    from ._process_job import close_process_job
+else:
+    from _process_job import close_process_job
 import os
 import re
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+
+# 自己起的行程樹：先拍一次父子快照，再停根、再停子孫（父先於子）。
+# 每條父子邊比出生時間，排除 PID 重用留下的孤兒；不碰讀不到出生時間的行程。
+# 快照會同步佔用呼叫端；已離開的中間父行程與快照之後才出生的子孫不保證收得到。
+# 要涵蓋那些情況，必須在啟動時由作業系統追蹤整棵樹。
+def child_process_descendants(psutil, root_pid: int) -> list:
+    """`root_pid`——**這個行程自己起的**後端——目前活著的子孫，父先於子。
+
+    回行程函式庫的行程物件（建立時記下了出生時間，`kill()` 靠它擋 pid 換人）。
+    丟例外＝這一次列不成，由呼叫端決定怎麼說；單一行程在列舉途中不見是常態，
+    跳過它（連同它底下的）就好。
+
+    四條規則，每一條擋的是不同的東西：
+
+    * **後端必須是這個行程的直接子行程**（對照表裡它的父 pid 是我們）。它是我們自己
+      起的，所以這一條成立；不成立就代表那個 pid 指的不是我們以為的行程。
+    * **每一條父子邊都要求「子不比父早出生」**。行程記著的父 pid 不會跟著父行程的
+      死活更新：別的行程留下的孤兒，它記的那個 pid 後來可能被我們的某個子孫拿去用，
+      在對照表上就成了那個子孫的「子行程」。孤兒一定比後來拿到那個 pid 的行程早
+      出生，所以逐邊比對就排除得掉；只拿整棵樹的根來比（函式庫自己的遞迴列舉是
+      這樣做的）排除不掉。
+    * **也不得比快照晚出生**。快照拍完到替某個 pid 建立行程物件之間，那個行程可能
+      已經結束、pid 被一個新行程拿走；新行程一定是在快照開始之後才出生的。
+    * **這個行程自己永遠不在名單上**，不論對照表怎麼說。
+
+    出生時間是牆上時鐘：系統時間被調動的那一刻有可能誤排除——方向是少砍。
+
+    讀不到出生時間的行程（權限不足）不列：證明不了它是後端起的。
+    """
+    root = psutil.Process(root_pid)
+    asked_at = time.time()
+    parent_of = psutil._ppid_map()  # 一次全系統快照；逐一問 ppid 是每個行程一次
+    own_pid = os.getpid()
+    if parent_of.get(root_pid) != own_pid:
+        raise LookupError("the backend is not a child of this process")
+    children_of: dict[int, list[int]] = {}
+    for pid, parent_pid in parent_of.items():
+        children_of.setdefault(parent_pid, []).append(pid)
+    found: list = []
+    stack = [(root_pid, root.create_time())]
+    while stack:
+        parent_pid, parent_born = stack.pop()
+        for pid in children_of.get(parent_pid, ()):
+            if pid == own_pid:
+                continue
+            try:
+                child = psutil.Process(pid)
+                born = child.create_time()
+            except psutil.Error:
+                continue
+            if not parent_born <= born <= asked_at:
+                continue
+            found.append(child)
+            stack.append((pid, born))
+    return found
+
+
+def child_processes_started_by(proc) -> tuple[list, str | None]:
+    """回 `(後端的子孫, 列不成的原因)`；原因是 None 表示這份名單問得出來。永不 raise。
+
+    「沒有子孫」與「列不成」要分得開（後者只砍得到後端自己，得留一行），所以原因走在
+    回傳值上。後端剛好已經不在、或 `proc` 沒有可用的 pid（測試替身）都不算列不成。
+    """
+    pid = getattr(proc, "pid", None)
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return [], None
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return [], "the process library is not installed"
+    try:
+        return child_process_descendants(psutil, pid), None
+    except psutil.NoSuchProcess:
+        return [], None
+    except Exception as error:  # pylint: disable=broad-except
+        # 中止不得因為列舉失敗而失敗；只留型別名（stderr 有對話平台那個出口）。
+        return [], type(error).__name__
+
+
+def kill_started_processes(started: list) -> int:
+    """照順序砍掉 `started`（`child_processes_started_by` 給的行程物件），回沒砍掉的個數。
+
+    行程函式庫的 `kill()` 動手前會比對（pid, 出生時間），那個 pid 已經換人就丟
+    `NoSuchProcess`、不動手——從列出來到這裡之間的 pid 重用靠這一點擋；所以這裡
+    絕不拿裸 pid 去砍。行程已經不在也是 `NoSuchProcess`（後端一死，它底下的常常
+    自己就結束了），兩種都不算沒砍掉。永不 raise。
+    """
+    if not started:
+        return 0
+    import psutil  # type: ignore  # 名單非空＝剛剛匯入得到
+    refused = 0
+    for child in started:
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            continue
+        except Exception:  # pylint: disable=broad-except
+            refused += 1
+    return refused
+
+
+def kill_child_process_tree(proc, *, raise_backend_error: bool = False) -> None:
+    """自己起的行程的砍殺點：後端行程，連同它已經起、還活著的子孫。
+
+    **同步、預設不得 raise、不等任何行程收尾**——旗標由呼叫端先設，這裡回來時後端的
+    `kill()` 已經送出（單輪回合的收尾保證靠這一點）。`proc` 是 None 或結束碼已經
+    出來時什麼都不做：行程結束之後那個 pid 可能已經換人，連問都不問。
+
+    `raise_backend_error=True` 供看門狗保留原本的錯誤分類：根行程 kill 失敗時仍先清
+    子孫，再往外拋；良性的 `ProcessLookupError` 一律略過。
+
+    砍得到與砍不到的範圍、順序的理由、量到的成本見上面那段說明。少了行程函式庫或
+    列舉失敗時只砍後端自己並留一行；被砍掉的包含後端刻意放在背景的行程（擁有者
+    接受這一點）。stderr 那一行只有個數，沒有 pid 與行程名。
+    """
+    if close_process_job(proc):
+        return
+    if proc is None or getattr(proc, "returncode", None) is not None:
+        return
+    started, problem = child_processes_started_by(proc)
+    backend_error = None
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass  # 剛好在這一刻結束：事件迴圈的子行程在收掉之後丟這個（Windows 上也是）
+    except Exception as error:  # pylint: disable=broad-except
+        backend_error = error
+        print(f"[process] stop: stopping the backend process failed "
+              f"({type(error).__name__})", file=sys.stderr)
+    refused = kill_started_processes(started)
+    if problem is not None:
+        print(f"[process] stop: could not list what the backend had started "
+              f"({problem}); only the backend process itself was stopped",
+              file=sys.stderr)
+    elif started:
+        print(f"[process] stop: stopped the backend and {len(started) - refused} "
+              f"of the {len(started)} process(es) it had started", file=sys.stderr)
+
+    if raise_backend_error and backend_error is not None:
+        raise backend_error
+
 
 
 # ---------- PID liveness / kill primitives ---------------------------------
@@ -130,7 +277,7 @@ _TASKKILL_TIMEOUT_SEC = 15.0
 # **抽成常數不是為了可調，是為了測試不必真的睡。** 這條路的 11 支測試餵的是假行程，
 # 但同一行 `sleep` 照樣睡滿——合計 22 秒，佔 `test_process_control.py` 三十幾秒裡的
 # 大半，而且對這個模組跑變異時每個變異都再付一次。測試檔用 autouse 夾具把它設成 0；
-# `test_the_chrome_release_wait_is_still_a_real_wait_in_production` 直接讀原始碼的
+# 工作物件的實機測試 直接讀原始碼的
 # 字面值釘住「正式值 >= 1 秒」，所以「為了讓測試快一點把正式值也改成 0」會當場紅——
 # 那個夾具看不到、也改不到原始碼裡的數字。
 _CHROME_RELEASE_WAIT_SEC = 2
@@ -310,9 +457,9 @@ def python_script_argument(cmdline) -> str | None:
     「腳本」那一格。**為什麼不能只看「有沒有哪個參數指向那支檔案」**：腳本自己的
     參數也可能就是我們在找的檔名，而那代表完全相反的意思——
 
-        python -m black   axiomatic/webrunner_novelai.py    ← 在**格式化**那支檔案
-        python -m pyflakes axiomatic/webrunner_novelai.py   ← 在**檢查**那支檔案
-        python -u          axiomatic/webrunner_novelai.py   ← 在**執行**那支檔案
+        python -m black   axiomatic/webrunner_je_only.py    ← 在**格式化**那支檔案
+        python -m pyflakes axiomatic/webrunner_je_only.py   ← 在**檢查**那支檔案
+        python -u          axiomatic/webrunner_je_only.py   ← 在**執行**那支檔案
 
     前兩個被判成「漏網的背景產圖程式」的話，下一次 `/gen run` 會把使用者正在跑的
     格式化工具 `taskkill /F` 掉。只有第三個才是。
@@ -349,10 +496,10 @@ def cmdline_runs_script(cmdline, targets) -> str | None:
     路徑最後一段。所以絕對路徑、相對路徑、以及 `cd` 進去用裸檔名啟動都認得，而
     任何只是**提到**檔名的命令列都不算——
 
-    - `git commit -m "webrunner_novelai.py: 修好對話框"`
-    - `code D:/.../webrunner_novelai.py`（編輯器，殺掉＝未存檔的內容沒了）
-    - `grep -n webrunner_novelai.py -r .`
-    - `python -m black axiomatic/webrunner_novelai.py`
+    - `git commit -m "webrunner_je_only.py: 修好對話框"`
+    - `code D:/.../webrunner_je_only.py`（編輯器，殺掉＝未存檔的內容沒了）
+    - `grep -n webrunner_je_only.py -r .`
+    - `python -m black axiomatic/webrunner_je_only.py`
 
     2026-08-30 在這台機器上實測：舊的子字串比對掃出 **7** 個「背景產圖程式」，
     其中只有 2 個是真的；另外 5 個是命令列裡剛好提到檔名的 shell 與 `python -c`。
@@ -396,7 +543,7 @@ def cmdline_runs_script(cmdline, targets) -> str | None:
 #   `_batch_config`、`_chrome_slot`、`_code_fingerprint`、`_supervisor`）——
 #   改了那些檔案，健康報告會說 bot 是新的。
 # * `batch supervisor` 只列了兩個，少了四個。
-# * `batch` 列著 `_chrome_slot.py`，而 `webrunner_novelai.py` **根本不 import 它**
+# * `batch` 列著 `_chrome_slot.py`，而 `webrunner_je_only.py` **根本不 import 它**
 #   （import 它的是 `start_webrunner.py`）。**那一筆掛錯元件**：改 `_chrome_slot`
 #   會誤報批次陳舊，同時漏報真的該重啟的批次監督者。
 #   ⚠️ **這一筆在 2026-09-11 反轉了，而且是被全套測試抓到的**：
@@ -412,97 +559,72 @@ def cmdline_runs_script(cmdline, targets) -> str | None:
 # `test_process_control.test_the_component_map_matches_the_real_import_closure`
 # 用 AST 算出真正的閉包、兩個方向對帳。**要改這張表，先讓那支測試同意。**
 STALE_COMPONENTS = {
-    "supervisor": ("start_discord_bot.py", (
-        "start_discord_bot.py",
-        "axiomatic/_supervisor.py",
-        "axiomatic/_process_control.py",
-        # 逐平台的鎖檔與記錄檔路徑由 `_platform_runtime` 算（它是純 stdlib，
-        # 不 import 設定載入器——所以這條邊只有一格）。
-        "axiomatic/_platform_runtime.py",
+    'supervisor': ('start_discord_bot.py', (
+        'axiomatic/_platform_runtime.py',
+        'axiomatic/_process_control.py',
+        'axiomatic/_process_job.py',
+        'axiomatic/_supervisor.py',
+        'start_discord_bot.py',
     )),
-    "bot": ("discord_bot.py", (
-        "axiomatic/discord_bot.py",
-        "axiomatic/dorossi_backend.py",
-        "axiomatic/_bot_config.py",
-        "axiomatic/_help_strings.py",
-        "axiomatic/_external_apis.py",
-        "axiomatic/_gui_control.py",
-        "axiomatic/_bot_prompts.py",
-        "axiomatic/_process_control.py",
-        "axiomatic/_resource_report.py",
-        "axiomatic/_queue_consume.py",
-        "axiomatic/presence_probe.py",
-        "axiomatic/_batch_config.py",
-        "axiomatic/_chrome_slot.py",
-        "axiomatic/_code_fingerprint.py",
-        "axiomatic/_run_progress.py",
-        "axiomatic/_supervisor.py",
-        "axiomatic/_webrunner_shared.py",
-        "axiomatic/discord_rpc.py",
-        "axiomatic/_warn_dedup.py",
-        "axiomatic/_power_request.py",
-        "axiomatic/_connectivity.py",
-        # 對話平台層。逐平台的 `_*_transport.py` 是 `_chat_platform.TRANSPORT_MODULES`
-        # 列的、由 `importlib` 在第一次 `on_ready` 一律載入（不看平台開了沒有），所以
-        # 改了它一樣要重啟、一樣要列；對帳測試的 import 抽取器讀得到那份清單。
-        "axiomatic/_chat_platform.py",
-        "axiomatic/_platform_runtime.py",
-        "axiomatic/_telegram_transport.py",
-        # 2026-09-28: the third conversation backend's CLI adapter; both
-        # `dorossi_backend` and the bot import it at module level.
-        "axiomatic/_dorossi_gemini.py",
-        # 2026-10-01: the reply-card and paged-reply primitives (bot-only helpers).
-        "axiomatic/_reply_card.py",
-        "axiomatic/_reply_pager.py",
+    'bot': ('discord_bot.py', (
+        'axiomatic/_batch_config.py',
+        'axiomatic/_bot_config.py',
+        'axiomatic/_bot_prompts.py',
+        'axiomatic/_chat_platform.py',
+        'axiomatic/_chrome_slot.py',
+        'axiomatic/_claude_local_usage.py',
+        'axiomatic/_code_fingerprint.py',
+        'axiomatic/_connectivity.py',
+        'axiomatic/_dorossi_gemini.py',
+        'axiomatic/_external_apis.py',
+        'axiomatic/_gui_control.py',
+        'axiomatic/_help_strings.py',
+        'axiomatic/_platform_runtime.py',
+        'axiomatic/_power_request.py',
+        'axiomatic/_process_control.py',
+        'axiomatic/_process_job.py',
+        'axiomatic/_queue_consume.py',
+        'axiomatic/_reply_card.py',
+        'axiomatic/_reply_confirm.py',
+        'axiomatic/_reply_pager.py',
+        'axiomatic/_resource_report.py',
+        'axiomatic/_run_progress.py',
+        'axiomatic/_supervisor.py',
+        'axiomatic/_telegram_transport.py',
+        'axiomatic/_warn_dedup.py',
+        'axiomatic/_webrunner_location.py',
+        'axiomatic/_webrunner_shared.py',
+        'axiomatic/discord_bot.py',
+        'axiomatic/discord_rpc.py',
+        'axiomatic/dorossi_backend.py',
+        'axiomatic/presence_probe.py',
     )),
-    "batch supervisor": ("start_webrunner.py", (
-        "start_webrunner.py",
-        "axiomatic/_supervisor.py",
-        "axiomatic/_bot_config.py",
-        "axiomatic/_chrome_slot.py",
-        "axiomatic/_process_control.py",
-        "axiomatic/_run_progress.py",
-        "axiomatic/_warn_dedup.py",
-        "axiomatic/_connectivity.py",
+    'batch supervisor': ('start_webrunner.py', (
+        'axiomatic/_bot_config.py',
+        'axiomatic/_chrome_slot.py',
+        'axiomatic/_connectivity.py',
+        'axiomatic/_process_control.py',
+        'axiomatic/_process_job.py',
+        'axiomatic/_run_progress.py',
+        'axiomatic/_supervisor.py',
+        'axiomatic/_warn_dedup.py',
+        'axiomatic/_webrunner_location.py',
+        'start_webrunner.py',
     )),
-    "batch": ("webrunner_novelai.py", (
-        "axiomatic/webrunner_novelai.py",
-        "axiomatic/_webrunner_shared.py",
-        "axiomatic/_batch_config.py",
-        "axiomatic/_queue_consume.py",
-        "axiomatic/_run_progress.py",
-        "axiomatic/_code_fingerprint.py",
-        "axiomatic/_process_control.py",
-        "axiomatic/_supervisor.py",
-        # 2026-09-11 補回來。2026-09-09 這一筆是被**刪掉**的，理由是「批次根本不
-        # import 它，import 它的是 `start_webrunner.py`」——那在當時是對的。同日
-        # 稍晚 `_webrunner_shared.py` 為了認領存活訊號加了 `import _chrome_slot`，
-        # 於是它又進了批次的**傳遞**閉包。全套測試抓到了（漏列那個方向），而這正是
-        # 這張表要由閉包對帳、不能手寫的理由：一個共用模組多一行 import，就會靜靜
-        # 改掉四個元件裡某幾個的答案。
-        "axiomatic/_chrome_slot.py",
-        "axiomatic/_warn_dedup.py",
-        # 2026-09-22：`StayAwake` 委派給參考計數的電源要求。
-        "axiomatic/_power_request.py",
-    )),
-    # 2026-10-01：je 變體跑的批次。bot 的 `/run`、
-    # 單張與 `/launcher start` 預設就是 je，而這張表以前只認 `webrunner_novelai.py`——je
-    # 批次永遠不會被 `/sys health` 報成陳舊，改了共用模組也看不出它還跑著舊碼。依賴清單
-    # 與上一筆只差進入點本身（兩個變體都只經 `_webrunner_shared` 進其餘模組），一樣由
-    # 閉包對帳。標籤刻意不同：同一台機器上兩個都可能在跑（開發時、或刪掉 selenium
-    # 變體之前的過渡期），報表要分得出是哪一個。
-    "batch (je)": ("webrunner_je_only.py", (
-        "axiomatic/webrunner_je_only.py",
-        "axiomatic/_webrunner_shared.py",
-        "axiomatic/_batch_config.py",
-        "axiomatic/_queue_consume.py",
-        "axiomatic/_run_progress.py",
-        "axiomatic/_code_fingerprint.py",
-        "axiomatic/_process_control.py",
-        "axiomatic/_supervisor.py",
-        "axiomatic/_chrome_slot.py",
-        "axiomatic/_warn_dedup.py",
-        "axiomatic/_power_request.py",
+    'batch (je)': ('webrunner_je_only.py', (
+        'axiomatic/_batch_config.py',
+        'axiomatic/_chrome_slot.py',
+        'axiomatic/_code_fingerprint.py',
+        'axiomatic/_power_request.py',
+        'axiomatic/_process_control.py',
+        'axiomatic/_process_job.py',
+        'axiomatic/_queue_consume.py',
+        'axiomatic/_run_progress.py',
+        'axiomatic/_supervisor.py',
+        'axiomatic/_warn_dedup.py',
+        'axiomatic/_webrunner_location.py',
+        'axiomatic/_webrunner_shared.py',
+        'axiomatic/webrunner_je_only.py',
     )),
 }
 
@@ -817,7 +939,7 @@ def find_stale_components(root: Path, components=None, *, procs=None,
 
 def _find_all_webrunner_pids(
         exclude_pid: int | None = None) -> tuple[list[tuple[int, str]], bool]:
-    """psutil 掃所有 process，找 cmdline 內含 `webrunner_novelai.py` 或
+    """psutil 掃所有 process，找 cmdline 內含 `webrunner_je_only.py` 或
     `webrunner_je_only.py` 的 — 不論是不是 bot 啟動的、也不論是哪個 bot
     session 啟動的。給 `cmd_stop` 用來保證殺光所有實例（漏網的、手動
     `start_webrunner.py` 啟動的、上次 bot crash 留下的孤兒 process 等等）。
@@ -862,7 +984,7 @@ def _find_all_webrunner_pids(
     也就是說貴的是 `ppid` 而不是 `cmdline`（`cmdline` 只佔約 0.4 秒）。這條路徑會被
     `/sys health`、`/sys doctor` 與 `_failure_diagnostic_summary` 直接呼叫，省下來的
     4 秒是實實在在的。"""
-    targets = ("webrunner_novelai.py", "webrunner_je_only.py")
+    targets = ("webrunner_je_only.py",)
     raw: list[tuple[int, int, str]] = []
     try:
         import psutil  # type: ignore
@@ -973,6 +1095,9 @@ async def _terminate_all_webrunner_instances(
 
     # 1. 殺已知的 tracked / adopted process（如果有）。
     pid = active_pid
+    if close_process_job(tracked_proc):
+        await asyncio.to_thread(tracked_proc.wait, 10)
+        return ["已停止背景程式與其子行程"]
     if pid is not None:
         if tracked_proc is not None and tracked_proc.poll() is None:
             tracked_proc.terminate()
@@ -1021,53 +1146,8 @@ async def _terminate_all_webrunner_instances(
                   + ", ".join(f"pid {p}" for p, _ in forced), file=sys.stderr)
             lines.append(f"其中 {len(forced)} 個以 SIGKILL 強制結束")
 
-    # 3. 殺所有 chrome.exe / chromedriver.exe（無條件、nuclear option）。
-    #    User 明確要求「執行前關掉所有 chrome」— 原本依 `.chrome_profile/`
-    #    cmdline 過濾的 targeted sweep 漏網率高（Chrome multi-process 的
-    #    renderer / GPU / utility 不一定帶 user-data-dir flag）。
-    chrome_procs, scan_ok = await asyncio.to_thread(_find_all_chrome_processes)
-    if chrome_procs:
-        await asyncio.to_thread(_kill_chrome_pids, chrome_procs)
-        # 等幾秒讓 OS 釋放 profile 的 file handle、下次 selenium 才 lock 得到。
-        await asyncio.sleep(_CHROME_RELEASE_WAIT_SEC)
-        # 再掃一次看有沒有殺成功
-        survivors, rescan_ok = await asyncio.to_thread(
-            _find_all_chrome_processes)
-        still_alive = [p for p, _ in survivors]
-        # 按 chrome.exe vs chromedriver.exe 分類報告
-        n_chrome = sum(1 for _, n in chrome_procs if n == "chrome.exe")
-        n_driver = sum(1 for _, n in chrome_procs if n == "chromedriver.exe")
-        # 掃描不完整時不得宣稱「殺光所有」——那句話的保證來自掃描的完整性，
-        # 而不是來自我們殺了幾個。少講一句，好過講一句做不到的保證。
-        head = "殺光所有 chrome" if scan_ok else "殺掉掃得到的 chrome"
-        lines.append(
-            f"sweep {head}：{n_chrome} 個 chrome.exe + "
-            f"{n_driver} 個 chromedriver.exe = {len(chrome_procs)} 個"
-        )
-        if still_alive:
-            print(f"terminate: chrome survivors pids={still_alive[:20]}",
-                  file=sys.stderr)
-            lines.append(
-                f"⚠️ 仍有 {len(still_alive)} 個 chrome process 殺不掉 "
-                f"(可能 antivirus 鎖住 handle)"
-            )
-        elif not rescan_ok:
-            # 複查自己也掛了 → 「沒有倖存者」這個結論沒有根據。不要沉默地
-            # 讓使用者以為清乾淨了。
-            lines.append("⚠️ 清完後的複查沒跑完，不確定是不是真的都關掉了")
-    # **這一段刻意放在 `if chrome_procs:` 外面。** 掃描一開始就炸的時候名單是
-    # 空的，上面整段會被跳過——而那正是最需要說話的情況：使用者看到的畫面會跟
-    # 「機器上本來就很乾淨」一模一樣，然後下一次啟動瀏覽器才撞上殘留的 lock。
-    if not scan_ok:
-        print("terminate: chrome scan incomplete; sweep may have missed "
-              "processes", file=sys.stderr)
-        lines.append(
-            "⚠️ 瀏覽器行程清單沒有掃完整，可能還有殘留沒清掉；"
-            "若接下來啟動失敗，請再執行一次。")
-    # 同樣的理由，同樣刻意放在 `if survivors:` 外面：掃不成的時候名單是空的，
-    # 而空名單跟「真的沒有漏網的」在畫面上一模一樣。這一句的後果比 chrome 那句
-    # 更重——漏掉的是**背景產圖程式本體**，它會自己再開一個瀏覽器，兩個實例同時
-    # 寫同一份佇列與同一個瀏覽器設定檔。
+    # 新實例一律由工作物件清理瀏覽器；相容收養路徑只終止辨識出的背景程式。
+    # 不再掃描或終止其他應用程式的瀏覽器。
     if not wr_scan_ok:
         print("terminate: background-process scan incomplete; sweep may have "
               "missed instances", file=sys.stderr)
@@ -1075,6 +1155,7 @@ async def _terminate_all_webrunner_instances(
             "⚠️ 背景程式清單沒有掃完整，可能還有實例沒清掉；"
             "請用 `/sys health` 再確認一次。")
     return lines
+
 
 
 # ---------- 獨立監督者：脫離行程樹的啟動 ＋ 探查 ＋ 終止 --------------------

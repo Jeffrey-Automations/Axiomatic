@@ -1443,7 +1443,7 @@ def test_a_failed_process_scan_is_not_reported_as_a_clean_machine(
         f"掃不成卻還宣稱「沒有明顯的問題」：{broken!r}")
     # 有掃到東西的時候，那一句本來就會出現，不該再被掃描狀態影響。
     found = _quiet_diagnostic(monkeypatch, tmp_path,
-                              ([(4242, "webrunner_novelai.py")], True))
+                              ([(4242, "webrunner_je_only.py")], True))
     assert "untracked background processes" in found, found
     # 洩漏規則第 1 層：這段文字會直接貼進對話平台。
     for banned in ("4242", "webrunner", "novelai", ".py", "D:\\"):
@@ -1626,7 +1626,7 @@ def test_health_does_not_report_a_failed_scan_as_nothing_running(
     clean = _health_background_line(monkeypatch, ([], True))
     broken = _health_background_line(monkeypatch, ([], False))
     found = _health_background_line(
-        monkeypatch, ([(4242, "webrunner_novelai.py")], True))
+        monkeypatch, ([(4242, "webrunner_je_only.py")], True))
     assert "not running" in clean, clean
     assert clean != broken, "掃描失敗與「真的沒在跑」送出同一行，使用者無從分辨"
     assert "not running" not in broken, f"掃不成卻宣稱沒在跑：{broken!r}"
@@ -1634,7 +1634,7 @@ def test_health_does_not_report_a_failed_scan_as_nothing_running(
     # 掃到孤兒**而且**沒掃完整：數字本身是對的，但「就這些了」不成立。少了這一句
     # 使用者會以為殺掉這幾個就乾淨了。
     found_broken = _health_background_line(
-        monkeypatch, ([(4242, "webrunner_novelai.py")], False))
+        monkeypatch, ([(4242, "webrunner_je_only.py")], False))
     assert found_broken != found, (
         "掃到孤兒的那一半把掃描狀態丟掉了：完整與不完整送出同一行")
     # 執行中那一半也要說——「running + 0 個孤兒」同樣是個沒有根據的結論。
@@ -1650,6 +1650,19 @@ def test_health_does_not_report_a_failed_scan_as_nothing_running(
     # 洩漏規則第 1 層。
     for banned in ("4242", "webrunner", "novelai", ".py", "D:\\"):
         assert banned not in broken and banned not in alive_broken, banned
+
+
+def _quiet_library():
+    import _webrunner_location  # noqa: PLC0415
+
+    return _webrunner_location.WebRunnerPathChoice(
+        _webrunner_location.WEBRUNNER_SOURCE_SIBLING, Path("C:/stub/WebRunner"))
+
+
+_QUIET_LIBRARY = _quiet_library()
+
+
+_QUIET_LIBRARY_LINE = "- INFO 瀏覽器自動化函式庫從專案旁邊的同層資料夾載入。"
 
 
 def _quiet_doctor(monkeypatch, tmp_path):
@@ -1683,6 +1696,9 @@ def _quiet_doctor(monkeypatch, tmp_path):
     monkeypatch.setattr(b, "DOROSSI_CC_TOOLS", "off")
     monkeypatch.setattr(b, "_MACRO_RECORDING", None)
     monkeypatch.setattr(b, "_missing_dependencies", lambda: [])
+    # 函式庫來源一律報一行 INFO（擁有者 2026-10-01 要求），所以「安靜」的報告也有它；
+    # 換成固定的同層資料夾，免得量到這台機器有沒有那份工作樹。
+    monkeypatch.setattr(b, "resolve_webrunner_path", lambda: _QUIET_LIBRARY)
     monkeypatch.setattr(b._gui, "input_desktop_available", lambda: True)
     monkeypatch.setattr(b._gui, "ocr_status", lambda: (True, ""))
     monkeypatch.setattr(b._gui, "input_reaches_system", lambda: True)
@@ -1690,7 +1706,8 @@ def _quiet_doctor(monkeypatch, tmp_path):
     monkeypatch.setattr(b._gui, "job_list", lambda: [])
 
 
-_QUIET_DOCTOR_REPLY = "**doctor**\n- OK no obvious blocker found."
+_QUIET_DOCTOR_REPLY = ("**doctor**\n" + _QUIET_LIBRARY_LINE
+                       + "\n- OK no obvious blocker found.")
 
 
 def test_the_quiet_doctor_harness_is_quiet(monkeypatch, tmp_path):
@@ -1794,12 +1811,12 @@ def test_doctor_names_missing_dependencies_only_to_the_owner(monkeypatch, tmp_pa
     """缺哪些套件：擁有者看得到名字，其他人只看得到筆數——清單裡有對話後端的 SDK 與瀏覽器
     自動化函式庫，名字本身就說明了這台機器在跑什麼。"""
     _quiet_doctor(monkeypatch, tmp_path)
-    monkeypatch.setattr(b, "_missing_dependencies", lambda: ["anthropic", "selenium"])
+    monkeypatch.setattr(b, "_missing_dependencies", lambda: ["anthropic", "je"])
     message = (object() if asker is None else types.SimpleNamespace(author=types.SimpleNamespace(
         id=b.OWNER_USER_ID if asker == "owner" else b.OWNER_USER_ID + 1)))
     text = _run_reply(monkeypatch, lambda: b.cmd_doctor(message))
     assert "2 declared dependenc(ies) missing" in text, text
-    assert ("anthropic" in text) is named and ("selenium" in text) is named, text
+    assert ("anthropic" in text) is named and ("je" in text) is named, text
 
 
 def test_an_overlong_doctor_report_says_it_was_cut(monkeypatch, tmp_path):
@@ -2013,7 +2030,7 @@ def _isolate_full_health(monkeypatch, seen):
     """
     monkeypatch.setattr(b, "_webrunner_liveness", lambda: (False, True))
     monkeypatch.setattr(b, "_find_all_webrunner_pids", lambda *a, **k: ([], True))
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_format_duration", lambda *_a, **_k: "1s")
     monkeypatch.setattr(b, "_fmt_size", lambda *_a, **_k: "1 B")
     for name in ("WEBRUNNER_LOG", "EVENTS_FILE", "AUDIT_FILE", "FAVORITES_FILE",
@@ -5630,7 +5647,7 @@ def test_external_image_download_has_a_size_cap():
 # 核心架構不變量：bot 與 webrunner 只透過磁碟上的檔案溝通
 # --------------------------------------------------------------------------
 # `CLAUDE.md` 把這條列為 core architecture invariant，但在這幾條測試出現之前
-# **沒有任何東西在檢查**。它的失敗形態不是當場壞掉——`from webrunner_novelai
+# **沒有任何東西在檢查**。它的失敗形態不是當場壞掉——`from webrunner_je_only
 # import X` 在開發機上 import 得到，測試也照過；壞掉的是**重啟不再是無害的**：
 # 跨行程狀態一旦活在記憶體裡而不是磁碟上，任何一邊被 supervisor 重啟就會拿到
 # 不一致的世界，而那要到正式跑批次時才看得出來。
@@ -5674,20 +5691,21 @@ def _module_imports(path: Path) -> set[str]:
 
     | 寫法 | 名字藏在哪 |
     |---|---|
-    | `import webrunner_novelai` | `Import.names[].name` |
-    | `import axiomatic.webrunner_novelai` | 同上，取最後一段 |
-    | `from axiomatic.webrunner_novelai import X` | `ImportFrom.module` 的最後一段 |
-    | **`from axiomatic import webrunner_novelai`** | **`ImportFrom.names[].name`** |
+    | `import webrunner_je_only` | `Import.names[].name` |
+    | `import axiomatic.webrunner_je_only` | 同上，取最後一段 |
+    | `from axiomatic.webrunner_je_only import X` | `ImportFrom.module` 的最後一段 |
+    | **`from axiomatic import webrunner_je_only`** | **`ImportFrom.names[].name`** |
 
     舊版只讀 `node.module`，所以最後一種只會抽到 `"axiomatic"`——模組本身完全
     看不見。那不是假想的寫法：`start_webrunner.py` 就是這樣寫的
     （`from axiomatic import _chrome_slot`），也就是說它是這個 repo 的既有慣用法。
 
-    後果是三道守門一起失效，其中一道是 `CLAUDE.md` 的**核心架構不變量**：
-    bot 只要寫 `from axiomatic import webrunner_novelai`，「bot 不得 import
-    webrunner」與「套件模組不得 import `discord_bot`」兩條都不會叫。
+    後果是四道守門一起失效，其中一道是 `CLAUDE.md` 的**核心架構不變量**：
+    bot 只要寫 `from axiomatic import webrunner_je_only`，「bot 不得 import
+    webrunner」「套件模組不得 import `discord_bot`」「live stack 不得碰 `legacy/`」
+    三條都不會叫。
 
-    `asname` 也要收：`from axiomatic import webrunner_novelai as w` 之後那個模組
+    `asname` 也要收：`from axiomatic import webrunner_je_only as w` 之後那個模組
     仍然被載入了，改名不改變事實。
 
     **`ImportFrom.names` 那一半要過濾成「真的是模組的名字」。** 第一版把每一個
@@ -5773,7 +5791,7 @@ def test_the_bot_and_the_webrunners_never_import_each_other():
 # `test_the_permitted_channel_sentence_counts_its_own_list` 把兩個數字都從「那個括號
 # 裡的清單」與本常數推導出來。**清單本身仍然刻意不對帳**（理由見上）；被查的只有
 # 「那句話自己算得對不對」。
-_SHARED_CHANNELS_IN_USE = frozenset({"_batch_config", "_webrunner_shared"})
+_SHARED_CHANNELS_IN_USE = frozenset({"_webrunner_shared", "_process_job"})
 
 
 def _permitted_channel_claim(text: str) -> tuple[set[str], int | None, int | None]:
@@ -5919,7 +5937,7 @@ def test_no_undeclared_channel_between_the_bot_and_the_webrunners():
         f"只從 `discord_bot.py` 抽到 {len(bot)} 個專案 import（{sorted(bot)}），抽取器多半壞了"
         "——抽不到東西的話交集會是空的，這支會永遠通過。")
     variants = sorted(package.glob(f"{_WEBRUNNER_PREFIX}*.py"))
-    assert len(variants) >= 2, (
+    assert len(variants) >= 1, (
         f"只找到 {len(variants)} 個 webrunner 變體，檔名慣例大概變了。")
     webrunner: set[str] = set()
     for path in variants:
@@ -6490,9 +6508,9 @@ def test_stub_and_real_process_collapse_into_one_entry():
     正常執行中的背景程式會被永久誤報成「多了一個孤兒」。"""
     import _process_control as pc
 
-    raw = [(100, 50, "webrunner_novelai.py"),   # 轉接殼（Popen.pid 是它）
-           (101, 100, "webrunner_novelai.py")]  # 本尊（pid 檔寫的是它）
-    _eq(pc.collapse_interpreter_stub_pairs(raw), [(100, "webrunner_novelai.py")],
+    raw = [(100, 50, "webrunner_je_only.py"),   # 轉接殼（Popen.pid 是它）
+           (101, 100, "webrunner_je_only.py")]  # 本尊（pid 檔寫的是它）
+    _eq(pc.collapse_interpreter_stub_pairs(raw), [(100, "webrunner_je_only.py")],
         "一對併成一筆，留外層")
 
 
@@ -6501,8 +6519,8 @@ def test_exclude_pid_recognises_both_halves_of_the_pair():
     只認一半就等於少排除一筆——那一筆會被當成孤兒報出去。"""
     import _process_control as pc
 
-    raw = [(100, 50, "webrunner_novelai.py"),
-           (101, 100, "webrunner_novelai.py")]
+    raw = [(100, 50, "webrunner_je_only.py"),
+           (101, 100, "webrunner_je_only.py")]
     _eq(pc.collapse_interpreter_stub_pairs(raw, exclude_pid=100), [], "給外層")
     _eq(pc.collapse_interpreter_stub_pairs(raw, exclude_pid=101), [], "給內層")
 
@@ -6511,8 +6529,8 @@ def test_a_genuine_orphan_still_shows_up_next_to_a_tracked_pair():
     """併對不可以把真的孤兒一起吃掉——那才是這個掃描存在的理由。"""
     import _process_control as pc
 
-    raw = [(100, 50, "webrunner_novelai.py"),
-           (101, 100, "webrunner_novelai.py"),
+    raw = [(100, 50, "webrunner_je_only.py"),
+           (101, 100, "webrunner_je_only.py"),
            (700, 1, "webrunner_je_only.py")]   # 上次 crash 留下的，無父無母
     _eq(pc.collapse_interpreter_stub_pairs(raw, exclude_pid=100),
         [(700, "webrunner_je_only.py")], "只剩真孤兒")
@@ -6522,9 +6540,9 @@ def test_a_lone_process_without_a_stub_is_untouched():
     """不是每個直譯器都有轉接殼（`py -3` 直接跑就沒有），單筆不可以被吃掉。"""
     import _process_control as pc
 
-    raw = [(700, 1, "webrunner_novelai.py")]
+    raw = [(700, 1, "webrunner_je_only.py")]
     _eq(pc.collapse_interpreter_stub_pairs(raw),
-        [(700, "webrunner_novelai.py")], "單筆保留")
+        [(700, "webrunner_je_only.py")], "單筆保留")
 
 
 # --------------------------------------------------------------------------
@@ -6947,11 +6965,10 @@ def test_queue_usage_teaches_the_slash_command_and_not_the_file_name(monkeypatch
 
 
 def test_text_command_hints_are_one_to_one_and_real():
-    """The table rewrites hints on platforms without a slash menu; one wrong entry teaches a
-    command that cannot be typed."""
+    """對照表是給沒有斜線選單的平台改寫提示用的，錯一筆就是教人打一個打不通的指令。"""
     hints = b._text_command_hints()
-    # positive control: 107 measured on 2026-09-25 (Jeffrey_RPA).
-    assert len(hints) >= 80, f"only {len(hints)} derived -- the extraction is broken"
+    # 正對照：2026-09-25 量到 107 筆。
+    assert len(hints) >= 80, f"只推導出 {len(hints)} 筆——擷取本身壞了"
     assert hints["/gen pause"] == "!pause"
     assert hints["/todo prompt add"] == "!todo_prompt_add"
     commands = _runtime_slash_qualified()
@@ -6962,10 +6979,12 @@ def test_text_command_hints_are_one_to_one_and_real():
             shared.setdefault(bang, []).append(command.qualified_name)
     for slash, bang in hints.items():
         assert slash.lstrip("/") in commands, slash
+        if slash == "/dorossi ask":
+            assert bang == "dorossi"
+            continue
         assert shared.get(bang) == [slash.lstrip("/")], (
-            f"`{bang}` is not `{slash}`'s own text command -- a shared alias's sub-command is not "
-            "always the same word")
-    assert "/win state" not in hints, "shared aliases (`!win`) are deliberately left out"
+            f"`{bang}` 不是 `{slash}` 獨有的文字指令——共用別名的子指令不一定是同一個字")
+    assert "/win state" not in hints, "共用別名（`!win`）刻意不收"
 
 
 def test_the_chat_transports_are_built_with_the_hints(monkeypatch):
@@ -9690,7 +9709,7 @@ def test_the_spawn_path_actually_calls_the_rotation():
             rotate_line = node.lineno
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "open"
-                and any(isinstance(a, ast.Constant) and a.value == "w"
+                and any(isinstance(a, ast.Constant) and a.value == "a"
                         for a in node.args)):
             open_line = node.lineno
     assert rotate_line is not None, (
@@ -10381,7 +10400,7 @@ def test_the_surface_scan_is_not_vacuous():
 # ---------------------------------------------------------------------------
 # 監督者的存活時間必須用**單調**時鐘量
 #
-# `_watch_for_fallback` 量出來的 `alive_for` 同時驅動三個重啟決策：backoff 要不
+# `_watch_webrunner` 量出來的 `alive_for` 同時驅動三個重啟決策：backoff 要不
 # 要 reset、rapid-fail 計數要不要累加、以及那道「連續 N 次秒崩就放棄重啟」的閘。
 # 拿可調整的牆上時鐘去量，兩個方向都會**靜默**壞掉，而且壞掉的正好是那道閘存在
 # 的理由。下面兩支各釘一個方向。
@@ -10423,7 +10442,7 @@ class _WallClockShift:
 
 
 def _run_supervisor_rounds(monkeypatch, clock, max_spawns, thresholds=None):
-    """跑 `_watch_for_fallback`，回傳 (送出的訊息, 重生次數)。
+    """跑 `_watch_webrunner`，回傳 (送出的訊息, 重生次數)。
 
     `max_spawns` 是**逃生口**：修好之前其中一條路徑會無限重生（rapid-fail 計數
     被時鐘跳躍一直歸零），沒有上限的話這支測試不會變紅、會直接掛住。假的 spawner
@@ -10441,7 +10460,7 @@ def _run_supervisor_rounds(monkeypatch, clock, max_spawns, thresholds=None):
     # 的廣域 except 吞掉——測試量到「重生次數 0」，而好幾種期望值剛好就是 0。
     # 順手斷言它是 False：監督者重生的**必定**是批次，帶上旗標會讓每一次退避重生都
     # 變成單張伺服器，整條佇列從此不產圖。
-    def _fake_spawn(_variant, *, single_image_server=False):
+    def _fake_spawn(_variant="je", *, single_image_server=False):
         assert single_image_server is False, (
             "監督者重生帶了單張伺服器旗標——重生出來的行程不會跑批次佇列。")
         spawns["n"] += 1
@@ -10477,9 +10496,9 @@ def _run_supervisor_rounds(monkeypatch, clock, max_spawns, thresholds=None):
     for name, value in (thresholds or {}).items():
         monkeypatch.setattr(b, name, value)
     monkeypatch.setattr(b, "_webrunner_stop_requested", False)
-    # "selenium" 而不是 "je"：這幾支要隔離的是 rapid-fail 那道閘，不是 je →
+    # "je" 而不是 "je"：這幾支要隔離的是 rapid-fail 那道閘，不是 je →
     # selenium 的啟動視窗（那條路有它自己的時鐘讀取）。
-    monkeypatch.setattr(b, "_webrunner_variant", "selenium")
+    monkeypatch.setattr(b, "_webrunner_variant", "je")
     monkeypatch.setattr(b, "_webrunner_proc",
                         _FakeSupervisedProc(1, clock.step))
     monkeypatch.setattr(b, "_webrunner_pid", None)
@@ -10487,7 +10506,7 @@ def _run_supervisor_rounds(monkeypatch, clock, max_spawns, thresholds=None):
     async def _body():
         # `time.monotonic` 沒被動過，所以這個逾時是真的牆上 30 秒——只是最後一道
         # 保險，正常情況下迴圈是被 `max_spawns` 結束的。
-        await asyncio.wait_for(b._watch_for_fallback(_Channel()), timeout=30)
+        await asyncio.wait_for(b._watch_webrunner(_Channel()), timeout=30)
 
     asyncio.run(_body())
     return sent, spawns["n"]
@@ -10587,7 +10606,7 @@ def test_no_hand_rolled_doubling_backoff_survives_anywhere():
     """靜態守門：全專案只准有**一份**「加倍＋封頂」的實作。
 
     2026-09-11 補的。起因是同一條規則當時有兩份實作——`_supervisor.restart_backoff`
-    與 `_watch_for_fallback` 手抄的那份——而兩份的語意其實不一樣（見
+    與 `_watch_webrunner` 手抄的那份——而兩份的語意其實不一樣（見
     `test_the_first_unhealthy_respawn_waits_the_minimum_not_double_it`）。第三份就是
     這樣長出來的，所以把它結構性地擋住。
 
@@ -10775,7 +10794,7 @@ def test_no_wall_clock_interval_measurement_survives_anywhere():
         "    deadline = time.time() + 5\n"
         "    while time.time() < deadline:\n"
         "        pass\n"
-        # 條件式賦值也要抓——`_watch_for_fallback` 的 je 啟動視窗就長這樣，
+        # 條件式賦值也要抓——`_watch_webrunner` 的 je 啟動視窗就長這樣，
         # 而它正是原始回報漏掉的那一處。
         "def bad_maybe(flag):\n"
         "    t0 = time.time() if flag else None\n"
@@ -12251,8 +12270,9 @@ _JOIN_SITE_FLOOR = 40
 _JOIN_GUARD_EXEMPT = {
     ("discord_bot.py", "_count_folder_images"):
         (1,
-         "收的是 bot 自己從事件與佇列算出來的角色名，而且只回一個數字、"
-        "不送檔案，也不讀檔案內容。"),
+         "收的是 bot 自己從事件與佇列算出來的角色名，或 `/gen progress`、"
+        "`/out stats` 從產出根目錄直接列出來的資料夾名（依構造就是單一路徑元件）；"
+        "而且只回一個數字、不送檔案，也不讀檔案內容。"),
     ("discord_bot.py", "cmd_debug_show"):
         (1,
          "`candidate` 是**已經過守衛**的 `name` 前後各接一段字面值（`debug_` 與 "
@@ -12290,6 +12310,16 @@ _JOIN_GUARD_EXEMPT = {
         "的狀態檔可以帶進任意字串（同 `_run_progress.resume_folder` 那一類）。今天"
         "不列為缺陷，因為改得動那個檔的人已經有主機寫入權；真的要收緊的話，正確的"
         "位置是這支函式本身（它是 `(uid, sid)` 變成路徑的唯一入口），而不是呼叫端。"),
+    ("_webrunner_location.py", "_webrunner_candidate"):
+        (1,
+         "`_PROJECT_ROOT / path`，`path` 是擁有者寫的資料夾位置（`bot_config.json` 的 "
+        "`webrunner_path` 或環境變數 `WEBRUNNER_PATH`），而**離開 repo 根目錄正是這個"
+        "設定的用途**——預設的同層資料夾本來就在 repo 外面。接合只發生在相對路徑上"
+        "（絕對路徑原樣回傳，根本走不到這一行），目的是讓「相對路徑以 repo 根目錄為準」"
+        "不受工作目錄影響（`verify_browser` 的 je 子行程在拋棄式工作目錄裡跑）。結果只拿去"
+        "問 `is_dir()` 與插進 `sys.path`——不開檔、不寫檔、不送出去。改得動那兩個來源的人"
+        "已經有主機寫入權，所以單一路徑元件的守衛在這裡沒有要防的東西。前提由 "
+        "`test_the_webrunner_path_candidate_is_only_ever_probed` 對帳。"),
     ("_process_control.py", "newest_dependency_mtime"):
         (1,
          "`rel` 逐一走過 `rel_paths`，而 `rel_paths` 是參數、不是模組層字面值序列，"
@@ -12324,7 +12354,7 @@ _JOIN_GUARD_EXEMPT = {
         "內等於讓那句話名不副實。真正的閘門是呼叫端的身分檢查（`host` 群組在 "
         "`_OWNER_ONLY_GROUPS` 裡）。前提由 "
         "`test_the_host_path_exemption_still_has_its_owner_gate` 對帳。"),
-    ("webrunner_novelai.py", "_sync_profile_dir_back"):
+    ("webrunner_je_only.py", "_sync_profile_dir_back"):
         (2,
          "`relpath` 是**參數**，安全性取決於呼叫端，而跨函式推導在只看得到一個模組"
         "的情況下是 fail-open 的（別的模組也可能呼叫它），所以刻意不做成紀律。"
@@ -12340,7 +12370,7 @@ _JOIN_GUARD_EXEMPT = {
         "（根的來源是另一個問題）；寫在這裡是為了讓數字 2 解釋得通。"),
     ("webrunner_je_only.py", "_sync_profile_dir_back"):
         (2,
-         "同 webrunner_novelai 那一筆；兩個變體必須同步，站點數也一樣是 2。"),
+         "同 webrunner_je_only 那一筆；兩個變體必須同步，站點數也一樣是 2。"),
     ("_webrunner_shared.py", "generate_loop"):
         (1,
          "同一個站點有**兩個**追不到的運算元，理由不同，**兩個都要看**——只處置其中"
@@ -12356,7 +12386,7 @@ _JOIN_GUARD_EXEMPT = {
         "format spec 自己就是保證：實測 `format('..', '04d')`、`format('1', '04d')`、"
         "`format(1.5, '04d')` 全部 `ValueError`，非整數根本展不出來。"
         "(3) `ts` 走 `strftime`，已由紀律 (c) 放行。"),
-    ("webrunner_novelai.py", "_session_entry_present"):
+    ("webrunner_je_only.py", "_session_entry_present"):
         (2,
          "`base` 與 `relpath` 都是**參數**，跨函式推導在只看得到一個模組時是 "
         "fail-open 的（同 `_sync_profile_dir_back` 那兩筆）。這一筆另有一個量得出來"
@@ -12373,7 +12403,7 @@ _JOIN_GUARD_EXEMPT = {
         "是函式內的 `BinOp Add`。"),
     ("webrunner_je_only.py", "_session_entry_present"):
         (2,
-         "同 webrunner_novelai 那一筆；兩個變體的這一支實測**程式碼完全相同**"
+         "同 webrunner_je_only 那一筆；兩個變體的這一支實測**程式碼完全相同**"
         "（只有 docstring 依慣例縮短成指路），必須同步。"),
     ("_bot_prompts.py", "load_prompt"):
         (1,
@@ -13295,7 +13325,7 @@ def test_every_join_onto_a_base_root_is_guarded_per_join():
     # 所以：「這個檔有沒有被解析到」問 `roots_by_file`（**每一個被解析的檔都有
     # key，即使 0 站點**——實測 30 個 key 對 6 個有站點的檔）；「bot 以外真的抽到
     # 接合了嗎」問 rows，但**不指定是哪一個檔**。
-    for outside in ("_webrunner_shared.py", "webrunner_novelai.py",
+    for outside in ("_webrunner_shared.py", "webrunner_je_only.py",
                     "webrunner_je_only.py"):
         assert outside in roots_by_file, (
             f"`{outside}` 根本沒被解析——2026-09-10 這次放寬要守住的就是「規則的"
@@ -14674,7 +14704,7 @@ def test_the_dir_sync_exemption_still_only_ever_sees_constants():
         assert call_sites == 1, (
             f"{filename} 裡 `{funcname}` 的呼叫端從 1 個變成 {call_sites} 個。"
             "多一個呼叫端就多一條要驗的路徑——不是壞事，但要有人看過。")
-    assert checked == 2, (
+    assert checked == 1, (
         f"只驗到 {checked} 個 `_sync_profile_dir_back` 例外，應該是兩個變體各一。"
         "兩個 webrunner 變體必須同步。")
 
@@ -16653,20 +16683,20 @@ def test_the_base_roots_contain_no_name_that_does_not_exist():
 
 
 @pytest.mark.parametrize("source, label", [
-    ("import webrunner_novelai", "裸 import"),
-    ("import axiomatic.webrunner_novelai", "套件限定 import"),
-    ("from axiomatic.webrunner_novelai import pair_todos",
+    ("import webrunner_je_only", "裸 import"),
+    ("import axiomatic.webrunner_je_only", "套件限定 import"),
+    ("from axiomatic.webrunner_je_only import pair_todos",
      "from 套件.模組 import 名字"),
-    ("from axiomatic import webrunner_novelai", "from 套件 import 模組"),
-    ("from axiomatic import webrunner_novelai as wr", "同上，加 as"),
-    ("import webrunner_novelai as wr", "裸 import 加 as"),
+    ("from axiomatic import webrunner_je_only", "from 套件 import 模組"),
+    ("from axiomatic import webrunner_je_only as wr", "同上，加 as"),
+    ("import webrunner_je_only as wr", "裸 import 加 as"),
 ])
 def test_the_import_extractor_sees_every_way_to_reach_a_module(source, label,
                                                                tmp_path):
     """守門的 canary：**每一種**寫得出來的 import 形式都要抽得到那個模組名。
 
     這一支存在的理由是它抓到過東西：2026-09-10 之前
-    `from axiomatic import webrunner_novelai` 只會抽到 `"axiomatic"`，於是
+    `from axiomatic import webrunner_je_only` 只會抽到 `"axiomatic"`，於是
     `CLAUDE.md` 的核心架構不變量（bot 不得 import webrunner）、循環相依那道、
     以及 `legacy/` 那道**三條一起**對這個寫法是瞎的。而它不是假想的寫法：
     `start_webrunner.py` 本來就是這樣 import `_chrome_slot` 的。
@@ -16676,8 +16706,8 @@ def test_the_import_extractor_sees_every_way_to_reach_a_module(source, label,
     probe = tmp_path / "probe.py"
     probe.write_text(source + "\n", encoding="utf-8")
     seen = _module_imports(probe)
-    assert "webrunner_novelai" in seen, (
-        f"「{label}」這種寫法抽不到 `webrunner_novelai`（抽到 {sorted(seen)}）"
+    assert "webrunner_je_only" in seen, (
+        f"「{label}」這種寫法抽不到 `webrunner_je_only`（抽到 {sorted(seen)}）"
         "——這個形式對模組邊界守門是隱形的。")
 
 
@@ -16691,11 +16721,11 @@ def test_the_import_extractor_does_not_invent_module_names(tmp_path):
     probe.write_text(
         "import json\n"
         "from pathlib import Path\n"
-        "# import webrunner_novelai  ← 註解不算\n"
+        "# import webrunner_je_only  ← 註解不算\n"
         "TEXT = 'from axiomatic import discord_bot'  # 字串也不算\n",
         encoding="utf-8")
     seen = _module_imports(probe)
-    assert "webrunner_novelai" not in seen, "註解被當成 import 了"
+    assert "webrunner_je_only" not in seen, "註解被當成 import 了"
     assert "discord_bot" not in seen, "字串字面值被當成 import 了"
     # `Path` 是類別不是模組，收窄之後**刻意**不再出現——這正是新判準要的行為。
     # 這一行本來寫成期待它在裡面，是照著加寬版寫的；收窄之後它就成了錯的期待。
@@ -16770,7 +16800,7 @@ def test_only_the_one_shot_spawn_declares_single_image_server_mode():
     # 正面對照：抽不到東西的擷取器，輸出跟「全部都對」一模一樣。實測是 4 個呼叫
     # 點（one-shot 一個、備援一個、監督者重生一個、`/run` 一個），下限刻意設在
     # 真實數字上而不是 0。
-    assert len(sites) >= 4, (
+    assert len(sites) >= 3, (
         f"只找到 {len(sites)} 個 `_spawn_webrunner` 呼叫點：{sites}。"
         "擷取器多半壞了——一個什麼都比對不到的擷取器會安靜地通過下面每一條。")
 
@@ -16855,7 +16885,7 @@ def test_the_declared_mode_reaches_the_child_process_argv(monkeypatch, tmp_path)
         monkeypatch.setattr(b, name, value)
 
     try:
-        ok, _status = b._spawn_webrunner("je", single_image_server=True)
+        ok, _status = b._spawn_webrunner(single_image_server=True)
         assert ok and len(recorded) == 1, f"spawn 沒成功：{recorded}"
         assert ws.SINGLE_IMAGE_SERVER_FLAG in recorded[0], (
             f"單張伺服器的 argv 裡沒有旗標：{recorded[0]}。那個行程會去跑整條"
@@ -16864,7 +16894,7 @@ def test_the_declared_mode_reaches_the_child_process_argv(monkeypatch, tmp_path)
             "argv 說是單張伺服器，`_webrunner_oneshot` 卻說不是——`/run` / `/stop`"
             " 與 reaper 都靠它判斷要不要走 one-shot 收尾路徑。")
 
-        ok, _status = b._spawn_webrunner("je")
+        ok, _status = b._spawn_webrunner()
         assert ok and len(recorded) == 2, f"spawn 沒成功：{recorded}"
         assert ws.SINGLE_IMAGE_SERVER_FLAG not in recorded[1], (
             f"批次的 argv 裡混進了旗標：{recorded[1]}。這是更貴的那個方向——"
@@ -16930,7 +16960,7 @@ def test_the_spawned_webrunner_is_told_to_speak_utf8(monkeypatch, tmp_path):
     try:
         # 第一半：環境裡**沒有**那個變數（fresh clone / 服務帳號的常態）。
         monkeypatch.delenv("PYTHONIOENCODING", raising=False)
-        ok, _status = b._spawn_webrunner("je")
+        ok, _status = b._spawn_webrunner()
         assert ok and len(recorded) == 1, f"spawn 沒成功：{recorded}"
         env = recorded[0].get("env")
         assert env is not None, (
@@ -16948,7 +16978,7 @@ def test_the_spawned_webrunner_is_told_to_speak_utf8(monkeypatch, tmp_path):
         for name, value in (("_webrunner_log_handle", None),
                             ("_webrunner_proc", None)):
             monkeypatch.setattr(b, name, value)
-        ok, _status = b._spawn_webrunner("je")
+        ok, _status = b._spawn_webrunner()
         assert ok and len(recorded) == 1, f"spawn 沒成功：{recorded}"
         env = recorded[0].get("env")
         assert env is not None and env.get("PYTHONIOENCODING") == "utf-8", (
@@ -19616,11 +19646,11 @@ def test_eta_adds_work_the_rests_ahead_and_the_rest_in_progress(monkeypatch):
     ETA 會短報整段休息。"""
     queues = (["p1", "p2", "p3"], ["a", "b", "c"], [], [])
     _content, fields, _ = _eta(monkeypatch, queues)
-    assert fields["pairs"] == "3" and fields["rest periods"] == "0 × 2.0h"
-    assert fields["raw work"] == fields["total wall time"]
+    assert fields["組數"] == "3" and fields["排程休息"] == "0 × 2.0h"
+    assert fields["產圖工時"] == fields["總等待時間"]
     _content, resting, _ = _eta(monkeypatch, queues, rest_until=3600)
-    assert "resting now" in resting["rest periods"]
-    assert resting["total wall time"] != resting["raw work"]
+    assert "resting now" in resting["排程休息"]
+    assert resting["總等待時間"] != resting["產圖工時"]
 
 
 @pytest.mark.parametrize("limit_hours, rests, old_rests", [
@@ -19640,9 +19670,9 @@ def test_eta_counts_rests_the_way_the_batch_takes_them(monkeypatch, limit_hours,
     queues = ([f"p{i}" for i in range(6)], [f"c{i}" for i in range(6)], [], [])
     _content, fields, _ = _eta(monkeypatch, queues,
                                cfg={"schedule_limit_hours": limit_hours})
-    assert fields["rest periods"] == f"{rests} × 2.0h", fields
-    assert fields["raw work"] == b._format_duration(3600), fields
-    assert fields["total wall time"] == b._format_duration(3600 + rests * 2 * 3600), fields
+    assert fields["排程休息"] == f"{rests} × 2.0h", fields
+    assert fields["產圖工時"] == b._format_duration(3600), fields
+    assert fields["總等待時間"] == b._format_duration(3600 + rests * 2 * 3600), fields
 
 
 def test_eta_hands_the_rest_count_to_the_helper_and_renders_its_answer(monkeypatch):
@@ -19661,8 +19691,8 @@ def test_eta_hands_the_rest_count_to_the_helper_and_renders_its_answer(monkeypat
     pairs, per_char, limit = calls[0]
     assert (pairs, limit) == (6, 0.25), calls
     assert math.isclose(per_char, 10 * 60 / 3600), f"每個角色應該是 10 分鐘，拿到 {per_char} 小時"
-    assert fields["rest periods"] == "7 × 2.0h", fields
-    assert fields["total wall time"] == b._format_duration(3600 + 7 * 2 * 3600), fields
+    assert fields["排程休息"] == "7 × 2.0h", fields
+    assert fields["總等待時間"] == b._format_duration(3600 + 7 * 2 * 3600), fields
 
 
 @pytest.mark.parametrize("pairs, per_char, limit, expected", [
@@ -19773,7 +19803,7 @@ def test_the_eta_rest_count_matches_the_batch_rest_rule():
 def test_eta_says_where_an_end_marker_caps_the_estimate(monkeypatch):
     queues = (["p1", "p2", "end", "p4"], ["a", "b", "c", "d"], [], [])
     _content, fields, footer = _eta(monkeypatch, queues)
-    assert fields["pairs"] == "2" and "entry #3" in footer, (fields, footer)
+    assert fields["組數"] == "2" and "entry #3" in footer, (fields, footer)
 
 
 class _AllowdirEnv:
@@ -21412,6 +21442,46 @@ def test_a_scheduled_run_never_stores_a_non_integer_channel(monkeypatch, tmp_pat
     stored = json.loads(target.read_text(encoding="utf-8"))["channel_id"]
     assert type(stored) is int, (channel_id, stored)
     assert stored == (b.CHANNEL_ID if expected is None else expected), (channel_id, stored)
+
+
+
+
+def test_a_spawn_during_a_stop_is_refused_before_it_touches_anything(
+        monkeypatch, tmp_path):
+    """`/stop` 設了旗標之後，supervisor 的 backoff 睡醒再來 spawn 要被擋下。
+
+    擋的位置也要對：必須在**截斷 log 之前**。`/stop` 還在收尾的時候那份 log 是
+    剛結束那一輪的唯一紀錄，被一次注定失敗的 spawn 以 `"w"` 打開就沒了。所以這裡
+    除了「沒有開行程」，也看 log 有沒有被動過。"""
+    recorded: list = []
+
+    def _fake_popen(argv, **_kwargs):
+        recorded.append(list(argv))
+        raise AssertionError("stop 進行中還開了行程")
+
+    for name in ("WEBRUNNER_LOG", "WEBRUNNER_LOG_PREV", "EVENTS_FILE",
+                 "AUDIT_FILE", "GENERATE_HISTORY_FILE", "DOROSSI_EVENTS_FILE"):
+        monkeypatch.setattr(b, name, tmp_path / getattr(b, name).name)
+    b.WEBRUNNER_LOG.write_text("上一輪的收尾紀錄\n", encoding="utf-8")
+    saved: list = []
+    monkeypatch.setattr(b, "_save_pid", lambda *a, **k: saved.append(a))
+    monkeypatch.setattr(b.subprocess, "Popen", _fake_popen)
+    for name, value in (("_webrunner_stop_requested", True),
+                        ("_webrunner_log_handle", None),
+                        ("_webrunner_proc", None),
+                        ("_webrunner_pid", None),
+                        ("_webrunner_oneshot", False)):
+        monkeypatch.setattr(b, name, value)
+    try:
+        ok, status = b._spawn_webrunner()
+    finally:
+        handle = b._webrunner_log_handle
+        if handle is not None and not handle.closed:
+            handle.close()
+    assert ok is False and "stop" in status
+    assert recorded == [] and saved == []
+    assert b.WEBRUNNER_LOG.read_text(encoding="utf-8") == "上一輪的收尾紀錄\n"
+    assert b._webrunner_log_handle is None
 
 
 if __name__ == "__main__":

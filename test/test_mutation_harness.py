@@ -991,12 +991,12 @@ def test_no_live_batch_means_no_restriction(monkeypatch):
 def test_the_import_closure_follows_transitive_imports():
     """閉包要跟著**間接**匯入走，不是只看第一層。
 
-    `webrunner_novelai` 直接 import `_webrunner_shared`，而後者再往下帶出別的
+    `webrunner_je_only` 直接 import `_webrunner_shared`，而後者再往下帶出別的
     模組；只看第一層的話，那些間接依賴會落在防線外——而它們一樣會被重生的行程
     載入。這裡順便釘住「只認本套件內真的存在的模組」（stdlib 不該混進來）。
     """
-    closure = mh._import_closure("webrunner_novelai")
-    assert "webrunner_novelai" in closure, "閉包要含自己"
+    closure = mh._import_closure("webrunner_je_only")
+    assert "webrunner_je_only" in closure, "閉包要含自己"
     assert "_webrunner_shared" in closure, "第一層都沒進來"
     assert "_chrome_slot" in closure, (
         "間接依賴沒有被跟到——只看第一層的閉包擋不住真正的風險面")

@@ -10,7 +10,7 @@
 | 需要 | 為什麼 | 沒有的話 |
 |---|---|---|
 | **Windows 10/11** | 桌面自動化、Chrome 視窗、工作排程器都是 Windows API | 其他平台上大部分功能不會動 |
-| **Python 3.10+** | 建議用 `py -3` 啟動器 | — |
+| **Python 3.13+** | 建議用 `py -3` 啟動器 | — |
 | **Google Chrome** | webrunner 用 Selenium 驅動真的瀏覽器 | 批次產圖用不了 |
 | **至少一個聊天平台的 bot 帳號與 token** | bot 要有地方上線；預設是有原生斜線選單的那個平台 | bot 起不來 |
 | **出圖服務的帳號** | webrunner 要登入才能產圖 | 批次產圖用不了 |
@@ -160,7 +160,7 @@ bot 上線後在設定的頻道打 `/help` 看完整指令清單（可選 `tw` /
 2. **獨立啟動器**：
 
    ```powershell
-   py -3 start_webrunner.py          # 預設 selenium 變體
+   py -3 start_webrunner.py          # 單一 je 入口
    py -3 start_webrunner.py je       # je 變體
    ```
 
@@ -180,7 +180,7 @@ gitignored）。之後就不必再登入。
 
 ```powershell
 # 從 repo 根目錄做 import 煙霧測試，應印出 OK
-py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_novelai; print('OK')"
+py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_je_only; print('OK')"
 
 # 隔離的瀏覽器驗證（不碰正式設定檔與正式 profile）
 py -3 axiomatic/verify_browser.py
@@ -215,3 +215,14 @@ py -3 -m sphinx -b html docs docs/_build/html
 ```
 
 完成後開 `docs/_build/html/index.html`。
+
+### 只啟用狀態偵測與更新
+
+
+```powershell
+py -3 install_autostart.py --install --presence-only
+py -3 start_discord_bot.py --platform discord --presence-only
+py -3 wake_autostart.py --presence-only
+```
+
+使用 `--presence-only` 只執行本機狀態偵測、bot 活動更新與本機 RPC。指令、批次監督、排程與其他平台服務均不啟動。此模式只支援 Discord。註冊時會停用其他既有 Axiomatic 登入工作，包含批次，不會停止正在執行的程式。叫醒指令要求工作已註冊為此模式。直接執行 `start_discord_bot.py` 時省略旗標即可完整執行；再次以 `--install` 註冊會恢復設定中的登入工作。叫醒工作一律沿用註冊模式。

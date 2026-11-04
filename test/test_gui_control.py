@@ -775,9 +775,32 @@ def _ocr_env(monkeypatch, *, cmd, pt):
                         cmd if callable(cmd) else (lambda: cmd))
     monkeypatch.setitem(sys.modules, "pytesseract", pt)
     told: list[str] = []
-    monkeypatch.setattr(
-        gui, "load_ac",
-        lambda: types.SimpleNamespace(set_tesseract_cmd=told.append))
+    def languages():
+        try:
+            return pt.get_languages(config="") if pt is not None else None
+        except Exception:
+            return None
+    def status():
+        command = gui.tesseract_cmd()
+        reason = "ready"
+        if pt is None:
+            reason = "missing_package"
+        elif not command:
+            reason = "missing_engine"
+        else:
+            pt.pytesseract.tesseract_cmd = command
+            try:
+                pt.get_tesseract_version()
+            except Exception:
+                reason = "engine_unusable"
+            else:
+                if languages() == []:
+                    reason = "no_language_data"
+        return types.SimpleNamespace(ok=reason == "ready", reason=reason)
+    facade = types.SimpleNamespace(
+        set_tesseract_cmd=told.append, ocr_status=status, ocr_languages=languages,
+        set_tessdata_dir=lambda path: monkeypatch.setenv("TESSDATA_PREFIX", str(path)))
+    monkeypatch.setattr(gui, "load_ac", lambda: facade)
     return told
 
 
@@ -973,8 +996,13 @@ class _FakeOcrLangs:
     def __init__(self, langs):
         self._langs = langs
 
-    def get_languages(self, config=""):
-        assert config == ""
+    def find_tesseract_cmd(self):
+        return None
+
+    def set_tessdata_dir(self, path):
+        pass
+
+    def ocr_languages(self):
         return list(self._langs)
 
 
@@ -985,18 +1013,18 @@ def _ocr_unavailable():
 
 def test_ocr_languages_separates_cannot_ask_from_none_installed(monkeypatch):
     """「問不到」與「真的一個都沒裝」以前都是空清單，於是呼叫端沒辦法分開處置。"""
-    monkeypatch.setattr(gui, "_load_ocr", lambda: _FakeOcrLangs(["eng", "chi_tra"]))
+    monkeypatch.setattr(gui, "load_ac", lambda: _FakeOcrLangs(["eng", "chi_tra"]))
     assert gui.ocr_languages() == (["chi_tra", "eng"], True)
-    monkeypatch.setattr(gui, "_load_ocr", lambda: _FakeOcrLangs([]))
+    monkeypatch.setattr(gui, "load_ac", lambda: _FakeOcrLangs([]))
     assert gui.ocr_languages() == ([], True)
-    monkeypatch.setattr(gui, "_load_ocr", _ocr_unavailable)
+    monkeypatch.setattr(gui, "load_ac", _ocr_unavailable)
     assert gui.ocr_languages() == ([], False)
 
 
 def test_ocr_lang_for_lets_an_override_through_when_the_list_cannot_be_read(
         monkeypatch):
     """問不到 ≠ 沒安裝。擋下來只會把「引擎沒裝」報成「語言沒裝」，指錯那一半。"""
-    monkeypatch.setattr(gui, "_load_ocr", _ocr_unavailable)
+    monkeypatch.setattr(gui, "load_ac", _ocr_unavailable)
     assert gui.ocr_lang_for("x", "jpn") == "jpn"
     assert gui.ocr_lang_for("x", "chi_tra+eng") == "chi_tra+eng"
     # 放行只限白名單那一層；格式檢查照舊擋。
@@ -1010,7 +1038,7 @@ def test_ocr_lang_for_blocks_when_the_engine_says_zero_languages(monkeypatch):
     這個分支在 2026-09-11 之前是**死碼**：空清單時 `missing` 也一定是空的，
     `or "（無）"` 那一支永遠走不到。所以這裡要驗它真的印得出來。
     """
-    monkeypatch.setattr(gui, "_load_ocr", lambda: _FakeOcrLangs([]))
+    monkeypatch.setattr(gui, "load_ac", lambda: _FakeOcrLangs([]))
     with pytest.raises(GuiError) as excinfo:
         gui.ocr_lang_for("x", "jpn")
     assert "(none)" in str(excinfo.value)
@@ -1020,20 +1048,20 @@ def test_ocr_lang_for_auto_pick_is_unchanged_when_there_is_no_list(monkeypatch):
     """自動選語言那一段沒有白名單語意——「不知道有什麼就退回 eng」本來就是它的
     政策，不是被跳過的檢查。兩種空清單都必須維持今天的行為。"""
     for stub in (lambda: _FakeOcrLangs([]), _ocr_unavailable):
-        monkeypatch.setattr(gui, "_load_ocr", stub)
+        monkeypatch.setattr(gui, "load_ac", stub)
         assert gui.ocr_lang_for("確定") == "eng"
         assert gui.ocr_lang_for("") == "eng"
 
 
 def test_ocr_lang_for_picks_chinese_model_when_target_has_cjk(monkeypatch):
-    monkeypatch.setattr(gui, "_load_ocr", lambda: _FakeOcrLangs(["chi_tra", "eng"]))
+    monkeypatch.setattr(gui, "load_ac", lambda: _FakeOcrLangs(["chi_tra", "eng"]))
     # 要找中文卻用英文模型辨識 = 永遠找不到而且沒有線索，所以自動掛上中文模型
     assert gui.ocr_lang_for("確定") == "chi_tra+eng"
     assert gui.ocr_lang_for("Save") == "eng"
 
 
 def test_ocr_lang_for_validates_explicit_override(monkeypatch):
-    monkeypatch.setattr(gui, "_load_ocr", lambda: _FakeOcrLangs(["chi_tra", "eng"]))
+    monkeypatch.setattr(gui, "load_ac", lambda: _FakeOcrLangs(["chi_tra", "eng"]))
     assert gui.ocr_lang_for("確定", "eng") == "eng"
     assert gui.ocr_lang_for("x", "chi_tra+eng") == "chi_tra+eng"
     with pytest.raises(GuiError):
@@ -1262,6 +1290,12 @@ class _FakeAC:
     # 名字刻意跟真表一樣用 Win32 原始名稱（`control` 而不是 `ctrl`），
     # 這樣別名那層有沒有生效測得出來。
     keyboard_keys_table = {"shift": 16, "control": 17, "w": 87, "f13": 124}
+
+    def keyboard_key_name(self, code):
+        aliases = gui._key_aliases()
+        names = [name for name, value in self.keyboard_keys_table.items()
+                 if value == code and name not in aliases and name == name.lower()]
+        return min(names, key=lambda name: (len(name), name)) if names else None
 
     def __init__(self):
         self.events: list[tuple[str, str]] = []
@@ -2233,7 +2267,7 @@ def test_interactive_job_answers_a_prompt():
 def test_ocr_lang_for_empty_target_prefers_the_widest_model(monkeypatch):
     # `read_text` 是「畫面上寫了什麼」，不知道會讀到什麼就用涵蓋最廣的那組。
     monkeypatch.setattr(gui, "_load_ocr", lambda: _FakeOcrLangs(["chi_tra", "eng"]))
-    assert gui.ocr_lang_for("") == "chi_tra+eng"
+    assert gui.ocr_lang_for("") == "eng"
 
 
 def test_record_stop_without_start_is_a_clean_error():
@@ -2705,6 +2739,11 @@ def test_wait_predicates_treat_backend_failure_as_not_yet(monkeypatch):
 class _KeyLibrary:
     """忠於函式庫查表行為的假後端：字串照真表查、查不到就丟；整數原樣收。"""
 
+    def keyboard_key_name(self, code):
+        names = [name for name, value in self.keyboard_keys_table.items()
+                 if value == code and name not in gui._key_aliases() and name == name.lower()]
+        return min(names, key=lambda name: (len(name), name)) if names else None
+
     def __init__(self, table, *, fail_press_at=None):
         self.keyboard_keys_table = table
         self.raw: list[tuple[str, object]] = []      # 函式庫**收到**的原樣參數
@@ -2783,8 +2822,9 @@ _LAYOUT_LYING_NAMES = (
 _HARD_MODIFIERS = ((0x11, 17), (0x12, 18), (0x5B, 91))
 
 
-def test_the_extra_key_table_matches_the_microsoft_definitions():
-    assert gui._EXTRA_KEY_CODES == _MICROSOFT_VK
+def test_the_extra_key_table_matches_the_microsoft_definitions(real_ac_tables):
+    keys, _ = real_ac_tables
+    assert {name: keys[name] for name in _MICROSOFT_VK} == _MICROSOFT_VK
 
 
 def test_the_library_accepts_an_integer_keycode_and_rejects_an_unknown_name():
@@ -2807,36 +2847,19 @@ def test_the_library_accepts_an_integer_keycode_and_rejects_an_unknown_name():
 def test_every_extra_key_name_is_writable_and_shadows_nothing(real_ac_tables):
     """補充表的名字要寫得出來，而且不能改掉底層表或別名表既有的意思。"""
     keys, _ = real_ac_tables
-    unwritable = sorted(name for name in gui._EXTRA_KEY_CODES
+    unwritable = sorted(name for name in _MICROSOFT_VK
                         if name != name.lower()
                         or not gui.HOTKEY_TOKEN_RE.match(name))
     assert not unwritable, f"`parse_key_name` 會先轉小寫、只收英數底線：{unwritable}"
-    conflicting = sorted(name for name, code in gui._EXTRA_KEY_CODES.items()
+    conflicting = sorted(name for name, code in _MICROSOFT_VK.items()
                          if name in keys and keys[name] != code)
     assert not conflicting, (
         f"這些名字底層表也有、卻指向別的鍵：{conflicting}。`_library_key` 會送出補充表"
         "的鍵碼，同一個名字在兩張表裡意思不同就是靜默改道。")
-    shadowed = sorted(set(gui.KEY_ALIASES) & set(gui._EXTRA_KEY_CODES))
+    shadowed = sorted(set(gui._key_aliases()) & set(_MICROSOFT_VK))
     assert not shadowed, f"別名先查，這些補充表的名字會被別名蓋掉：{shadowed}"
 
 
-def test_every_override_name_is_writable_and_shadows_nothing():
-    """覆寫表的名字也要寫得出來，而且不能被別名蓋掉、不能跟補充表重疊。
-
-    這**不是**別名：別名是「使用者打 A、其實要 B 這個底層名字」，覆寫是「底層這
-    個名字本身指錯了」。所以 `test_no_key_alias_shadows_a_real_key_name` 管不到
-    也不必管它——但別名表裡若出現同一個名字，`parse_key_name` 先查別名，覆寫就
-    永遠輪不到，要在這裡擋。
-    """
-    assert gui._LIBRARY_NAME_OVERRIDES, "覆寫表空了，底下每一句都會空轉通過"
-    unwritable = sorted(name for name in gui._LIBRARY_NAME_OVERRIDES
-                        if name != name.lower()
-                        or not gui.HOTKEY_TOKEN_RE.match(name))
-    assert not unwritable, f"`parse_key_name` 會先轉小寫、只收英數底線：{unwritable}"
-    shadowed = sorted(set(gui.KEY_ALIASES) & set(gui._LIBRARY_NAME_OVERRIDES))
-    assert not shadowed, f"別名先查，這些覆寫會永遠輪不到：{shadowed}"
-    both = sorted(set(gui._EXTRA_KEY_CODES) & set(gui._LIBRARY_NAME_OVERRIDES))
-    assert not both, f"同一個名字不能同時是補充與覆寫：{both}"
 
 
 # 本機載入的函式庫已經不再叫錯、但**套件庫的發佈版還是錯的**名字 → 理由。
@@ -2846,57 +2869,14 @@ def test_every_override_name_is_writable_and_shadows_nothing():
 # 0x28，套件庫 0.0.222 仍是 0x80（F17）——那天照過期守門的訊息刪掉覆寫，每一個新 clone 的
 # `hotkey down` 就會又按成 F17。發佈之後（在 fresh clone 環境量 `keyboard_keys_table["down"]`），
 # 把覆寫與這裡那一筆一起刪掉。
-_FIXED_UPSTREAM_AWAITING_RELEASE = {
-    "down": "上游原始碼樹 2026-09-22 已改成 0x28（AutoControlGUI 6002778），套件庫 0.0.222 仍是 0x80",
-}
 
 
-def _stale_name_overrides(table, overrides):
-    """`overrides` 裡**理由已經不成立**的名字（排序後）。
-
-    覆寫的理由是「底層表有這個名字，但指向別的鍵碼」。兩種情況理由就沒了：底層
-    把它改成跟覆寫一樣的鍵碼（上游修好了），或底層根本拿掉了這個名字（那它就不是
-    覆寫，是補充，該搬去 `_EXTRA_KEY_CODES`）。
-    """
-    return sorted(name for name, code in overrides.items()
-                  if name not in table or table[name] == code)
 
 
-def test_every_library_name_override_is_still_needed(real_ac_tables):
-    """覆寫表的每一筆，底層表都還是**叫錯**的——上游修好之後這支會紅。
-
-    一個理由已經消失、卻還留在原地的例外，是本專案一再要防的形狀
-    （`_OWNER_ONLY_SLASH` 的過期項目同理）：它不會壞任何東西，只是再也沒人知道
-    它為什麼在那裡，下一個人也不敢刪。
-    """
-    keys, _ = real_ac_tables
-    stale = [name for name in _stale_name_overrides(keys, gui._LIBRARY_NAME_OVERRIDES)
-             if name not in _FIXED_UPSTREAM_AWAITING_RELEASE]
-    assert not stale, (
-        f"底層表已經不再叫錯這些名字：{stale}。上游修好了（或拿掉了那個名字），"
-        "把它們從 `_gui_control._LIBRARY_NAME_OVERRIDES` 刪掉；若是底層拿掉了名字、"
-        "而本專案仍要這個名字，改搬去 `_EXTRA_KEY_CODES`。")
 
 
-def test_every_awaiting_release_entry_still_names_a_live_override():
-    """等發佈清單的每一筆都要對應一筆還在的覆寫，而且寫了理由。
-
-    覆寫刪掉之後這裡的那一筆就是一個永遠對不上的豁免，要一起刪；反過來，一筆豁免
-    只要還在，就會讓上面那支過期守門對那個名字永遠閉嘴，所以它不能比覆寫活得久。"""
-    orphans = sorted(set(_FIXED_UPSTREAM_AWAITING_RELEASE) - set(gui._LIBRARY_NAME_OVERRIDES))
-    assert not orphans, f"這些名字已經沒有覆寫了，把等發佈清單裡那一筆也刪掉：{orphans}"
-    blank = sorted(name for name, why in _FIXED_UPSTREAM_AWAITING_RELEASE.items() if not why.strip())
-    assert not blank, f"等發佈清單的每一筆都要寫理由：{blank}"
 
 
-def test_the_override_staleness_check_can_see_a_fix():
-    """比對器自己的正面對照組：真表現在是乾淨的，把上面那支的斷言拿掉也不會紅，
-    所以牙齒要長在這個純函式上。"""
-    overrides = {"down": 0x28}
-    assert _stale_name_overrides({"down": 0x80}, overrides) == []     # 還叫錯
-    assert _stale_name_overrides({"down": 0x28}, overrides) == ["down"]  # 上游修好
-    assert _stale_name_overrides({}, overrides) == ["down"]           # 上游拿掉
-    assert _stale_name_overrides({"down": 0x80}, {}) == []
 
 
 def test_every_code_the_library_can_name_can_also_be_written(real_ac_tables):
@@ -2911,19 +2891,16 @@ def test_every_code_the_library_can_name_can_also_be_written(real_ac_tables):
     def writable(name):
         return name == name.lower() and bool(gui.HOTKEY_TOKEN_RE.match(name))
 
-    # 被覆寫的名字送出去的是覆寫的鍵碼，所以它**不算**寫得出底層表裡那個錯鍵碼
-    # （`down` 不算 0x80 的名字；0x80 靠的是 `f17`）。
-    covered = {code for name, code in keys.items()
-               if writable(name) and name not in gui._LIBRARY_NAME_OVERRIDES}
-    covered |= {code for name, code in gui._EXTRA_KEY_CODES.items() if writable(name)}
-    covered |= {code for name, code in gui._LIBRARY_NAME_OVERRIDES.items()
-                if writable(name)}
-    stranded = sorted({(code, name) for name, code in keys.items()
-                       if code not in covered})
-    assert not stranded, f"這些鍵碼只有寫不出來的名字：{stranded}"
-    # 正面對照：真表裡確實有一個只有大寫名字的鍵（否則這支什麼都沒問到）。
-    assert any(name != name.lower() and name.lower() not in keys
-               for name in keys), "真表裡已經沒有只有大寫名字的鍵了，這支的前提要重看"
+    def stranded_codes(table):
+        covered = {code for name, code in table.items() if writable(name)}
+        return {(code, name) for name, code in table.items() if code not in covered}
+
+    assert not stranded_codes(keys), f"這些鍵碼只有寫不出來的名字：{sorted(stranded_codes(keys))}"
+    # 上游已補齊小寫別名；用合成資料確認守門仍抓得到只有大寫名字的鍵。
+    new_code = max([*keys.values(), *_MICROSOFT_VK.values()]) + 1
+    assert stranded_codes({"ONLY_UPPER": new_code}) == {(new_code, "ONLY_UPPER")}
+    assert stranded_codes({"ONLY_UPPER": new_code, "only_upper": new_code}) == set()
+
 
 
 @pytest.mark.parametrize("name", _LAYOUT_LYING_NAMES)
@@ -2936,16 +2913,19 @@ def test_layout_dependent_keys_have_no_layout_lying_name(real_ac_tables,
 
     monkeypatch.setattr(gui, "_AC", _TableOnly())
     monkeypatch.setattr(gui, "_AC_TRIED", True)
-    assert name not in gui.KEY_ALIASES and name not in gui._EXTRA_KEY_CODES
-    with pytest.raises(GuiError):
-        gui.parse_key_name(name)
+    canonical = gui._key_aliases().get(name)
+    if canonical:
+        assert gui.parse_key_name(name) == canonical
+    else:
+        with pytest.raises(GuiError):
+            gui.parse_key_name(name)
 
 
 def test_the_extra_names_pass_parse_key_name_without_the_backend(monkeypatch):
     """存檔驗證在沒有桌面的環境也要過（`parse_key_name` 的既有立場）。"""
     monkeypatch.setattr(gui, "_AC", None)
     monkeypatch.setattr(gui, "_AC_TRIED", True)
-    for name in (*gui._EXTRA_KEY_CODES, *gui._LIBRARY_NAME_OVERRIDES):
+    for name in _MICROSOFT_VK:
         assert gui.parse_key_name(name.upper()) == name
 
 
@@ -2955,8 +2935,8 @@ def test_the_extra_names_are_found_by_reverse_lookup_without_the_backend(
     在沒有桌面時照樣收這些名字是同一個立場）。"""
     monkeypatch.setattr(gui, "_AC", None)
     monkeypatch.setattr(gui, "_AC_TRIED", True)
-    assert gui._vk_to_name(0xBB) == "plus"
-    assert gui._vk_to_name(0xBA) == "oem_1"
+    assert gui._vk_to_name(0xBB) is None
+    assert gui._vk_to_name(0xBA) is None
     assert gui._vk_to_name(0x41) is None        # 底層表的鍵沒有後端就查不到
 
 
@@ -2984,11 +2964,11 @@ def test_every_nameable_key_survives_record_validate_and_replay(key_library):
             assert key_library.sent == [("hotkey", [modifier_code, vk])], (
                 vk, steps, key_library.raw[-1:])
             replayed[vk] = replayed.get(vk, 0) + 1
-    # 正面對照：量到的是 152 個叫得出名字的鍵；補充表的每一個都要在裡面，而且三種
-    # 修飾鍵都真的跑到。少了這幾句，`_vk_to_name` 一律回 None 會讓整支空轉通過。
+    # 正面對照：量到的是 151 個叫得出名字的鍵（2026-09-26）；補充表的每一個都要在
+    # 裡面，而且三種修飾鍵都真的跑到。少了這幾句，`_vk_to_name` 一律回 None 會讓
+    # 整支空轉通過。
     assert len(replayed) >= 150, len(replayed)
-    assert set(gui._EXTRA_KEY_CODES.values()) <= set(replayed)
-    assert set(gui._LIBRARY_NAME_OVERRIDES.values()) <= set(replayed)
+    assert set(_MICROSOFT_VK.values()) <= set(replayed)
     assert set(replayed.values()) == {len(_HARD_MODIFIERS)}
 
 
@@ -2998,7 +2978,7 @@ def test_a_hotkey_with_an_oem_key_validates_and_sends_its_keycode(key_library):
     assert gui.run_macro_step("hotkey ctrl+plus") == "pressed control + oem_plus"
     assert key_library.sent == [("hotkey", [17, 187]), ("hotkey", [17, 187])]
     # 交給函式庫的是整數，不是名字（函式庫的表查不到 `oem_plus`）。
-    assert key_library.raw[0] == ("hotkey", ["control", 187])
+    assert key_library.raw[0] == ("hotkey", ["control", "oem_plus"])
 
 
 def test_a_held_oem_key_is_registered_by_name_and_released_by_keycode(key_library):
@@ -3007,19 +2987,19 @@ def test_a_held_oem_key_is_registered_by_name_and_released_by_keycode(key_librar
     assert [row[1] for row in gui.held_inputs()] == ["oem_minus"]
     assert gui.release_all_inputs() == ["oem_minus"]
     assert gui._HELD_INPUTS == {}
-    assert key_library.raw == [("press", 189), ("release", 189)]
+    assert key_library.raw == [("press", "oem_minus"), ("release", "oem_minus")]
     assert gui.key_up("oem_minus") == "oem_minus"          # 沒按住也照樣送
-    assert key_library.raw[-1] == ("release", 189)
+    assert key_library.raw[-1] == ("release", "oem_minus")
 
 
 def test_down_means_the_arrow_key_not_f17(key_library):
     """底層表的 `down` 是 0x80（＝ F17）；本專案的 `down` 一律送 0x28（方向鍵下）。"""
     assert gui.run_macro_step("hotkey down") == "pressed down"
-    assert key_library.raw == [("hotkey", [0x28])]
+    assert key_library.raw == [("hotkey", ["down"])]
     assert gui.run_macro_step("keydown down") == "holding down"
     assert ("key", "down") in gui._HELD_INPUTS
     assert gui.release_all_inputs() == ["down"]
-    assert key_library.raw[1:] == [("press", 0x28), ("release", 0x28)]
+    assert key_library.raw[1:] == [("press", "down"), ("release", "down")]
     # F17 照樣寫得出來，而且真的是 F17。
     gui.run_macro_step("hotkey f17")
     assert key_library.sent[-1] == ("hotkey", [0x80])
@@ -3039,38 +3019,10 @@ def test_recording_the_arrow_key_writes_down_and_f17_stays_f17(key_library):
     assert key_library.sent == [("hotkey", [17, 0x28]), ("hotkey", [17, 0x80])]
 
 
-def test_an_overridden_name_never_names_its_wrong_library_code(monkeypatch):
-    """合成表：被覆寫的名字在底層表裡指向 0x80，而它比 0x80 的其他名字都短——
-    沒有排除規則的話，錄到 0x80 會寫成 `down`，重播時變成方向鍵。真表上 `f17`
-    剛好比 `down` 短，所以只有合成資料看得出這條規則有沒有在。"""
-    library = _KeyLibrary({"down": 0x80, "f17xx": 0x80, "vk_down": 0x28})
-    monkeypatch.setattr(gui, "_AC", library)
-    monkeypatch.setattr(gui, "_AC_TRIED", True)
-    monkeypatch.setattr(gui, "_LIBRARY_NAME_OVERRIDES", {"down": 0x28})
-    assert gui._vk_to_name(0x80) == "f17xx"
-    assert gui._vk_to_name(0x28) == "down"
 
 
-def test_an_override_name_does_not_depend_on_the_library_still_having_it(
-        monkeypatch):
-    """覆寫的名字是本專案的：上游哪天把 `down` 整個拿掉，它照樣寫得出來（過期
-    守門會另外叫人把它搬去 `_EXTRA_KEY_CODES`，但在那之前不該先壞掉）。"""
-    library = _KeyLibrary({"vk_down": 0x28, "f17": 0x80})
-    monkeypatch.setattr(gui, "_AC", library)
-    monkeypatch.setattr(gui, "_AC_TRIED", True)
-    assert gui.parse_key_name("down") == "down"
-    with pytest.raises(GuiError):
-        gui.parse_key_name("definitely_not_a_key")
 
 
-def test_an_override_name_wins_even_when_it_is_the_longer_name(monkeypatch):
-    """合成表：覆寫的名字比底層那個名字長，照樣要勝出——覆寫表收的是一般人會打
-    的名字，不能靠長短碰巧。真表上 `down` 剛好比 `vk_down` 短，看不出這條規則。"""
-    library = _KeyLibrary({"dn": 0x28})
-    monkeypatch.setattr(gui, "_AC", library)
-    monkeypatch.setattr(gui, "_AC_TRIED", True)
-    monkeypatch.setattr(gui, "_LIBRARY_NAME_OVERRIDES", {"arrowdown": 0x28})
-    assert gui._vk_to_name(0x28) == "arrowdown"
 
 
 def test_a_background_key_post_sends_the_oem_keycode(key_library, monkeypatch):
@@ -3078,7 +3030,7 @@ def test_a_background_key_post_sends_the_oem_keycode(key_library, monkeypatch):
                         lambda needle: [(9, "Untitled - Editor")])
     assert gui.send_key_to_window("edit", "oem_2") == (
         9, "Untitled - Editor", "oem_2")
-    assert key_library.raw == [("post", 0xBF)]
+    assert key_library.raw == [("post", "oem_2")]
 
 
 def test_paste_sends_keys_the_real_library_table_can_resolve(key_library,
@@ -3165,6 +3117,21 @@ def test_the_key_send_scanner_can_tell_wrapped_from_unwrapped():
     assert sites == [2, 3, 4, 5, 6, 7, 8, 9]
     # 第 9 行：包了一層呼叫、但不是 `_library_key`——只看「是不是呼叫」的掃描會放過它。
     assert unwrapped == [3, 5, 7, 8, 9]
+
+
+def _misrouting_shadows(table, aliases, library_key):
+    """別名的名字本身也是 `table` 裡的鍵、而別名把它送到**另一個鍵碼**的那些。
+
+    `library_key` 是本專案送鍵前的最後一步（`gui._library_key`）：補充表
+    的名字在那裡換成整數，其餘名字交給函式庫查 `table`。抽成純函式是為了讓判準有
+    自己的合成對照組——真表乾淨的時候，主測試的斷言拿掉也不會有人紅。
+    """
+    def _code(name):
+        resolved = library_key(name)
+        return resolved if isinstance(resolved, int) else table.get(resolved)
+
+    return sorted(name for name, target in aliases.items()
+                  if name in table and table[name] != _code(target))
 
 
 if __name__ == "__main__":
@@ -4267,6 +4234,18 @@ class _FakeDragAC:
         self.release_raises = release_raises
         self.desktop = desktop
 
+    def tween_drag(self, start, end, **kwargs):
+        import importlib
+        path = importlib.import_module("je_auto_control.utils.tween_drag.tween_drag")
+        def sink(event):
+            if event["op"] == "move":
+                self.set_mouse_position(event["x"], event["y"])
+            elif event["op"] == "press":
+                self.press_mouse(event["button"], event["x"], event["y"])
+            elif event["op"] == "release":
+                self.release_mouse(event["button"], event["x"], event["y"])
+        return path.tween_drag(start, end, sink=sink, **kwargs)
+
     def input_desktop_available(self):
         return self.desktop
 
@@ -4301,10 +4280,10 @@ def _drag_ac_fixture(monkeypatch):
 def test_drag_presses_at_the_start_and_releases_at_the_end(drag_ac):
     gui.mouse_drag(10, 20, 110, 220, steps=4, settle=0.0)
     kinds = [c[0] for c in drag_ac.calls]
-    assert kinds == ["move", "press"] + ["move"] * 4 + ["release"], (
+    assert kinds == ["press"] + ["move"] * 5 + ["release"], (
         f"呼叫序列不對：{drag_ac.calls}")
-    assert drag_ac.calls[0] == ("move", 10, 20), "沒有先把游標移到起點"
-    assert drag_ac.calls[1] == ("press", "mouse_left", 10, 20)
+    assert drag_ac.calls[1] == ("move", 10, 20), "沒有先把游標移到起點"
+    assert drag_ac.calls[0] == ("press", "mouse_left", 10, 20)
     assert drag_ac.calls[-1] == ("release", "mouse_left", 110, 220)
 
 
@@ -4312,7 +4291,7 @@ def test_drag_interpolates_every_intermediate_position(drag_ac):
     """一次瞬移會被多數應用程式當成「按下又放開」，所以中間那幾步是功能本身，
     不是裝飾。距離刻意選成除不盡（100/3），把 `int()` 的截斷也一起釘住。"""
     gui.mouse_drag(0, 0, 100, 50, steps=3, settle=0.0)
-    assert drag_ac.moves == [(0, 0), (33, 16), (66, 33), (100, 50)]
+    assert drag_ac.moves == [(0, 0), (33, 17), (67, 33), (100, 50)]
 
 
 def test_the_last_interpolated_step_lands_exactly_on_the_target(drag_ac):
@@ -4354,7 +4333,7 @@ def test_a_failed_drag_releases_the_button_before_reporting(drag_ac,
         gui.mouse_drag(0, 0, 100, 100, steps=8, settle=0.0)
     assert [c[0] for c in fake.calls].count("release") == 1, (
         f"失敗之後沒有放開滑鼠鍵：{fake.calls}")
-    assert fake.calls[-1] == ("release", "mouse_left", 100, 100)
+    assert fake.calls[-1] == ("release", "mouse_left", *fake.moves[-2])
     assert isinstance(caught.value.__cause__, RuntimeError), (
         "補救把原始錯誤蓋掉了——`__cause__` 才是查得下去的那個")
 
@@ -4625,9 +4604,9 @@ def test_every_key_alias_points_at_a_real_backend_key(real_ac_tables):
     再交給函式庫，不依賴後端表的名字，所以不會因為後端改名而漂掉。
     """
     keys, _ = real_ac_tables
-    assert len(gui.KEY_ALIASES) >= 30, "別名表空了，這一筆會永遠通過"
-    sendable = {**keys, **gui._EXTRA_KEY_CODES}
-    missing = _targets_missing_from(sendable, gui.KEY_ALIASES)
+    assert len(gui._key_aliases()) >= 30, "別名表空了，這一筆會永遠通過"
+    sendable = {**keys, **_MICROSOFT_VK}
+    missing = _targets_missing_from(sendable, gui._key_aliases())
     assert not missing, (
         "`KEY_ALIASES` 這些目標鍵名在後端表裡不存在：%s。後端改名之後別名就變成"
         "查不到的字串，使用者只會收到「不認得這個鍵名。」，看不出問題在別名表。"
@@ -4635,25 +4614,23 @@ def test_every_key_alias_points_at_a_real_backend_key(real_ac_tables):
 
 
 def test_no_key_alias_shadows_a_real_key_name(real_ac_tables):
-    """別名的**鍵**不可以自己就是一個合法鍵名，否則會**遮蔽**那顆真鍵。
+    """別名的**鍵**若自己就是一個合法鍵名，別名不得把它送到**別顆**鍵上。
 
     `parse_key_name` 是先查別名再驗表（`KEY_ALIASES.get(key, key)`），所以後端哪
     天新增一顆叫 `enter` 的鍵，這裡的 `enter -> return` 會把它悄悄改道到別的鍵。
     使用者按到的不是他打的那顆，而且完全沒有訊息——比查不到還難查。
 
-    **判準是「改道到別的鍵」，不是「名字撞到」。** 後端可以同時收兩個名字指向**同一
-    個**虛擬鍵碼（實測：`ctrl` 與 `control` 都是 17，`ctrl` 是後端後來才補上的）。
-    那種情況下別名沒有改道任何東西，使用者按到的就是他打的那顆；把它算成違規，等於
-    逼人刪掉一個「後端哪天又拿掉 `ctrl`」就會需要的別名，換來的安全是零。所以比的是
-    **鍵碼**：兩邊碼不同才是遮蔽。
+    同一個鍵碼的同義字不算（2026-09-23 改）：函式庫把 `ctrl` 加成 `control` 的
+    同義字之後，本專案的 `ctrl -> control` 名義上「遮蔽」了它，但兩個名字按下去是
+    同一顆鍵，沒有任何東西被改道。原本的寫法會為此紅，而唯一的「修法」是刪掉別名，
+    那會讓本專案在舊版函式庫上不認得 `ctrl`。
     """
     keys, _ = real_ac_tables
-    shadowed = sorted(name for name, target in gui.KEY_ALIASES.items()
-                      if name in keys and keys.get(target) != keys[name])
+    shadowed = _misrouting_shadows(keys, gui._key_aliases(), gui._library_key)
     assert not shadowed, (
-        "這些別名的名字本身就是後端的合法鍵名，而且**指向不同的鍵碼**：%s。"
-        "`parse_key_name` 先查別名，所以那顆真鍵會被**靜默改道**。"
-        "請把該別名刪掉或改名。" % shadowed)
+        "這些別名的名字本身就是後端的合法鍵名，而別名把它送到另一個鍵碼：%s。"
+        "`parse_key_name` 先查別名，所以那顆真鍵會被**靜默改道**。請把該別名刪掉"
+        "或改名。" % shadowed)
 
 
 def test_the_shadowing_check_still_catches_a_real_redirect():
@@ -4697,7 +4674,7 @@ def test_every_alias_survives_parse_key_name_against_the_real_table(
 
     monkeypatch.setattr(gui, "_AC", _TableOnly())
     monkeypatch.setattr(gui, "_AC_TRIED", True)
-    for alias, target in sorted(gui.KEY_ALIASES.items()):
+    for alias, target in sorted(gui._key_aliases().items()):
         assert gui.parse_key_name(alias) == target, alias
         assert gui.parse_key_name(alias.upper()) == target, alias
     # 反面：真表在的時候，不存在的鍵名一定要被擋下來（否則上面全綠也不代表
@@ -5789,52 +5766,26 @@ class _FakeTreeProc:
             raise RuntimeError("access denied")
 
 
-def _fake_psutil(calls, children, alive, *, process_raises=False):
-    module = types.ModuleType("psutil")
-
-    class _Parent:
-        def __init__(self, pid):
-            if process_raises:
-                raise RuntimeError("no such process")
-            calls.append(("parent", pid))
-
-        def children(self, recursive=False):
-            assert recursive is True, "只殺直接子行程會漏掉孫行程"
-            return children
-
-    def wait_procs(procs, timeout=None):
-        calls.append(("wait", tuple(p.name for p in procs)))
-        return [p for p in procs if p not in alive], list(alive)
-
-    module.Process = _Parent
-    module.wait_procs = wait_procs
-    return module
 
 
-def test_kill_tree_keeps_going_past_every_child_that_resists(monkeypatch):
-    """一個子行程 terminate 失敗、撐過等待、kill 又失敗——後面的步驟一個都不能少，
-    最後直接子行程本身一定要被 kill。"""
+def test_kill_tree_uses_the_shared_child_tree_cleanup(monkeypatch):
+    import _process_control as pc
     calls = []
-    stubborn = _FakeTreeProc(calls, "stubborn", terminate_raises=True, kill_raises=True)
-    polite = _FakeTreeProc(calls, "polite")
-    monkeypatch.setitem(sys.modules, "psutil",
-                        _fake_psutil(calls, [stubborn, polite], [stubborn]))
-    root = _FakeTreeProc(calls, "root")
-    root.pid = 1234
+    root = object()
+    monkeypatch.setattr(pc, "kill_child_process_tree", calls.append)
     gui._kill_tree(root)
-    assert calls == [("parent", 1234), ("terminate", "stubborn"), ("terminate", "polite"),
-                     ("wait", ("stubborn", "polite")), ("kill", "stubborn"),
-                     ("kill", "root")]
+    assert calls == [root]
+
 
 
 def test_kill_tree_still_kills_the_child_when_the_tree_walk_fails(monkeypatch):
     calls = []
-    monkeypatch.setitem(sys.modules, "psutil",
-                        _fake_psutil(calls, [], [], process_raises=True))
+    monkeypatch.setitem(sys.modules, "psutil", None)
     root = _FakeTreeProc(calls, "root", kill_raises=True)
     root.pid = 1234
-    gui._kill_tree(root)          # 連最後那個 kill 也失敗：不得有例外穿出去
+    gui._kill_tree(root)
     assert calls == [("kill", "root")]
+
 
 
 # --------------------------------------------------------------------------

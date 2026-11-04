@@ -864,3 +864,12 @@ def test_the_api_catalog_steps_aside_so_the_cli_probe_can_run(monkeypatch, capsy
     assert "sk-secret" not in err
     if case == "api-error":
         assert "RuntimeError" in err
+
+
+@pytest.mark.parametrize("session_id", [None, "t1"])
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+def test_codex_effort_is_sent_for_new_and_resumed_turns(session_id, effort):
+    args = db._dorossi_codex_argv("codex", session_id=session_id,
+                                  effort=effort, tools_mode="off")
+    assert f'model_reasoning_effort="{effort}"' in args
+    assert 'sandbox_mode="read-only"' in args

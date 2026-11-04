@@ -187,31 +187,6 @@ def parse_button(raw: str) -> str:
 # `backspace`, only `control` / `menu` / `return` / `escape` / `lwin` / `back`.
 # Without this mapping layer, `!hotkey ctrl+s`, `!hotkey alt+f4`, `hotkey enter`
 # in a macro—that is, every example in the docs—would all fail.
-KEY_ALIASES = {
-    "ctrl": "control", "lctrl": "lcontrol", "rctrl": "rcontrol",
-    "alt": "menu", "lalt": "lmenu", "ralt": "rmenu",
-    "enter": "return",
-    "esc": "escape",
-    "win": "lwin", "super": "lwin", "cmd": "lwin", "meta": "lwin",
-    "backspace": "back", "bksp": "back",
-    "del": "delete", "ins": "insert",
-    "pgup": "prior", "pageup": "prior",
-    "pgdn": "next", "pagedown": "next",
-    "caps": "capital", "capslock": "capital",
-    "printscreen": "snapshot", "prtsc": "snapshot", "prtscr": "snapshot",
-    "scrolllock": "scroll",
-    "numpad0": "num0", "numpad1": "num1", "numpad2": "num2",
-    "numpad3": "num3", "numpad4": "num4", "numpad5": "num5",
-    "numpad6": "num6", "numpad7": "num7", "numpad8": "num8",
-    "numpad9": "num9",
-    # These four target `_EXTRA_KEY_CODES` (the low-level table lacks them).
-    # Microsoft defines these four as "the `+` `,` `-` `.` key for any
-    # country/region", so these readable names do not lie; the `oem_1` family
-    # varies by keyboard layout, so it is **deliberately given no** alias, see
-    # `_EXTRA_KEY_CODES`.
-    "plus": "oem_plus", "comma": "oem_comma",
-    "minus": "oem_minus", "period": "oem_period",
-}
 
 # Virtual keys the low-level key-name table (192 entries) **cannot name**. The
 # values are Microsoft's official "Virtual-Key Codes (Winuser.h)" definitions
@@ -245,24 +220,6 @@ KEY_ALIASES = {
 # Names must be all lowercase, containing only letters, digits and underscores
 # (`parse_key_name`'s literal rule), and must not share a name with the
 # low-level table while pointing at a different key—both are tested.
-_EXTRA_KEY_CODES: dict[str, int] = {
-    "oem_1": 0xBA,
-    "oem_plus": 0xBB,
-    "oem_comma": 0xBC,
-    "oem_minus": 0xBD,
-    "oem_period": 0xBE,
-    "oem_2": 0xBF,
-    "oem_3": 0xC0,
-    "oem_4": 0xDB,
-    "oem_5": 0xDC,
-    "oem_6": 0xDD,
-    "oem_7": 0xDE,
-    "oem_8": 0xDF,
-    "oem_102": 0xE2,
-    "oem_clear": 0xFE,
-    "launch_app2": 0xB7,
-    "browser_home": 0xAC,
-}
 
 # Names the low-level table **does** have, but pointing at the wrong key → the
 # correct virtual-key code. This is a different thing from `_EXTRA_KEY_CODES`:
@@ -291,31 +248,12 @@ _EXTRA_KEY_CODES: dict[str, int] = {
 # scanned, and only `down` is a name an ordinary person would type as a key; the
 # rest (`move`, `leftup`, `wheel`, `xbutton1`…) are not keys on any keyboard and
 # are deliberately left alone.
-_LIBRARY_NAME_OVERRIDES: dict[str, int] = {
-    "down": 0x28,
-}
 
 
 def _library_key(key: str | int) -> str | int:
-    """This project's key name → the key code handed to the library. **Every**
-    place that sends a key to the library must go through here.
-
-    Names in the override table and the extra table are converted to integers
-    (the former are named wrongly by the low-level table, the latter cannot be
-    found in it); everything else is handed over as-is for the library to look up
-    itself—that path already works, and keeps its original error behaviour.
-    Integers pass through unchanged (the key codes the `write()` fallback path
-    receives are already values from the library's table).
-
-    The override table **must be checked first**: an overridden name also exists
-    in the low-level table (just pointing at the wrong key), so handing it over
-    as-is would have the low level resolve it to the wrong key.
-    """
-    if isinstance(key, str):
-        if key in _LIBRARY_NAME_OVERRIDES:
-            return _LIBRARY_NAME_OVERRIDES[key]
-        return _EXTRA_KEY_CODES.get(key, key)
+    """鍵名與整數鍵碼都由函式庫解析。"""
     return key
+
 
 
 def _library_keys(keys: list[str]) -> list[str | int]:
@@ -667,62 +605,25 @@ def mouse_move(x: int, y: int) -> None:
 
 def mouse_click(button: str, x: int | None = None, y: int | None = None,
                 *, times: int = 1, interval: float = 0.06) -> None:
-    """Click; `times=2` is a double-click.
-
-    A double-click is deliberately "click the same coordinate twice + a short
-    interval" rather than a low-level double-click API—je_auto_control has no
-    double-click primitive, and Windows decides a double-click only from the time
-    gap and the displacement between two clicks, so clicking twice is enough. The
-    interval is 60ms, far below the default 500ms threshold.
-    """
+    """點選與雙擊都交給函式庫，同一點的次數與間隔由它處理。"""
     _require_input_desktop()
-    ac = load_ac()
     try:
-        for index in range(max(1, times)):
-            if index:
-                time.sleep(interval)
-            if x is None or y is None:
-                ac.click_mouse(button)
-            else:
-                ac.click_mouse(button, x, y)
-    except Exception as error:  # pylint: disable=broad-except
-        raise GuiError("Mouse click failed.") from error
+        load_ac().click_mouse(button, x, y, clicks=max(1, times), interval=interval)
+    except Exception as error:
+        raise GuiError("滑鼠點選失敗。") from error
+
 
 
 def mouse_drag(x1: int, y1: int, x2: int, y2: int, button: str = "mouse_left",
                *, steps: int = 24, settle: float = 0.08) -> None:
-    """Press at the start point, drag to the end point, then release.
-
-    The movement in between is deliberately split into many slow steps: many
-    applications (File Explorer, drawing software, games) detect a drag from
-    mouse-move events, and teleporting straight to the end point is taken as
-    "press then release" rather than a drag.
-    """
+    """函式庫處理拖曳路徑與中途失敗的放開；本層只保留互動桌面政策。"""
     _require_input_desktop()
-    ac = load_ac()
     try:
-        ac.set_mouse_position(x1, y1)
-        time.sleep(settle)
-        ac.press_mouse(button, x1, y1)
-        time.sleep(settle)
-        for index in range(1, steps + 1):
-            ac.set_mouse_position(
-                int(x1 + (x2 - x1) * index / steps),
-                int(y1 + (y2 - y1) * index / steps),
-            )
-            time.sleep(0.012)
-        time.sleep(settle)
-        ac.release_mouse(button, x2, y2)
-    except Exception as error:  # pylint: disable=broad-except
-        # A failure midway through a drag leaves the mouse button stuck down,
-        # which effectively locks the whole desktop. Make a best effort to
-        # release it here, and do not propagate a failure of that either (the
-        # original error matters more).
-        try:
-            ac.release_mouse(button, x2, y2)
-        except Exception:  # pylint: disable=broad-except  # nosec B110
-            pass
+        load_ac().tween_drag((x1, y1), (x2, y2), button=button, steps=steps,
+                             easing="linear", step_delay_s=0.012, settle_s=settle)
+    except Exception as error:
         raise GuiError("Mouse drag failed.") from error
+
 
 
 def mouse_scroll(amount: int, x: int | None = None, y: int | None = None) -> None:
@@ -848,33 +749,26 @@ INPUT_RELEASE_RETRY_SEC = 60.0
 
 
 def parse_key_name(raw: str) -> str:
-    """Validate a key name. Raise `GuiError` if it is invalid, so arbitrary
-    strings never reach the low-level key-name table.
+    """驗證鍵名。不合法就丟 `GuiError`，不讓任意字串進到底層鍵名表。
 
-    When the backend cannot load, only the literal check is done and nothing is
-    blocked—this function is also called by the macro's **save-time validation**,
-    and saving a macro in an environment with no desktop session (tests, CI)
-    should not fail for lack of a backend.
+    後端載不進來時只做字面檢查、不擋——這個函式也被巨集的**存檔驗證**呼叫，
+    在沒有桌面 session 的環境（測試、CI）存一個巨集不該因為缺後端而失敗。
 
-    Names in `_EXTRA_KEY_CODES` and `_LIBRARY_NAME_OVERRIDES` need not be checked
-    against the low-level table (the former are not in that table at all, the
-    latter have wrong values there); what is returned is still the **name**;
-    converting it to an integer is what `_library_key` does at the moment of
-    sending.
+    `_EXTRA_KEY_CODES` 的名字不必問底層表（那張表本來就沒有），回傳的仍是**名字**；
+    換成整數是 `_library_key` 在送出那一刻才做的事。
     """
     key = (raw or "").strip().lower()
     if not key or not HOTKEY_TOKEN_RE.match(key):
-        raise GuiError("A key name may only contain letters, digits and underscores.")
-    key = KEY_ALIASES.get(key, key)
-    if key in _EXTRA_KEY_CODES or key in _LIBRARY_NAME_OVERRIDES:
-        return key
+        raise GuiError("鍵名只能是英數字與底線。")
+    key = _key_aliases().get(key, key)
     try:
         table = getattr(load_ac(), "keyboard_keys_table", None)
     except GuiError:
         return key
     if isinstance(table, dict) and key not in table:
-        raise GuiError("Unknown key name.")
+        raise GuiError("不認得這個鍵名。")
     return key
+
 
 
 def key_down(name: str) -> str:
@@ -1645,134 +1539,57 @@ _OCR_PROBED_CMD: str | None = None
 
 
 def tesseract_cmd() -> str | None:
-    """The absolute path of the recognition engine executable; None if not found.
+    """辨識引擎探索交由函式庫處理。"""
+    return load_ac().find_tesseract_cmd()
 
-    Order: environment-variable override → PATH → conventional install locations.
-    """
-    override = (os.environ.get("TESSERACT_CMD") or "").strip()
-    if override and Path(override).exists():
-        return override
-    import shutil
-    found = shutil.which("tesseract")
-    if found:
-        return found
-    for candidate in TESSERACT_CANDIDATES:
-        if Path(candidate).exists():
-            return candidate
-    return None
 
 
 def _configure_ocr() -> None:
-    """Tell the desktop-automation library the local engine path and
-    language-data location (only once, after it succeeds).
-
-    These two are **local environment policy**, not recognition logic: the engine
-    installer does not add itself to PATH, and the language data lives in the
-    project because the engine's install directory needs administrator rights.
-    Recognition itself is handed to the library; this module no longer runs its
-    own.
-
-    ⚠️ **Do not record "already configured" when no executable was found.** This
-    flag used to be set unconditionally at the top of the function, so on a host
-    without the engine installed yet, the first call recorded "configured" while
-    configuring nothing; once the user later installed the engine (the bot is a
-    long-running process under a supervisor and does not restart by itself), the
-    library would **never** get that path—and actual recognition goes through the
-    library, not through this module's `_OCR`. The failure is quiet:
-    `ocr_status()` says it is available, while every recognition command returns
-    the generic "Text recognition failed.". Measured (2026-09-11): with the engine
-    installed late, `set_tesseract_cmd` was called **0** times, versus once in the
-    clean-start control.
-    """
-    global _OCR_CONFIGURED  # pylint: disable=global-statement
+    """套用本機語言資料政策；成功後不再重設，晚裝引擎仍可重試。"""
+    global _OCR_CONFIGURED
     if _OCR_CONFIGURED:
         return
-    if LOCAL_TESSDATA.is_dir() and any(LOCAL_TESSDATA.glob("*.traineddata")):
-        # setdefault: if the user already set it themselves, respect their setting.
-        os.environ.setdefault("TESSDATA_PREFIX", str(LOCAL_TESSDATA))
+    ac = load_ac()
+    if ("TESSDATA_PREFIX" not in os.environ and LOCAL_TESSDATA.is_dir()
+            and any(LOCAL_TESSDATA.glob("*.traineddata"))):
+        ac.set_tessdata_dir(LOCAL_TESSDATA)
     command = tesseract_cmd()
     if not command:
         return
     try:
-        load_ac().set_tesseract_cmd(command)
-    except Exception as error:  # pylint: disable=broad-except
-        print(f"[gui] set_tesseract_cmd failed: {error!r}", file=sys.stderr)
+        ac.set_tesseract_cmd(command)
+    except Exception as error:
+        print(f"[gui] OCR setup failed: {type(error).__name__}", file=sys.stderr)
         return
     _OCR_CONFIGURED = True
 
 
+
 def _load_ocr() -> Any:
-    """Return the configured `pytesseract` module; raise `GuiError` if it is
-    unavailable.
-
-    Only the **language-list query** still needs it (the library's facade has no
-    entry point for that). Actual recognition and location go through
-    `_ocr_call`, which delegates to the library.
-
-    ⚠️ **The reason for a failure is recorded in `_OCR_REASON`; do not call back
-    into `ocr_status()` to ask for that sentence.** This used to read
-    `raise GuiError(ocr_status()[1])`, and the third check in `ocr_status()` back
-    then was a call to `_load_ocr()`—**the exception's argument is evaluated
-    before the raise**, so that `except GuiError` was never reached; what hit first
-    was a `RecursionError` (measured at 1000 levels). Along the way it turned the
-    sentence "the recognition engine executable cannot run." into dead code that was
-    never sent even once. The call direction is now one-way: `ocr_status()`
-    (reporting) → `_load_ocr()` (probing), and the probe can state the reason
-    itself. `test_bot_helpers.py` has a cross-project AST guard (a `raise`'s
-    argument must not lead back to the function containing the raise) watching
-    that this edge never reverses—**behaviour tests cannot catch** a regression
-    that "reverts just one of the raises", because the re-probe below makes that
-    cycle converge on its own at the second level, as verified by a mutation run.
-
-    ⚠️ **A failed result is only cached for as long as "the executable path seen
-    at probe time" stays the same.** Recording only `_OCR_TRIED` would, on a host
-    without the engine installed yet, pin `_OCR=None` on the first recognition
-    command; once the user later installed the engine, this would never retry. And
-    that is exactly the path most likely to trigger the recursion above: measured,
-    after "no engine installed → one text command issued → engine installed", this
-    long-lived process's `ocr_status()` and `_load_ocr()` hit `RecursionError`
-    permanently, with no broken install, no architecture mismatch and no wrong
-    `TESSERACT_CMD` needed. A successful result is **cached permanently**, and
-    returns early before `tesseract_cmd()` (which scans PATH, measured locally at
-    4.0 ms)—`wait_text` polls `find_text` every 0.5 seconds, and that path cannot
-    afford any extra cost (the early return measured 0.0001 ms per call).
-
-    Remaining gaps (both need a bot restart, and both are better than the original
-    `RecursionError`): repairing a broken engine in place at **the same path**, and
-    pip-installing that Python package after the process has started.
-    """
-    global _OCR, _OCR_TRIED, _OCR_REASON, _OCR_PROBED_CMD  # pylint: disable=global-statement
+    """回已通過健康檢查的函式庫門面；成功快取，失敗在引擎路徑改變後重探。"""
+    global _OCR, _OCR_TRIED, _OCR_REASON, _OCR_PROBED_CMD
     if _OCR is not None:
         return _OCR
     command = tesseract_cmd()
     if _OCR_TRIED and command == _OCR_PROBED_CMD:
         raise GuiError(_OCR_REASON)
-    _OCR_TRIED = True
-    _OCR_PROBED_CMD = command
-    try:
-        import pytesseract  # type: ignore
-    except ImportError as error:
-        print(f"[gui] pytesseract unavailable: {error!r}", file=sys.stderr)
-        _OCR_REASON = "Text recognition is disabled: the Python package used for recognition is missing."
-    else:
-        _configure_ocr()
-        if not command:
-            # With no executable, do not ask for the version—asking would only
-            # fail and then report "not installed" as "cannot run", pointing at
-            # the wrong half.
-            _OCR_REASON = "Text recognition is disabled: the recognition engine executable is not installed."
-        else:
-            pytesseract.pytesseract.tesseract_cmd = command
-            try:
-                pytesseract.get_tesseract_version()
-                _OCR = pytesseract
-            except Exception as error:  # pylint: disable=broad-except
-                print(f"[gui] tesseract binary unusable: {error!r}",
-                      file=sys.stderr)
-                _OCR_REASON = "Text recognition is disabled: the recognition engine executable cannot run."
-    if _OCR is None:
-        raise GuiError(_OCR_REASON)
-    return _OCR
+    _OCR_TRIED, _OCR_PROBED_CMD = True, command
+    _configure_ocr()
+    ac = load_ac()
+    status = ac.ocr_status()
+    if status.ok:
+        _OCR = ac
+        return ac
+    if status.reason == "no_language_data":
+        _OCR_TRIED = False  # 安裝語言資料後下一次呼叫即可重探，不需重啟。
+    _OCR_REASON = {
+        "missing_package": "Text recognition is disabled: its Python package is missing.",
+        "missing_engine": "Text recognition is disabled: the recognition engine executable is not installed.",
+        "engine_unusable": "Text recognition is disabled: the recognition engine executable cannot run.",
+        "no_language_data": "Text recognition is disabled: language recognition data is missing.",
+    }.get(status.reason, "Text recognition is disabled: the recognition engine is unavailable.")
+    raise GuiError(_OCR_REASON)
+
 
 
 def _ocr_no_language_data(langs: list[str], known: bool) -> bool:
@@ -1845,36 +1662,14 @@ def ocr_status() -> tuple[bool, str]:
 
 
 def ocr_languages() -> tuple[list[str], bool]:
-    """`(installed languages, could we ask?)`.
-
-    ⚠️ **The two values must not be merged into one.** `([], True)` = the engine
-    answered and **there really are no languages**; `([], False)` = **could not
-    ask** (engine not installed / the enumeration itself failed). Merged, these two
-    look identical to the caller, while they need **opposite** handling—that is how
-    `ocr_lang_for`'s whitelist silently stopped working:
-    `t for t in wanted if available and t not in available`, where an empty list
-    short-circuits `available and …` and the whole check disappears without any
-    symptom. This project already does the same kind of thing in three places:
-    `_process_control._find_all_webrunner_pids`, `discord_bot._load_pid`,
-    `discord_bot._webrunner_liveness`.
-
-    `([], True)` is **really reachable**, not theoretical: measured, pointing
-    `TESSDATA_PREFIX` at an empty or nonexistent directory gives engine rc=0 and
-    `get_languages(config="")` returns `[]` without raising.
-
-    ⚠️ **Do not pass `cached=True` to `get_languages`.** The low level is
-    `@run_once`, and it only caches when it receives that flag
-    (`pytesseract.py:162`:
-    `if not kwargs.pop('cached', False) or wrapper._result is wrapper`). Right now
-    it really asks again every time, so after the user adds a language file there is
-    no need to restart the bot; with caching, one early `[]` would be frozen for the
-    whole lifetime of the process, which under the new rule below amounts to a
-    permanent hard block.
-    """
+    """函式庫的 None 是問不到，空清單則是已確認沒有語言資料。每次重問。"""
     try:
-        return sorted(_load_ocr().get_languages(config="")), True
-    except Exception:  # pylint: disable=broad-except
+        _configure_ocr()
+        languages = load_ac().ocr_languages()
+        return (sorted(languages), True) if languages is not None else ([], False)
+    except Exception:
         return [], False
+
 
 
 def ocr_lang_for(target: str, explicit: str | None = None) -> str:
@@ -3492,35 +3287,10 @@ def shell_argv(command: str, *, interactive: bool = False) -> list[str]:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """After a timeout, clean up the whole child process tree.
+    """逾時清掉自己起的整棵樹；與後端共用逐邊出生時間檢查與父先子後順序。"""
+    from _process_control import kill_child_process_tree
+    kill_child_process_tree(proc)
 
-    Killing only the direct child is not enough: under
-    `powershell -Command "some.exe"` what is really running is a grandchild, and
-    when the parent dies the grandchild lives on, so the timeout would effectively
-    not take effect. psutil is a required dependency; when it is unavailable, fall
-    back to killing only the direct child.
-    """
-    try:
-        import psutil  # type: ignore
-        parent = psutil.Process(proc.pid)
-        children = parent.children(recursive=True)
-        for child in children:
-            try:
-                child.terminate()
-            except Exception:  # pylint: disable=broad-except  # nosec B110
-                pass
-        _gone, alive = psutil.wait_procs(children, timeout=3)
-        for child in alive:
-            try:
-                child.kill()
-            except Exception:  # pylint: disable=broad-except  # nosec B110
-                pass
-    except Exception:  # pylint: disable=broad-except  # nosec B110
-        pass
-    try:
-        proc.kill()
-    except Exception:  # pylint: disable=broad-except  # nosec B110
-        pass
 
 
 def run_shell(command: str, *, timeout: float = SHELL_DEFAULT_TIMEOUT_SEC,
@@ -3710,62 +3480,22 @@ def _from_timeline(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # Table name → readable alias (`return` → `enter`). Recorded steps are for people
 # to read and edit, and the names used in the docs are easier to understand than
 # the raw Win32 names; both pass validation.
-_ALIAS_REVERSE: dict[str, str] = {}
-for _friendly, _canonical in KEY_ALIASES.items():
-    # The one declared first wins (`backspace` reads better than `bksp`), not the
-    # shortest
-    _ALIAS_REVERSE.setdefault(_canonical, _friendly)
-del _friendly, _canonical
+
 
 
 def _vk_to_name(vk: int) -> str | None:
-    """Virtual-key code → the key name used in macros; None if the table has no
-    entry.
-
-    Reverse lookup hits name collisions (the mouse-event constants share one table
-    with the keyboard: vk 32 is both `space` and `middledown`, and vk 84 is both
-    `t` and `T`), so there has to be an explicit order of preference, otherwise the
-    same recording would produce different text on different machines.
-
-    Candidate names come from both the low-level table and `_EXTRA_KEY_CODES`
-    (what `parse_key_name` recognises is exactly the union of the two), compared
-    with the same order of preference—so when vk 183's `LAUNCH_APP2` (uppercase,
-    which `parse_key_name` cannot write) and the extra table's `launch_app2` are
-    both present, the lowercase one is always picked. The extra table belongs to
-    this project, so it can be looked up even when the low level cannot load.
-
-    `_LIBRARY_NAME_OVERRIDES` has two rules, both about "that entry in the
-    low-level table is wrong":
-
-    * an overridden name is **not used for reverse lookup of its wrong key code in
-      the low-level table**—vk 0x80 (F17) must not be recorded as `down`, or on
-      replay `down` would become 0x28 and the recorded F17 would turn into an arrow
-      key;
-    * an overriding name **wins explicitly** (not by luck of length), so vk 0x28 is
-      recorded as `down` rather than the low level's `vk_down`. The override table
-      only holds names an ordinary person would type anyway.
-    """
+    """先問函式庫的標準鍵名，再取它宣告的第一個好讀別名。"""
     if vk in _MODIFIER_VK:
         return _MODIFIER_VK[vk]
     try:
-        table = getattr(load_ac(), "keyboard_keys_table", None)
+        name = load_ac().keyboard_key_name(vk)
     except GuiError:
-        table = None
-    if not isinstance(table, dict):
-        table = {}
-    names = [name for name, code in table.items()
-             if code == vk and name not in _LIBRARY_NAME_OVERRIDES]
-    names += [name for name, code in _EXTRA_KEY_CODES.items() if code == vk]
-    overriding = [name for name, code in _LIBRARY_NAME_OVERRIDES.items()
-                  if code == vk]
-    if overriding:
-        names = overriding
-    if not names:
         return None
-    # Order of preference: lowercase first → shorter first → lexicographic
-    # (guaranteeing consistency across machines)
-    best = min(names, key=lambda n: (n != n.lower(), len(n), n))
-    return _ALIAS_REVERSE.get(best, best)
+    if name is None:
+        return None
+    return next((alias for alias, canonical in _key_aliases().items()
+                 if canonical == name), name)
+
 
 
 def _record_char_table() -> dict[int, tuple[str, str]]:
@@ -4604,3 +4334,11 @@ def run_macro(steps: list[str], *,
     """The argument-less version of `run_macro_program` (for tests and non-async
     callers)."""
     return run_macro_program(steps, on_step=on_step, should_abort=should_abort)
+
+def _key_aliases() -> dict[str, str]:
+    """別名只取函式庫那一份；匯入失敗時讓離線巨集保留合法字面。"""
+    try:
+        from je_auto_control.wrapper.platform_wrapper import keyboard_key_aliases
+        return keyboard_key_aliases
+    except ImportError:
+        return {}

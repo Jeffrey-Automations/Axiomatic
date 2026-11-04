@@ -22,7 +22,7 @@ Character todos (Nth = 1, 2):
 Schedule control:
   !run / !start                Start the webrunner (tries webrunner_je_only.py first;
                                on non-zero exit within 5 min auto-falls back to
-                               webrunner_novelai.py). One instance at a time.
+                               webrunner_je_only.py). One instance at a time.
   !run in 90m | !run at 02:00  Schedule a delayed start (!run cancel to abort)
   !stop                        Stop the running webrunner
   !status                      Report whether the schedule is running, and which variant
@@ -39,7 +39,11 @@ Run:
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
+import collections
+import _reply_confirm
+from _process_job import create_subprocess_exec as _spawn_backend, popen as _job_popen
 import base64 as _b64
 import contextlib
 import hashlib
@@ -54,6 +58,7 @@ import shutil as _shutil
 import subprocess
 import sys
 import time
+from _claude_local_usage import claude_local_usage_totals
 import traceback
 import urllib.parse
 from collections import deque, namedtuple
@@ -81,6 +86,8 @@ from _batch_config import (
     save_batch_config,
 )
 from _bot_config import BOT_CONFIG_FILE, load_bot_config
+from _webrunner_location import (WEBRUNNER_SOURCE_ENV, WEBRUNNER_SOURCE_CONFIG,
+    WEBRUNNER_SOURCE_INSTALLED, WEBRUNNER_SOURCE_SIBLING, resolve_webrunner_path)
 # 外部化的 prompt 文字載入器（passive、stdlib-only，同 _bot_config 類）。開機時把
 # bot_prompts/ 下的檔讀進來；缺檔／壞檔回退到內建 _DEFAULT_* 預設值。
 from _bot_prompts import load_prompt
@@ -119,7 +126,7 @@ import _chat_platform
 import _platform_runtime
 # 行程探查／終止原語（P4 重構）。被動共用的 bot 側模組（同 _chrome_slot 等），純
 # stdlib ＋ 選用 psutil，不 import discord_bot（循環）也不 import webrunner 腳本。
-# 真正的 supervisor 迴圈（_watch_for_fallback / _do_webrunner_run / cmd_run /
+# 真正的 supervisor 迴圈（_watch_webrunner / _do_webrunner_run / cmd_run /
 # cmd_stop …）仍留在本檔——它們跟 8 個 bot 全域＋產圖佇列深度耦合；本模組只收
 # 無狀態的行程葉子函式，狀態由呼叫端用參數注入（見 _terminate_all_webrunner_instances）。
 from _process_control import (
@@ -151,12 +158,15 @@ from _queue_consume import END_SENTINEL, is_end_marker as _is_end_marker
 # 單一實例鎖（見 main()）。`_supervisor` 是被動共用模組（純 stdlib、不 import
 # discord_bot），啟動器與本檔共用同一份鎖實作與同一個「已有實例」rc 契約。
 from _supervisor import (
+    start_log_pump,
     RC_ALREADY_RUNNING,
     RC_SETUP_INCOMPLETE,
     RC_ZERO_PROGRESS,
+    RC_SERVED_ONESHOT,
     acquire_single_instance_lock,
     restart_backoff,
     webrunner_exit_needs_human,
+    webrunner_exit_made_no_progress,
 )
 # 電源要求（參考計數，批次監督期間持有，見 `bot_power_hold`）與「主機連得上網路
 # 嗎」（監督者分辨斷網與真正的崩潰，見 `_batch_network_is_down`）。兩個都是被動
@@ -265,6 +275,7 @@ from dorossi_backend import (
     DOROSSI_ALL_MODEL_CHOICES,
     DOROSSI_TUNE_DEFAULT,
     dorossi_model_choices,
+    dorossi_model_provider,
     dorossi_model_applies,
     dorossi_session_backend,
     dorossi_normalise_model_key,
@@ -367,7 +378,7 @@ except Exception:  # pylint: disable=broad-except
     _simple_eval = None  # type: ignore
 
 
-# 行程內間隔（uptime）→ **單調時鐘**。判準見 `_watch_for_fallback` 開頭：值不離開
+# 行程內間隔（uptime）→ **單調時鐘**。判準見 `_watch_webrunner` 開頭：值不離開
 # 本行程就用 monotonic，要落地成時間戳或跟別的行程比對才用牆鐘。這個常數在每次
 # 模組 import 時重新取值，所以它量的一定是「本行程活了多久」——牆鐘會被 NTP
 # 校時、手動改時鐘、虛擬機快照還原調整，往回撥時 `/sys metrics` 的 uptime 會變成
@@ -678,8 +689,7 @@ async def _check_command_permission(message: discord.Message,
     return False
 
 
-WEBRUNNER_SCRIPT = PROJECT_ROOT / "axiomatic" / "webrunner_novelai.py"
-WEBRUNNER_JE_SCRIPT = PROJECT_ROOT / "axiomatic" / "webrunner_je_only.py"
+WEBRUNNER_SCRIPT = PROJECT_ROOT / "axiomatic" / "webrunner_je_only.py"
 # 獨立監督者（跟 bot 分開的行程）。bot 只把它「放出去」，之後不持有它的 handle、
 # 也不監看它——那正是它存在的理由，見 `cmd_launcher_start`。
 LAUNCHER_SCRIPT = PROJECT_ROOT / "start_webrunner.py"
@@ -694,8 +704,7 @@ LAUNCHER_SCRIPT = PROJECT_ROOT / "start_webrunner.py"
 # These are the batch supervisor's own tuning knobs (fallback_window_sec
 # through zero_progress_giveup_count; the `GENERATE_ONESHOT_*` trio further
 # below reads the same config block but is a different valve — see the
-# comment above them). All seven come from `bot_config.json` → "webrunner_supervisor".
-WEBRUNNER_FALLBACK_WINDOW_SEC = BOT_CONFIG["webrunner_supervisor"]["fallback_window_sec"]
+# comment above them). All six come from `bot_config.json` → "webrunner_supervisor".
 WEBRUNNER_RESPAWN_BACKOFF_MIN_SEC = BOT_CONFIG["webrunner_supervisor"]["respawn_backoff_min_sec"]
 WEBRUNNER_RESPAWN_BACKOFF_MAX_SEC = BOT_CONFIG["webrunner_supervisor"]["respawn_backoff_max_sec"]
 WEBRUNNER_HEALTHY_THRESHOLD_SEC = BOT_CONFIG["webrunner_supervisor"]["healthy_threshold_sec"]
@@ -810,7 +819,7 @@ _webrunner_oneshot_reaper_task: asyncio.Task | None = None
 # Set by cmd_stop so the fallback watchdog can distinguish "user asked us to
 # stop" from "process crashed during startup".
 _webrunner_stop_requested: bool = False
-_webrunner_fallback_task: asyncio.Task | None = None
+_webrunner_supervisor_task: asyncio.Task | None = None
 # A delayed `/run in <dur>` / `/run at HH:MM` pending start, if any. The task
 # sleeps until _scheduled_run_ts then calls _do_webrunner_run; `/run cancel`
 # (or an immediate `/run`) cancels it.
@@ -1966,28 +1975,21 @@ async def cmd_queue(message: discord.Message) -> None:
     u1 = read_todo_entries(TODO_UNDESIRED_FILE)
     raw_pairs = max(len(p1), len(c1), len(c2), len(u1))
     eff_pairs, end_idx = _effective_pair_count(p1, c1, c2, u1)
-    color = 0x57F287 if eff_pairs > 0 else 0xED4245
-    embed = discord.Embed(title="📋 Todo queue", color=color)
-    embed.add_field(name=_list_label(TODO_PROMPT_FILE, message), value=f"`{len(p1)}`", inline=True)
-    embed.add_field(name=_list_label(TODO_FILE_1, message), value=f"`{len(c1)}`", inline=True)
-    embed.add_field(name=_list_label(TODO_FILE_2, message), value=f"`{len(c2)}`", inline=True)
-    embed.add_field(name=_list_label(TODO_UNDESIRED_FILE, message), value=f"`{len(u1)}`", inline=True)
+    fields = []
+    footer = None
+    fields.append((_list_label(TODO_PROMPT_FILE, message), f'`{len(p1)}`', True))
+    fields.append((_list_label(TODO_FILE_1, message), f'`{len(c1)}`', True))
+    fields.append((_list_label(TODO_FILE_2, message), f'`{len(c2)}`', True))
+    fields.append((_list_label(TODO_UNDESIRED_FILE, message), f'`{len(u1)}`', True))
     if end_idx is not None:
-        embed.add_field(
-            name="pairs (until `end`)",
-            value=f"**{eff_pairs}** / {raw_pairs}",
-            inline=False,
-        )
-        embed.add_field(
-            name="⏹ end marker",
-            value=f"主提示詞佇列第 #{end_idx + 1} 筆 — run stops there",
-            inline=False,
-        )
+        fields.append(('有效組數（至 `end`）', f'**{eff_pairs}** / {raw_pairs}', False))
+        fields.append(('⏹ 停止標記', f'主提示詞佇列第 #{end_idx + 1} 筆，到這裡停止', False))
     else:
-        embed.add_field(name="pairs (max)", value=f"**{raw_pairs}**", inline=False)
+        fields.append(('組數（最大）', f'**{raw_pairs}**', False))
     if eff_pairs == 0:
-        embed.set_footer(text="queue empty — 背景程式會用 fallback / no-op")
-    await safe_reply(message, embed=embed)
+        footer = '佇列為空，背景程式會使用預設值或略過'
+    await safe_reply(message, embed=_reply_card.card("📋 待辦佇列", status="ok" if eff_pairs else "idle", fields=fields, footer=footer))
+
 
 
 def _eta_rest_count(pairs: int, per_character_hours: float | None,
@@ -2082,26 +2084,19 @@ async def cmd_eta(message: discord.Message) -> None:
     total_wall += rest_left
     eta_ts = time.time() + total_wall
     eta_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(eta_ts))
-    embed = discord.Embed(title="⏳ ETA estimate", color=0x5865F2)
-    embed.add_field(name="pairs", value=str(pairs), inline=True)
-    embed.add_field(
-        name="per pair",
-        value=f"~{secs_per_pair / 60:.0f} min ({imgs_per_pair} × ~{spi:.0f}s)",
-        inline=True,
-    )
-    embed.add_field(name="raw work", value=_format_duration(int(total_work)), inline=True)
+    fields = []
+    footer = None
+    fields.append(('組數', str(pairs), True))
+    fields.append(('每組時間', f'~{secs_per_pair / 60:.0f} min ({imgs_per_pair} × ~{spi:.0f}s)', True))
+    fields.append(('產圖工時', _format_duration(int(total_work)), True))
     # 現在正在休息的那一段也要顯示出來，否則欄位加不回總時間（raw work +
     # rest periods != total wall），使用者會以為總時間算錯了。
     rest_value = f"{rest_count} × {rest_hours}h"
     if rest_left > 0:
         rest_value += f" + {_format_duration_short(rest_left)} (resting now)"
-    embed.add_field(
-        name="rest periods",
-        value=rest_value,
-        inline=True,
-    )
-    embed.add_field(name="total wall time", value=_format_duration(int(total_wall)), inline=True)
-    embed.add_field(name="projected finish", value=eta_str, inline=True)
+    fields.append(('排程休息', rest_value, True))
+    fields.append(('總等待時間', _format_duration(int(total_wall)), True))
+    fields.append(('預計完成', eta_str, True))
     # 據實說明數字的來源。原本不論取樣範圍一律寫「measured from recent
     # runs」，而實際上它平均了六天的歷史——包含速率完全不同的舊時期。
     src = {
@@ -2126,8 +2121,9 @@ async def cmd_eta(message: discord.Message) -> None:
                    "so this may be optimistic.")
     if end_idx is not None:
         footer += f" Capped by `end` marker at entry #{end_idx + 1}."
-    embed.set_footer(text=footer)
-    await safe_reply(message, embed=embed)
+    footer = footer
+    await safe_reply(message, embed=_reply_card.card("⏳ 預計完成時間", status="info", fields=fields, footer=footer))
+
 
 
 # ---------- batch_config view / edit (!config, !config_set) -----------------
@@ -5418,7 +5414,7 @@ class _DorossiTurnState:
     所有欄位只在事件迴圈內同步讀寫。"""
 
     __slots__ = ("uid", "sid", "kind", "phase", "backend", "started_ts", "proc",
-                 "abort", "offline_since", "offline_target")
+                 "abort", "offline_since", "offline_target", "pending")
 
     def __init__(self, uid: str, sid: str, kind: str = "ask") -> None:
         self.uid = uid
@@ -5429,6 +5425,7 @@ class _DorossiTurnState:
         self.started_ts = time.time()
         self.proc = None
         self.abort = False
+        self.pending = None
         self.offline_since = None
         self.offline_target = None
 
@@ -5446,6 +5443,9 @@ class _DorossiTurnState:
         等空位、等網路、沒有子行程的後端）只有旗標，由下一個檢查點接手。同步、不得 raise。"""
         self.abort = True
         _dorossi_kill_backend_tree(self.proc)
+        if self.pending is not None and self.pending is not asyncio.current_task():
+            self.pending.cancel()
+
 
 
 # 佔著一個後端空位的階段、排在號誌上的階段。兩個集合是 `/dorossi running` 算
@@ -5522,21 +5522,19 @@ def _dorossi_slot_wait_text(lead: str = "") -> str:
 @contextlib.asynccontextmanager
 async def _dorossi_backend_slot(turn: _DorossiTurnState | None = None, *,
                                 compact: bool = False):
-    """取一個後端空位（`_dorossi_backend_sem`），同時把回合的登記跟著換階段：
-    排在號誌上是「等候空位」，拿到之後是「執行中」，放掉之後是「收尾中」。
-
-    **號誌的持有範圍與直接寫 `async with _dorossi_backend_sem` 完全相同**——這裡只在
-    取得前、取得後、放掉前各多一個同步的屬性賦值，沒有任何 await。"""
+    """可中止的後端空位；號誌自己處理取消與同時取得空位的競態。"""
     if turn is not None:
         turn.phase = "compact_wait" if compact else "wait"
-    async with _dorossi_backend_sem:
+    await _dorossi_abortable(turn, _dorossi_backend_sem.__aenter__)
+    try:
         if turn is not None:
             turn.phase = "compact" if compact else "run"
-        try:
-            yield
-        finally:
-            if turn is not None:
-                turn.phase = "finish"
+        yield
+    finally:
+        await _dorossi_backend_sem.__aexit__(*sys.exc_info())
+        if turn is not None:
+            turn.phase = "finish"
+
 
 
 def _dorossi_select_abort_target(running: list, arg: str, active_key):
@@ -6837,7 +6835,7 @@ async def _dorossi_turn_backend(turn: "_DorossiTurnState", live, factory):
         if turn.abort:
             raise _DorossiTurnAborted()
         try:
-            return await factory()
+            return await _dorossi_abortable(turn, factory)
         except _DorossiOfflineError as exc:
             if turn.abort:
                 raise _DorossiTurnAborted() from exc
@@ -6862,6 +6860,7 @@ async def _dorossi_turn_backend(turn: "_DorossiTurnState", live, factory):
             if turn.abort:
                 raise _DorossiTurnAborted() from exc
             raise
+
 
 
 def _dorossi_owner_only(message: discord.Message) -> bool:
@@ -8909,9 +8908,8 @@ async def _shared_dorossi_tune(message: discord.Message, rest: str, *,
     平常打不到——留著是因為「使用者輸入永不原樣進 CLI 參數」是硬需求，而這支
     handler 兩個表面共用。
 
-    **模型的合法值是按後端算的（2026-09-23）。** 每個後端有自己的模型表，所以要先
-    知道這個工作階段在哪個後端上才驗得了——驗證因此排在讀狀態**之後**（讀是唯讀的，
-    先後順序不影響「非法值不得寫入任何東西」）。
+    模型驗證使用所有後端的聯集；套用時同步切換 provider。執行中的呼叫保留快照，
+    後續輪次重新讀取模型與力度，不需要中止任務。
     """
     choice = (rest or "").strip().lower()
     uid = str(message.author.id)
@@ -8923,7 +8921,7 @@ async def _shared_dorossi_tune(message: discord.Message, rest: str, *,
     current_sess = sessions.get(current_sid) if isinstance(
         sessions.get(current_sid), dict) else {}
     backend = dorossi_session_backend(current_sess)
-    allowed = (dorossi_model_choices(backend) if kind == "model"
+    allowed = (DOROSSI_ALL_MODEL_CHOICES if kind == "model"
                else DOROSSI_EFFORT_LEVELS)
     if choice and choice not in allowed and choice != DOROSSI_TUNE_DEFAULT:
         print(f"[dorossi] invalid /{kind} value: {choice!r}", file=sys.stderr)
@@ -8932,10 +8930,10 @@ async def _shared_dorossi_tune(message: discord.Message, rest: str, *,
             f"`/{kind}` 只接受：" + "、".join(allowed)
             + f"、{DOROSSI_TUNE_DEFAULT}。")
         return
-    if (choice and current_sid
-            and _dorossi_session_key(uid, current_sid) in _dorossi_loops):
-        await safe_reply(message, "這個對話的任務正在進行中，請先中止再調整。")
-        return
+    running = bool(current_sid and (
+        _dorossi_session_key(uid, current_sid) in _dorossi_loops
+        or any(turn.uid == uid and turn.sid == current_sid
+               for turn in _dorossi_turns)))
 
     def _mut(state: dict) -> tuple:
         _sid, sess = _dorossi_active_session(state, uid)
@@ -8956,11 +8954,12 @@ async def _shared_dorossi_tune(message: discord.Message, rest: str, *,
         "")
     # 存著的值在目前的後端上用不到時一定要講，否則使用者只會看到「已更新，目前
     # 生效：後端預設模型」而以為指令壞了。值照樣留著，換回吃得下它的後端就生效。
-    # 模型那半由 `_dorossi_tuning_labels` 判（按後端查表）；思考力度那半的判準沒變
-    # ——另一個後端這條路仍然不帶力度旗標。
-    inapplicable = unsupported if kind == "model" else (backend == "codex")
+    # API 路徑尚未提供力度覆寫；CLI 路徑都會接收力度。
+    inapplicable = unsupported if kind == "model" else (backend == "api")
     note = ("（這個工作階段目前的後端不吃這項設定，已記下，換個後端才會生效）"
             if inapplicable else "")
+    if choice and running:
+        note += "（目前這一輪完成後，下一輪會使用新設定。）"
     if not choice:
         await safe_reply(message, f"這段對話目前的{label_name}：`{shown}`{version}。{note}")
     elif choice == DOROSSI_TUNE_DEFAULT:
@@ -8971,6 +8970,7 @@ async def _shared_dorossi_tune(message: discord.Message, rest: str, *,
         await safe_reply(
             message,
             f"✅ 這段對話的{label_name}已更新，目前生效：`{shown}`{version}。{note}")
+
 
 
 async def mcmd_model(message: discord.Message, rest: str) -> None:
@@ -9772,7 +9772,9 @@ async def _dorossi_run_turn(message: discord.Message, prompt: str,
         return
     def _provider_mut(state: dict) -> str:
         _slot_id, slot = _dorossi_session_by_id(state, uid, sid)
-        return slot.get("ai_provider", "claude")
+        selected = (dorossi_model_provider(model_tier, dorossi_session_backend(slot))
+                    if model_tier and model_tier != DOROSSI_TUNE_DEFAULT else None)
+        return selected or slot.get("ai_provider", "claude")
     provider = await _dorossi_state_rmw(_provider_mut)
     backend = provider if provider in ("codex", "gemini") else DOROSSI_BACKEND
     turn.backend = backend
@@ -9958,7 +9960,7 @@ async def _dorossi_run_turn(message: discord.Message, prompt: str,
                             turn, live, lambda: _dorossi_via_codex(
                                 prompt, snap["codex_session_id"], on_text=live.update,
                                 extra_dir=snap["cc_extra_dir"], workdir=snap["cc_cwd"],
-                                model=snap["model"],
+                                model=snap["model"], effort=snap["effort"],
                                 on_proc=turn.set_proc, abort_check=abort_check))
                     except _DorossiResumeError:
                         await live.finalize("⏳ 重新整理對話中…")
@@ -9967,7 +9969,7 @@ async def _dorossi_run_turn(message: discord.Message, prompt: str,
                             turn, live, lambda: _dorossi_via_codex(
                                 prompt, None, on_text=live.update,
                                 extra_dir=snap["cc_extra_dir"], workdir=snap["cc_cwd"],
-                                model=snap["model"],
+                                model=snap["model"], effort=snap["effort"],
                                 on_proc=turn.set_proc, abort_check=abort_check))
                     new_sid = None
                     new_hist = None
@@ -10152,10 +10154,9 @@ async def _dorossi_loop_one_round(prompt: str, snap: dict,
     else:
         # 另一條路只吃模型（沒有力度旗標、沒有預算旗標）。2026-09-23 之前這裡什麼都
         # 不帶，所以自走迴圈在那個後端上一樣吃不到 `/model`。
-        common.update(model=model)
+        common.update(model=model, effort=effort)
         if backend == "gemini":
             common["previous_usage"] = snap.get("gemini_usage_mark")
-            common["effort"] = effort
     stored_id = (snap.get("codex_session_id") if backend == "codex" else
                  snap.get("gemini_session_id") if backend == "gemini" else
                  snap.get("cc_session_id"))
@@ -12171,7 +12172,7 @@ async def mcmd_restart(message: discord.Message) -> None:
     await asyncio.sleep(0.5)
     # Cleanly close the discord client. `client.close()` is what actually
     # ends the process: it unwinds `client.run()` -> `main()` returns 0 ->
-    # `sys.exit(main())` exits with code 0 -> supervisor respawns us.
+    # `sys.exit(main(sys.argv[1:]))` exits with code 0 -> supervisor respawns us.
     #
     # Do NOT call `sys.exit()` / raise SystemExit here: this coroutine runs
     # inside an event-loop task (on_message for `/sys restart`, the
@@ -12214,10 +12215,10 @@ cmd_restart = mcmd_restart
 #     server (`_spawn_oneshot_webrunner` → `_generate_ensure_server`).
 #
 # SPAWN / SUPERVISOR DECISION: the one-shot server is spawned **UN-SUPERVISED**.
-# It reuses `_spawn_webrunner("je")` so it tracks the PID + sets the batch
+# It reuses `_spawn_webrunner()` so it tracks the PID + sets the batch
 # globals (which keeps `_webrunner_alive()` honest and stops a second spawn from
 # racing a second Chrome onto the same profile lock), but it does NOT arm
-# `_watch_for_fallback`: a one-shot server exits rc=0 on its own (idle timeout)
+# `_watch_webrunner`: a one-shot server exits rc=0 on its own (idle timeout)
 # and must never trip the je→selenium fallback, backoff respawn, or
 # rapid-fail-giveup, nor fight a real `/run` batch supervisor. Its exit is
 # observed by `_reap_oneshot_webrunner`, which resets the globals AND re-drives
@@ -12626,7 +12627,7 @@ async def _generate_retry_server(request_id: str) -> None:
     在**呼叫點**夾一次；夾在呼叫點而不是常數定義處，是為了讓測試 monkeypatch 那兩個
     常數之後仍然走得到這道夾子。`minimum > 0` 那一半由 `_coerce_positive_num` 保證。
 
-    **這裡刻意沒有掛 `_watch_for_fallback`**，而且不該掛：那一套會對 one-shot 正常的
+    **這裡刻意沒有掛 `_watch_webrunner`**，而且不該掛：那一套會對 one-shot 正常的
     rc=0 idle 退出觸發 je→selenium 切換，它的 respawn 不看產圖佇列，而且會跟真正的
     `/run` 監督者搶同一組全域。要的只是「退避 ＋ 上限」這條純規則。
     """
@@ -12807,7 +12808,7 @@ async def mcmd_generate_queue(message: discord.Message, rest: str = "") -> None:
 def _single_image_dead_grace_sec() -> float:
     """「背景程式死了、而且這筆從沒收到心跳」要等多久才取消。
 
-    要蓋過 bot 自己（`_watch_for_fallback`、`_generate_retry_server`）與啟動器的重生
+    要蓋過 bot 自己（`_watch_webrunner`、`_generate_retry_server`）與啟動器的重生
     退避，否則會在「崩潰 → 退避 → 重生」這個**正常**空窗裡把請求取消掉，也會搶掉
     one-shot 重起閥門「整條佇列一次收掉」的工作。呼叫時才讀常數，測試換得掉。
     """
@@ -13209,9 +13210,9 @@ async def _spawn_oneshot_webrunner() -> None:
     startup serve and keeps polling for new requests (idle-timeout exit) — so it
     serves the whole queue one-by-one as the bot feeds it, not just one image.
 
-    Reuses `_spawn_webrunner("je")` so the server is tracked in the batch globals
+    Reuses `_spawn_webrunner()` so the server is tracked in the batch globals
     + PID file (keeps `_webrunner_alive()` honest, blocks a racing second spawn),
-    but deliberately does NOT arm `_watch_for_fallback`: it exits rc=0 on its own
+    but deliberately does NOT arm `_watch_webrunner`: it exits rc=0 on its own
     (idle timeout) and must not interact with the fallback / backoff /
     rapid-fail-giveup machinery. Sweeps stale Chrome first so a leftover
     `.chrome_profile/` lock can't fail the spawn.
@@ -13255,7 +13256,7 @@ async def _spawn_oneshot_webrunner() -> None:
         _clear_pid()
         # 宣告式：這一輪是單張伺服器。`_spawn_webrunner` 會把同一個參數同時寫
         # 進 argv 與 `_webrunner_oneshot`，所以下面不必（也不可以）再指派一次。
-        ok, status = _spawn_webrunner("je", single_image_server=True)
+        ok, status = _spawn_webrunner(single_image_server=True)
     finally:
         # webrunner 一起來（`_spawn_webrunner` 同步寫好 webrunner.pid）就放槽——
         # 之後驗證端會靠 webrunner.pid 讓位，bot 不需握著整個 server 生命週期。
@@ -13300,7 +13301,7 @@ async def _reap_oneshot_webrunner(proc: subprocess.Popen) -> None:
     `_bg_task_done`，所以例外從這裡逸出時連一行帶名字的紀錄都沒有；症狀是產圖
     佇列從此不再前進，而且要等到有人再送一次 `/gen image` 才會由 600 秒的 TTL
     掃描自癒。所以：清 PID 檔失敗只記 log 不中斷，整段再包一層 broad except
-    （與 `_watch_for_fallback` 同一個理由——背景任務不准安靜地死）。
+    （與 `_watch_webrunner` 同一個理由——背景任務不准安靜地死）。
     """
     global _webrunner_proc, _webrunner_pid, _webrunner_variant
     global _webrunner_oneshot, _webrunner_log_handle
@@ -13515,8 +13516,9 @@ async def mcmd_tokens(message: discord.Message, rest: str) -> None:
         await safe_reply(message, "用法：`/dorossi tokens`")
         return
 
-    codex_result, agy_result = await asyncio.gather(
-        _query_codex_account_usage(), _query_agy_account_usage())
+    codex_result, agy_result, claude_totals = await asyncio.gather(
+        _query_codex_account_usage(), _query_agy_account_usage(),
+        asyncio.to_thread(claude_local_usage_totals, time.time()))
     # 第一段是本程式自算的本機數字（見 `_render_dorossi_local_usage`），不是外部
     # CLI 的逐字輸出，所以不過濾。第二段走 `_format_codex_account_usage`，每個欄位
     # 也都是本程式自己組出來的受控數值，同樣不需要過濾。
@@ -13527,9 +13529,10 @@ async def mcmd_tokens(message: discord.Message, rest: str) -> None:
     claude_note = _owner_detail(
         message,
         "備註：Claude 帳號整體用量只有互動式 /usage 指令看得到，非互動 CLI 取不到，"
-        "所以上面改列本機自身用量。",
+        "本機全部工作階段用量如下（含另外開啟的工作階段與本 bot，勿與上方加總）。",
         "備註：後端帳號整體用量只有互動式 /usage 指令看得到，非互動 CLI 取不到，"
-        "所以上面改列本機自身用量。")
+        "本機全部工作階段用量如下（含另外開啟的工作階段與本 bot，勿與上方加總）。")
+    claude_report = _render_claude_local_usage(claude_totals)
     codex_heading = _owner_detail(
         message, "**Codex 帳號額度**", "**後端帳號額度**")
     agy_heading = _owner_detail(
@@ -13538,9 +13541,12 @@ async def mcmd_tokens(message: discord.Message, rest: str) -> None:
         "**本機用量（本 bot 自身花費 · 估算美元）**\n"
         + _render_dorossi_local_usage()
         + "\n\n" + claude_note
+        + "\n" + claude_report
         + "\n\n" + codex_heading + "\n" + codex_result
         + "\n\n" + agy_heading + "\n" + agy_result)
-    await safe_reply(message, text[:2000])
+    for chunk in _chunk_for_discord(text):
+        await safe_reply(message, chunk)
+
 
 
 async def _query_agy_account_usage() -> str:
@@ -13550,7 +13556,7 @@ async def _query_agy_account_usage() -> str:
         return "查詢失敗：找不到後端 CLI。"
     proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await _spawn_backend(
             exe, "-p", "/usage", "--output-format", "text",
             "--print-timeout", "30s", stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -13608,17 +13614,21 @@ async def _reap_usage_query_proc(proc) -> None:
     這兩處都是非預期／收尾路徑，取消路徑上不保證還有機會跑完任何 await，而
     `proc.kill()` 不是 coroutine。殺完再用有上限的 reap 把 rc 問回來——它同時盯
     `wait()` 與 `returncode`，誰先到算誰，所以正常路徑上零額外延遲。
+    同步終止使用共用行程樹清理，連同仍可辨識的子孫一起停止；上面的管線等待上限
+    仍保留，因為中間父行程先結束或快照後才起的子孫不保證列得到。
     """
     if proc is None:
         return
     if proc.returncode is None:
         try:
-            proc.kill()
+            _dorossi_kill_backend_tree(proc)
         except ProcessLookupError:
             pass
         except Exception as error:  # pylint: disable=broad-except
             print(f"[tokens] kill failed: {error!r}", file=sys.stderr)
     await _dorossi_reap_proc(proc)
+
+
 
 
 # `_query_claude_account_usage` 已移除：Claude 帳號整體用量只有互動式 `/usage`
@@ -13665,7 +13675,7 @@ async def _query_codex_account_usage() -> str:
     proc = None
     stderr_task = None
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await _spawn_backend(
             exe, "app-server", "--listen", "stdio://",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, cwd=str(PROJECT_ROOT))
@@ -14226,6 +14236,8 @@ async def _handle_mention(message: discord.Message, *, question_entry: bool) -> 
               % (head_lower, message.author.id), file=sys.stderr)
         await safe_reply(message, OWNER_ONLY_DENIED)
         return
+    if handler is not None and not await _text_confirmation(message, payload):
+        return
     # 指令計數：known handler 用 `@<name>`；提問入口上非指令、非空的文字一律
     # 落入 Dorossi（計 `@dorossi`，與文字指令 `dorossi <提問>` 合併）。不是提問
     # 入口的表面在上面就回圖了（計 `_MENTION_TEXT_METRIC`），走不到這裡。slash
@@ -14724,8 +14736,6 @@ def _active_pid() -> int | None:
     return None
 
 
-def _webrunner_script_for(variant: str) -> Path:
-    return WEBRUNNER_JE_SCRIPT if variant == "je" else WEBRUNNER_SCRIPT
 
 
 _NDJSON_ROTATE_KEEP_BYTES = 262_144  # keep ~256 KB tail when rotating
@@ -14886,7 +14896,7 @@ def _discard_prev_log() -> int:
         return 0
 
 
-def _spawn_webrunner(variant: str, *,
+def _spawn_webrunner(*,
                      single_image_server: bool = False) -> tuple[bool, str]:
     """Start the named webrunner variant. Returns (ok, status_message).
 
@@ -14910,14 +14920,15 @@ def _spawn_webrunner(variant: str, *,
     global _webrunner_oneshot
     if _webrunner_stop_requested:
         return False, "spawn refused: stop is in progress"
-    script = _webrunner_script_for(variant)
+    script = WEBRUNNER_SCRIPT
     if not script.exists():
         print(f"_spawn_webrunner: missing script {script.name}", file=sys.stderr)
         return False, "啟動失敗：找不到背景程式檔，請查看 log。"
     if _webrunner_log_handle and not _webrunner_log_handle.closed:
         _webrunner_log_handle.close()
     _rotate_webrunner_log()
-    _webrunner_log_handle = open(WEBRUNNER_LOG, "w", encoding="utf-8", buffering=1)
+    WEBRUNNER_LOG.write_text("", encoding="utf-8")
+    _webrunner_log_handle = open(WEBRUNNER_LOG, "a", encoding="utf-8", buffering=1)
     # webrunner.log is wiped above (per-run); the append-only ndjson logs would
     # otherwise grow forever, so trim them to a recent tail here. After trimming
     # events.ndjson, advance _event_offset to the new size so the watcher reads
@@ -14967,15 +14978,16 @@ def _spawn_webrunner(variant: str, *,
     #
     # 用**覆寫**不是 `setdefault`：呼叫端環境若帶著一個錯的值（`cp950`／`big5`），
     # 讓步等於照那個錯的編、我們照 utf-8 解，結果一樣是 mojibake。
-    _webrunner_proc = subprocess.Popen(
-        argv,
+    _webrunner_proc = _job_popen(
+        argv, guarded=True, keep_alive=True,
         cwd=str(PROJECT_ROOT),
-        stdout=_webrunner_log_handle,
+        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
+    start_log_pump(getattr(_webrunner_proc, "stdout", None), WEBRUNNER_LOG)
     _webrunner_pid = _webrunner_proc.pid
-    _webrunner_variant = variant
+    _webrunner_variant = "je"
     # bot 的認知跟上面那個 argv 來自**同一個參數**，所以兩者不可能不一致。只在
     # 真的生出行程之後才寫：上面兩個早退（stop 要求中／找不到腳本）什麼都沒
     # spawn，不該去動這個旗標（兩個 spawn 前會清它的呼叫端已經清成 False）。
@@ -14989,6 +15001,7 @@ def _spawn_webrunner(variant: str, *,
     print(f"_spawn_webrunner: started {script.name} pid={_webrunner_proc.pid}; "
           f"log -> {WEBRUNNER_LOG.name}", file=sys.stderr)
     return True, "已啟動背景產圖程式"
+
 
 
 # ---------- 批次監督期間的電源要求 ------------------------------------------
@@ -15011,7 +15024,7 @@ def bot_power_hold(reason: str) -> "_power_request.PowerHold":
     放。`release()` 冪等。設定 `keep_bot_awake` 關掉時回一個什麼都不做的 hold，
     呼叫端不必分兩條路。
 
-    持有它的是批次監督（`_watch_for_fallback` 與斷網後的等待）與進行中的 Dorossi
+    持有它的是批次監督（`_watch_webrunner` 與斷網後的等待）與進行中的 Dorossi
     回合／自走迴圈（`_dorossi_work_started`）。理由字串會出現在
     `powercfg /requests` 裡，所以寫得出「是誰在要」。
 
@@ -15063,7 +15076,7 @@ async def _supervisor_notify(channel, content: str, *,
 
 # ---------- bot 重啟後把正在跑的批次接回監督 --------------------------------
 #
-# 在這之前 `on_ready` 只**收養 pid**（`_webrunner_pid`），`_watch_for_fallback` 看到
+# 在這之前 `on_ready` 只**收養 pid**（`_webrunner_pid`），`_watch_webrunner` 看到
 # `_webrunner_proc is None` 就直接返回——bot 重啟過一次，那一輪批次從此沒有人監督：
 # 崩潰不會重生、rapid-fail 不計數、斷網不會接續。
 #
@@ -15223,7 +15236,9 @@ def _inspect_adopted_webrunner(pid: int) -> tuple[str | None, float | None]:
 
     回 `(變體, 啟動時刻 epoch 秒)`。變體是 None 代表**不要當成批次來監督**：查不到、
     不是背景程式（pid 被別的行程重用了）、或它是 `/gen image` 的單張伺服器（那一種
-    本來就刻意不掛監督者，見 `_spawn_oneshot_webrunner`）。
+    本來就刻意不掛監督者，見 `_spawn_oneshot_webrunner`）。最後這一種現在更不能漏：
+    伺服器收工回的是 `RC_SERVED_ONESHOT`，批次監督者讀到它會**重生一個批次**，所以
+    把伺服器誤收養成批次，等於它閒置收工時替使用者起了一輪沒人要的 `/run`。
     """
     try:
         import psutil  # type: ignore
@@ -15238,11 +15253,10 @@ def _inspect_adopted_webrunner(pid: int) -> tuple[str | None, float | None]:
         return None, created
     script = python_script_argument(cmdline)
     name = PurePath(script.replace("\\", "/")).name.lower() if script else ""
-    if name == WEBRUNNER_JE_SCRIPT.name.lower():
-        return "je", created
     if name == WEBRUNNER_SCRIPT.name.lower():
-        return "selenium", created
+        return "je", created
     return None, created
+
 
 
 async def _reattach_adopted_batch_once(pid: int) -> None:
@@ -15262,7 +15276,7 @@ async def _reattach_adopted_batch_once(pid: int) -> None:
     每個行程只做一次（`on_ready` 在完整 re-identify 時會重跑）。
     """
     global _batch_reattach_done, _webrunner_proc, _webrunner_variant
-    global _webrunner_fallback_task, _webrunner_oneshot
+    global _webrunner_supervisor_task, _webrunner_oneshot
     if _batch_reattach_done:
         return
     _batch_reattach_done = True
@@ -15296,8 +15310,8 @@ async def _reattach_adopted_batch_once(pid: int) -> None:
         # 上面有 await：期間使用者可能已經 `/run`／`/stop` 過，或別的路已經接手。
         if (_webrunner_stop_requested or _webrunner_proc is not None
                 or _webrunner_pid != pid
-                or (_webrunner_fallback_task is not None
-                    and not _webrunner_fallback_task.done())):
+                or (_webrunner_supervisor_task is not None
+                    and not _webrunner_supervisor_task.done())):
             adopted._close()
             return
         _webrunner_proc = adopted
@@ -15307,8 +15321,8 @@ async def _reattach_adopted_batch_once(pid: int) -> None:
         if channel is None:
             channel = _NoChannel()
         # 先掛監督、再說話：訊息送不出去不能讓批次停在沒人監督的狀態。
-        _webrunner_fallback_task = asyncio.create_task(
-            _watch_for_fallback(channel, adopted=True))
+        _webrunner_supervisor_task = asyncio.create_task(
+            _watch_webrunner(channel, adopted=True))
         print(f"adopt: supervision re-attached to pid={pid} ({variant})",
               file=sys.stderr)
         await _supervisor_notify(
@@ -15435,14 +15449,14 @@ async def _resume_parked_batch(channel, since: float) -> None:
     走 `_do_webrunner_run` 而不是直接 spawn，是因為那條路的前置檢查在這裡一樣重要：
     獨立監督者在跑就讓位、佇列空了就講、磁碟不夠就擋、先清掉殘留的行程。
 
-    這個 task 一律以 `_webrunner_fallback_task` 的身分跑（監督者停車時交棒給它、
+    這個 task 一律以 `_webrunner_supervisor_task` 的身分跑（監督者停車時交棒給它、
     bot 重啟後由 `_restore_network_resume_once` 建立），所以 `/stop` 與 `/run` 既有
     的「取消監督者」那一步會一併結束這個等待；`/stop` 另外刪掉落地檔。
 
     它是**被交出去跑的 task 本體**，所以要自己接 `_QueueFileNotUtf8`（`/run` 的
     前置檢查讀得到佇列檔）——同 `_scheduled_run_loop`，交出它的那一方接不到。
     """
-    global _webrunner_fallback_task
+    global _webrunner_supervisor_task
     power = bot_power_hold("batch supervision (waiting for the network)")
     try:
         if not await _wait_until_online():
@@ -15460,10 +15474,10 @@ async def _resume_parked_batch(channel, since: float) -> None:
             channel,
             f"🔄 網路已恢復（中斷約 `{_format_duration_short(down_for)}`），"
             "背景程式自動從進度接續中。")
-        # `_do_webrunner_run` 會取消並等待 `_webrunner_fallback_task`——而那正是
+        # `_do_webrunner_run` 會取消並等待 `_webrunner_supervisor_task`——而那正是
         # 這個 task 自己。先把自己摘下來，否則它會取消自己、再等自己結束。
-        if _webrunner_fallback_task is asyncio.current_task():
-            _webrunner_fallback_task = None
+        if _webrunner_supervisor_task is asyncio.current_task():
+            _webrunner_supervisor_task = None
         await _do_webrunner_run(channel)
     except asyncio.CancelledError:
         raise
@@ -15484,23 +15498,23 @@ async def _resume_parked_batch(channel, since: float) -> None:
             alert=True)
     finally:
         power.release()
-        if _webrunner_fallback_task is asyncio.current_task():
-            _webrunner_fallback_task = None
+        if _webrunner_supervisor_task is asyncio.current_task():
+            _webrunner_supervisor_task = None
 
 
 async def _park_batch_for_network(channel) -> None:
     """監督者判定這次失敗是斷網：記下落地檔、說一聲，然後等網路回來再接續。
 
     不計入 rapid-fail／零產出兩道放棄閘——那兩道是給「重生解決不了」的失敗用的，
-    而斷網會自己好。呼叫端（`_watch_for_fallback`）在這之後直接返回；接續由
+    而斷網會自己好。呼叫端（`_watch_webrunner`）在這之後直接返回；接續由
     `_resume_parked_batch` 用新的一輪 `/run` 完成，計數也跟著重新開始。
 
-    **等待交給一個新的 task**，並讓它接下 `_webrunner_fallback_task` 的位子：監督者
+    **等待交給一個新的 task**，並讓它接下 `_webrunner_supervisor_task` 的位子：監督者
     本身到這裡就結束了，`/stop`／`/run` 取消的是那個等待。分成兩個 task 也讓例外的
     歸屬清楚——`/run` 那條路的 `_QueueFileNotUtf8` 由等待的那個 task 自己接。
     """
     global _webrunner_proc, _webrunner_pid, _webrunner_variant
-    global _webrunner_fallback_task
+    global _webrunner_supervisor_task
     _webrunner_proc = None
     _webrunner_pid = None
     _webrunner_variant = None
@@ -15519,7 +15533,7 @@ async def _park_batch_for_network(channel) -> None:
         alert=True)
     if _webrunner_stop_requested:
         return
-    _webrunner_fallback_task = asyncio.create_task(
+    _webrunner_supervisor_task = asyncio.create_task(
         _resume_parked_batch(channel, since))
 
 
@@ -15527,10 +15541,10 @@ async def _restore_network_resume_once() -> None:
     """bot 啟動時把「斷網停下來、等網路回來」的批次接回來。每個行程只做一次。
 
     已經有批次在跑（或判不出來）→ 等待已經沒有意義，刪檔。否則接上
-    `_resume_parked_batch`，存成 `_webrunner_fallback_task`，讓 `/stop`／`/run`
+    `_resume_parked_batch`，存成 `_webrunner_supervisor_task`，讓 `/stop`／`/run`
     照舊取消得掉。這支在 `on_ready` 底下跑，任何例外都不得逸出。
     """
-    global _network_resume_restored, _webrunner_fallback_task
+    global _network_resume_restored, _webrunner_supervisor_task
     if _network_resume_restored:
         return
     _network_resume_restored = True
@@ -15544,8 +15558,8 @@ async def _restore_network_resume_once() -> None:
             print("network resume: a run is already alive; marker discarded",
                   file=sys.stderr)
             return
-        if (_webrunner_fallback_task is not None
-                and not _webrunner_fallback_task.done()):
+        if (_webrunner_supervisor_task is not None
+                and not _webrunner_supervisor_task.done()):
             return
         # 別的平台下的批次：找得回那個對話就講在那裡；找不回來（平台沒開）退回設定頻道
         # ——批次通知本來就以它為預設去處，這裡不像排程回報那樣寧可不講。
@@ -15555,7 +15569,7 @@ async def _restore_network_resume_once() -> None:
                 channel_id, label="network resume")
         if channel is None:
             channel = _NoChannel()
-        _webrunner_fallback_task = asyncio.create_task(
+        _webrunner_supervisor_task = asyncio.create_task(
             _resume_parked_batch(channel, since))
         print("network resume: waiting for the network to resume the batch",
               file=sys.stderr)
@@ -15564,35 +15578,17 @@ async def _restore_network_resume_once() -> None:
               file=sys.stderr)
 
 
-async def _watch_for_fallback(channel, *, adopted: bool = False) -> None:
-    """合併的 watchdog，兩個職責：
+async def _watch_webrunner(channel, *, adopted: bool = False) -> None:
+    """監督唯一的背景程式：異常結束退避重生，正常結束與人為停止不重生。
 
-    1. **je → selenium fallback**：第一次跑 je variant 時，若 5 分鐘
-       startup window 內 rc != 0，自動轉跑 `webrunner_novelai.py`（CLAUDE.md
-       既有行為）。
-    2. **Supervisor respawn**：fallback 階段過了之後（不論最後落腳哪個
-       variant），crash（rc != 0）就以指數 backoff 重啟同一個 variant。
-       Backoff：5s 起跳、上限 300s、若上次活 ≥60s 就 reset 回 5s——實作走
-       `_supervisor.restart_backoff`，不要在這裡再抄一份。User
-       `/stop`（_webrunner_stop_requested）或 rc == 0（todo 跑完）會
-       退出 supervisor。
-
-    另外兩件事（2026-09-22）：
-
-    * **監督期間持有電源要求**（`bot_power_hold`），待命時 bot 不會被暫停，否則
-      批次在待命中崩潰要等到醒來才有人重生它。
-    * **明確斷網的失敗不計入放棄閘**：失敗的當下問一次網路（`_connectivity`），
-      斷網就改成停下來等（`_park_batch_for_network`），網路回來自動接續。
-
-    `adopted=True`＝bot 重啟後接回的批次（`_reattach_adopted_batch_once`）：它早就
-    過了 je 的啟動視窗，所以不做 je → selenium 的切換。
+    斷網時保留進度等網路恢復；需要人處理的頁面直接停止。監督期間持有電源要求。
+    adopted 保留供收養路徑標示呼叫來源，兩條路使用相同的重生與放棄政策。
     """
     global _webrunner_proc, _webrunner_pid, _webrunner_variant
-    global _webrunner_fallback_task
+    global _webrunner_supervisor_task
     proc = _webrunner_proc
     if proc is None:
         return
-    je_fallback_pending = (_webrunner_variant == "je") and not adopted
     # 本函式所有的「多久」一律用 `time.monotonic()`，不用 `time.time()`。
     #
     # `time.time()` 是**可調整**的時鐘（本機 `time.get_clock_info('time')` →
@@ -15611,7 +15607,6 @@ async def _watch_for_fallback(channel, *, adopted: bool = False) -> None:
     # `monotonic` 的零點每個行程都不一樣，所以**會落地或跨行程比對的**絕對
     # 時間戳（事件檔的 `ts`、排程的 `when_ts`、`last_used`…）必須留在
     # `time.time()`——不要順手把那些也一起改掉。
-    je_started_at = time.monotonic() if je_fallback_pending else None
     backoff = WEBRUNNER_RESPAWN_BACKOFF_MIN_SEC
     # Rapid-fail counter — protects against infinite respawn when Chrome
     # can't init at all (webrunner dies in setup phase < threshold_sec
@@ -15631,7 +15626,6 @@ async def _watch_for_fallback(channel, *, adopted: bool = False) -> None:
             proc = _webrunner_proc
             if proc is None:
                 return
-            current_variant = _webrunner_variant
             spawn_time = time.monotonic()  # 間隔量測，見函式開頭的時鐘說明
             # 收養來的行程帶著「它其實什麼時候起來的」（換算到本行程的單調時鐘）。
             # 用它量第一輪的存活時間：跑了幾小時的批次在 bot 重啟後十秒死掉，不該被
@@ -15678,44 +15672,6 @@ async def _watch_for_fallback(channel, *, adopted: bool = False) -> None:
                     return
                 await _park_batch_for_network(channel)
                 return
-            # ---- Case A: je 在 fallback window 內崩 → 換 selenium ----
-            if (je_fallback_pending and current_variant == "je"
-                    and je_started_at is not None
-                    and time.monotonic() - je_started_at
-                    < WEBRUNNER_FALLBACK_WINDOW_SEC):
-                try:
-                    await channel.send(
-                        f"背景程式（主要模式）rc={rc}，啟動後僅 {alive_for:.0f}s "
-                        f"(< {WEBRUNNER_FALLBACK_WINDOW_SEC // 60}min 啟動視窗)；"
-                        f"改用備援模式重啟…"
-                    )
-                except Exception as error:  # pylint: disable=broad-except
-                    print(f"fallback notice send failed: {error!r}", file=sys.stderr)
-                # 取得 Chrome 槽再 spawn（驗證瀏覽器在跑時不要開出第二個 stack）。
-                # respawn 是已授權批次的延續，所以「等」驗證讓出而非 timeout 放棄；
-                # 每輪仍檢查 stop 旗標，`/stop` 期間回 False → 退出 supervisor。
-                if not await _acquire_chrome_slot_for_respawn("webrunner-fallback"):
-                    return
-                try:
-                    _webrunner_proc = None
-                    _webrunner_pid = None
-                    _webrunner_variant = None
-                    _clear_pid()
-                    # 備援跑的仍是**批次**，所以不帶單張伺服器旗標（預設值）。
-                    ok, status = _spawn_webrunner("selenium")
-                finally:
-                    _release_chrome_slot()
-                try:
-                    await channel.send(status)
-                except Exception as error:  # pylint: disable=broad-except
-                    print(f"fallback spawn send failed: {error!r}", file=sys.stderr)
-                if not ok:
-                    return
-                je_fallback_pending = False
-                backoff = WEBRUNNER_RESPAWN_BACKOFF_MIN_SEC
-                continue
-            # ---- Case B: supervisor respawn 同一個 variant ----
-            je_fallback_pending = False
             healthy = alive_for >= WEBRUNNER_HEALTHY_THRESHOLD_SEC
             if healthy:
                 rapid_fail_count = 0  # 健康 run reset rapid-fail 計數
@@ -15763,9 +15719,11 @@ async def _watch_for_fallback(channel, *, adopted: bool = False) -> None:
                     return
             else:
                 rapid_fail_count = 0
-            # 零產出閘：這一輪嘗試過生成卻一張都沒存。重生一次是對的（壞掉的是那個
-            # session），連續幾輪都這樣就代表重生解決不了，該停下來讓人看。
-            if rc == RC_ZERO_PROGRESS:
+            # 零產出閘：這一輪對批次佇列零推進——嘗試過生成卻一張都沒存（rc=3），或
+            # 跑成了單圖伺服器（rc=5，這裡的批次從來不宣告那個模式）。重生一次是對的
+            # （壞掉的是那個 session／那一次宣告），連續幾輪都這樣就代表重生解決不了，
+            # 該停下來讓人看。判準與 `start_webrunner.py` 共用 `_supervisor` 那一支。
+            if webrunner_exit_made_no_progress(rc):
                 zero_progress_count += 1
                 if zero_progress_count >= WEBRUNNER_ZERO_PROGRESS_GIVEUP_COUNT:
                     try:
@@ -15818,7 +15776,7 @@ async def _watch_for_fallback(channel, *, adopted: bool = False) -> None:
                 _webrunner_variant = None
                 _clear_pid()
                 # 監督者重生的是**同一個批次**，不帶單張伺服器旗標（預設值）。
-                ok, status = _spawn_webrunner(current_variant or "selenium")
+                ok, status = _spawn_webrunner()
             finally:
                 _release_chrome_slot()
             try:
@@ -15861,8 +15819,9 @@ async def _watch_for_fallback(channel, *, adopted: bool = False) -> None:
         power.release()
         # 與排程 run 同理：cmd_stop 是 cancel-without-await，日後若有人在
         # cancel 後立刻建新 task，無條件清會抹掉新 task 的參考。
-        if _webrunner_fallback_task is asyncio.current_task():
-            _webrunner_fallback_task = None
+        if _webrunner_supervisor_task is asyncio.current_task():
+            _webrunner_supervisor_task = None
+
 
 
 async def _do_webrunner_run(channel) -> None:
@@ -15871,7 +15830,7 @@ async def _do_webrunner_run(channel) -> None:
     watchdog. Posts to `channel` (not a reply) so the scheduled-run task can
     call it without a triggering message. Shared by `/run` (immediate) and
     `/run at/in` (delayed)."""
-    global _webrunner_fallback_task, _webrunner_stop_requested
+    global _webrunner_supervisor_task, _webrunner_stop_requested
     global _webrunner_proc, _webrunner_pid, _webrunner_variant
     global _low_disk_alerted
     global _webrunner_oneshot, _webrunner_oneshot_reaper_task
@@ -15951,13 +15910,13 @@ async def _do_webrunner_run(channel) -> None:
         #    supervisor 剛好正在 spawn，stop 旗標會讓 `_spawn_webrunner`
         #    當下拒絕生產新 process。再 `await task` 等它真死透。
         _webrunner_stop_requested = True
-        if _webrunner_fallback_task and not _webrunner_fallback_task.done():
-            _webrunner_fallback_task.cancel()
+        if _webrunner_supervisor_task and not _webrunner_supervisor_task.done():
+            _webrunner_supervisor_task.cancel()
             try:
-                await _webrunner_fallback_task
+                await _webrunner_supervisor_task
             except (asyncio.CancelledError, Exception):  # pylint: disable=broad-except
                 pass
-        _webrunner_fallback_task = None
+        _webrunner_supervisor_task = None
         # 1.2 「斷網停下來、等網路回來」的等待也是被取消的那個 task（見
         #     `_resume_parked_batch`），這一輪 `/run` 取代了它，落地檔跟著刪——不然
         #     bot 下次重啟會把一個已經被取代的等待接回來。
@@ -15988,7 +15947,7 @@ async def _do_webrunner_run(channel) -> None:
         #    這一行是整組改動裡最該看清楚的地方——無條件帶上旗標的話，缺陷會從
         #    「批次被誤判成單張」倒過來變成「`/run` 每次都變成單張伺服器」：一樣
         #    安靜，而且更糟（整條佇列從此一張都不產）。
-        ok, status = _spawn_webrunner("je")
+        ok, status = _spawn_webrunner()
     finally:
         # webrunner 一起來（`_spawn_webrunner` 同步寫好 webrunner.pid）就放槽——
         # 之後整個批次期間驗證端會靠 webrunner.pid 讓位，bot 不需握著整個生命週期
@@ -16002,15 +15961,10 @@ async def _do_webrunner_run(channel) -> None:
     #    者，而送訊息是一次真的網路往返：聊天平台連不上（`/run at` 在凌晨到點、
     #    剛好斷網）時它丟例外，監督者就永遠不會被建起來——批次已經在跑，卻沒有人
     #    監督，崩潰不會重生、斷網不會接續，而且什麼訊息都沒有。
-    _webrunner_fallback_task = asyncio.create_task(
-        _watch_for_fallback(channel)
+    _webrunner_supervisor_task = asyncio.create_task(
+        _watch_webrunner(channel)
     )
-    info = (
-        f"{status}。前 {WEBRUNNER_FALLBACK_WINDOW_SEC // 60} 分鐘 rc≠0 會自動"
-        f"改用備援模式；過了之後 crash 走 supervisor "
-        f"backoff respawn（{int(WEBRUNNER_RESPAWN_BACKOFF_MIN_SEC)}s 起跳"
-        f"、上限 {int(WEBRUNNER_RESPAWN_BACKOFF_MAX_SEC)}s）。`/stop` 取消。"
-    )
+    info = f"{status}。異常結束時由監督者退避重啟。`/stop` 取消。"
     label = _get_batch_label()
     if label:
         info += f"\nlabel: `{label}`"
@@ -16406,7 +16360,7 @@ async def _scheduled_run_loop(channel, when_ts: float, *,
         # `_do_webrunner_run` 走到 spawn 那一段時，外面只有一個 `try/finally`
         # （放 Chrome 槽），一個 except 都沒有；而 `_spawn_webrunner` 有未保護的
         # raise 點（log 開檔被鎖住的 PermissionError、Popen 的 OSError、寫 pid 檔的
-        # OSError——同一份清單也寫在 `_watch_for_fallback` 的 except 上）。
+        # OSError——同一份清單也寫在 `_watch_webrunner` 的 except 上）。
         #
         # 少了這個 handler 的後果實測過，而且比「安靜」更糟：使用者先收到上面那句
         # 「scheduled time reached — starting run」，然後**什麼都不會發生**——一句
@@ -16416,7 +16370,7 @@ async def _scheduled_run_loop(channel, when_ts: float, *,
         # 'Task exception was never retrieved'；而下面的 finally 已經把
         # `_scheduled_run_ts` 清掉，`/run cancel` 也查不到。
         #
-        # 不重試、不保留排程——與 `_watch_for_fallback` 的決定一致，交回給使用者。
+        # 不重試、不保留排程——與 `_watch_webrunner` 的決定一致，交回給使用者。
         print(f"scheduled run failed to start: {error!r}", file=sys.stderr)
         traceback.print_exc()
         try:
@@ -16513,7 +16467,7 @@ CHROME_PROFILE_DIR = PROJECT_ROOT / ".chrome_profile"
 
 async def cmd_stop(message: discord.Message) -> None:
     global _webrunner_proc, _webrunner_pid, _webrunner_variant
-    global _webrunner_stop_requested, _webrunner_fallback_task
+    global _webrunner_stop_requested, _webrunner_supervisor_task
     global _webrunner_oneshot, _webrunner_oneshot_reaper_task
     global _generate_inflight
     # 0. 批次的監督權不在本行程手上就讓位。**停止也是監督動作**：這裡會設停止旗標、
@@ -16527,11 +16481,11 @@ async def cmd_stop(message: discord.Message) -> None:
     _webrunner_stop_requested = True
     # 2. cancel supervisor task — 如果 supervisor 正在 sleep / send，馬上
     #    丟 CancelledError 醒它退出。
-    if _webrunner_fallback_task and not _webrunner_fallback_task.done():
-        _webrunner_fallback_task.cancel()
-    _webrunner_fallback_task = None
+    if _webrunner_supervisor_task and not _webrunner_supervisor_task.done():
+        _webrunner_supervisor_task.cancel()
+    _webrunner_supervisor_task = None
     # 2.2 「斷網停下來、等網路回來就接續」的等待：上一步已經取消了那個 task（它就是
-    #     `_webrunner_fallback_task`），這裡刪掉落地檔，bot 重啟後才不會又接回去。
+    #     `_webrunner_supervisor_task`），這裡刪掉落地檔，bot 重啟後才不會又接回去。
     #     這是那個等待唯一的終點之一（另一個是網路回來）——擁有者裁定它不設次數或
     #     時間上限，只有明確的停止能結束它。
     _cancelled_network_wait = _clear_network_resume_file()
@@ -16614,14 +16568,14 @@ async def cmd_stop(message: discord.Message) -> None:
 # ---------------------------------------------------------------------------
 # 獨立監督者：`/launcher`
 # ---------------------------------------------------------------------------
-# bot 自己也有一套監督者（`_watch_for_fallback`），`/run` 走的就是它。這一組存在
+# bot 自己也有一套監督者（`_watch_webrunner`），`/run` 走的就是它。這一組存在
 # 的理由**只有一個**：bot 掛掉或重啟時，獨立監督者還活著、繼續監督批次。所以
 # 這條路唯一真正的功能需求是「真的脫離 bot 的行程樹」——做不到就等於 `/run` 換個
 # 名字，而使用者會被告知「獨立監督者已啟動」。脫離的機制與實測見
 # `_process_control.spawn_detached`。
 #
 # **bot 這一側刻意什麼都不持有。** 不寫 `_webrunner_proc` / `_webrunner_pid` /
-# `_webrunner_variant` / `_webrunner_oneshot`，也不掛 `_watch_for_fallback`：兩套
+# `_webrunner_variant` / `_webrunner_oneshot`，也不掛 `_watch_webrunner`：兩套
 # 監督者同時盯同一個批次會互相重生、互相終止，而兩邊的紀錄看起來都正常。要找它
 # 只能靠掃描（`find_launcher_pids`），那是刻意的代價，不是遺漏。
 #
@@ -16638,7 +16592,6 @@ LAUNCHER_POLL_SEC = 1.5
 # 與「單一實例鎖被佔住」，兩者都是起來幾百毫秒就 return 1——只看「有沒有出現」的
 # 話，那兩種都會被回報成啟動成功。
 LAUNCHER_SETTLE_SEC = 2.5
-LAUNCHER_VARIANTS = ("je", "selenium")
 
 
 # ---------- 批次的監督權：一把鎖，誰拿到誰監督 ------------------------------
@@ -16725,10 +16678,7 @@ async def _launcher_scan() -> tuple[list[int], bool]:
     return await asyncio.to_thread(find_launcher_pids)
 
 
-async def _launcher_start(message: discord.Message, variant: str) -> None:
-    if variant not in LAUNCHER_VARIANTS:
-        await safe_reply(message, "用法：`/launcher start`（可指定模式）。")
-        return
+async def _launcher_start(message: discord.Message) -> None:
     if not LAUNCHER_SCRIPT.exists():
         print(f"_launcher_start: missing {LAUNCHER_SCRIPT.name}", file=sys.stderr)
         await safe_reply(message, "啟動失敗：找不到監督者程式檔，請查看 log。")
@@ -16757,7 +16707,7 @@ async def _launcher_start(message: discord.Message, variant: str) -> None:
             "目前已經有批次在執行，先用 `/stop` 停下來再啟動獨立監督者。")
         return
 
-    argv = [sys.executable, "-u", str(LAUNCHER_SCRIPT), variant]
+    argv = [sys.executable, "-u", str(LAUNCHER_SCRIPT)]
     if not await asyncio.to_thread(
             spawn_detached, argv, cwd=str(PROJECT_ROOT)):
         await safe_reply(message, "啟動失敗，請查看 log。")
@@ -16800,10 +16750,11 @@ async def _launcher_start(message: discord.Message, variant: str) -> None:
         return
     await safe_reply(message, _owner_detail(
         message,
-        f"✅ 獨立監督者已啟動（{variant}）。它跟 bot 分開執行，"
+        f"✅ 獨立監督者已啟動。它跟 bot 分開執行，"
         "bot 重啟也不會影響它；`/launcher stop` 可以停掉它。",
         "✅ 獨立監督者已啟動。它跟 bot 分開執行，bot 重啟也不會影響它；"
         "`/launcher stop` 可以停掉它。"))
+
 
 
 async def _launcher_stop(message: discord.Message) -> None:
@@ -16858,7 +16809,10 @@ async def cmd_launcher(message: discord.Message, payload: str = "") -> None:
     rest = parts[1:]
     try:
         if verb == "start":
-            await _launcher_start(message, rest[0].lower() if rest else "je")
+            if rest and [part.lower() for part in rest] != ["je"]:
+                await safe_reply(message, "用法：`/launcher start`。")
+                return
+            await _launcher_start(message)
         elif verb == "stop":
             await _launcher_stop(message)
         elif verb == "status":
@@ -21980,7 +21934,7 @@ async def cmd_health(message: discord.Message, payload: str = "") -> None:
         lines.append("- **背景產圖程式**: (err — 請查看 log)")
 
     # --- Supervisor watchdog ---
-    sup = "alive" if (_webrunner_fallback_task and not _webrunner_fallback_task.done()) else "off"
+    sup = "alive" if (_webrunner_supervisor_task and not _webrunner_supervisor_task.done()) else "off"
     lines.append(f"- **supervisor watchdog**: {sup}")
 
     # --- Bot self ---
@@ -22229,6 +22183,14 @@ def _health_omitted_line(count: int) -> str:
             "`/sys health quick` 只列最要緊的幾項。")
 
 
+_LIBRARY_SOURCE_TEXT = {
+    WEBRUNNER_SOURCE_ENV: "環境變數指定的本機工作樹",
+    WEBRUNNER_SOURCE_CONFIG: "設定檔指定的本機工作樹",
+    WEBRUNNER_SOURCE_SIBLING: "專案旁邊的同層資料夾",
+    WEBRUNNER_SOURCE_INSTALLED: "已安裝的套件",
+}
+
+
 async def cmd_doctor(message: discord.Message) -> None:
     """Triage with concrete next-step suggestions.
 
@@ -22359,6 +22321,29 @@ async def cmd_doctor(message: discord.Message) -> None:
                      + "supervisor，那是另一個長命行程。"),
             f"- WARN {len(labels)} 個執行中的元件比磁碟上的程式碼舊；"
             "需要重啟才會載入新版本。"))
+    ran, library = await _doctor_probe("library source", resolve_webrunner_path)
+    if not ran:
+        ok = False
+        findings.append(
+            "- WARN could not check where the browser automation library loads "
+            "from; see the log.")
+    else:
+        where = _LIBRARY_SOURCE_TEXT.get(library.source, library.source)
+        path = _owner_detail(
+            message, lambda: f"（`{library.path}`）" if library.path else "", "")
+        if library.skipped:
+            ok = False
+            missed = _owner_detail(
+                message,
+                lambda: "：" + "、".join(f"`{p}`" for _s, p in library.skipped), "")
+            findings.append(
+                f"- WARN 有 {len(library.skipped)} 個指定的瀏覽器自動化函式庫位置不存在{missed}；"
+                f"已退到{where}{path}。")
+        elif library.source == WEBRUNNER_SOURCE_INSTALLED:
+            findings.append(
+                f"- NOTE 瀏覽器自動化函式庫會用{where}（沒有找到本機工作樹）。")
+        else:
+            findings.append(f"- INFO 瀏覽器自動化函式庫從{where}載入{path}。")
     # 「主機當掉之後這一套自己回得來嗎」。登入觸發的排程工作解決了「重開之後沒人
     # 拉起來」，但**前提是有人登入**——一台長期執行的主機每隔幾天就可能自動
     # 重開，2026-09-02 那次重開後停在鎖定畫面，整套停了約 23 小時才有人發現。
@@ -22974,7 +22959,7 @@ async def cmd_git_pull(message: discord.Message, payload: str) -> None:
     await safe_reply(message, "\n".join(lines))
     await asyncio.sleep(0.5)
     # `client.close()` is the exit driver (unwinds client.run() -> main()
-    # returns 0 -> sys.exit(main()) -> supervisor respawns). Never raise
+    # returns 0 -> sys.exit(main(sys.argv[1:])) -> supervisor respawns). Never raise
     # SystemExit / call sys.exit() here: this runs inside an event-loop task
     # (on_message for `/sys git_pull`, CommandTree-invoker for `/git_pull`) and
     # SystemExit is a BaseException that escapes discord.py's `except
@@ -24895,12 +24880,56 @@ async def _daily_health_loop() -> None:
         await asyncio.sleep(60)
 
 
+_PRESENCE_ONLY = False
+
+
+async def _initialize_presence() -> None:
+    global _last_mirrored_presence_key
+    # 清掉 presence dedup cache（與 on_resumed 相同理由，但這裡涵蓋 RESUME
+    # 失敗的情況）：PC 睡眠 / 休眠、或 Discord 維修導致 gateway session 過期到
+    # 無法 RESUME 時，discord.py 只能重新 IDENTIFY，觸發的是 on_ready 而非
+    # on_resumed。重新 IDENTIFY 後 Discord 已丟失我們的 presence 狀態，但探測
+    # 算出的 key 仍等於睡眠前殘留的 _last_mirrored_presence_key，
+    # _apply_combined_presence 會命中 dedup early-return、永遠不再送出 presence，
+    # 直到遊戲 / 音樂剛好變化才恢復（就是「睡醒後 presence 卡住」的症狀）。清成
+    # None 強制下面的 initial mirror 與下一次 probe tick 真的重送。也涵蓋下方
+    # 「找不到目標使用者」分支——那條完全不呼叫 _apply_combined_presence、只仰賴
+    # 之後的 probe tick，而 probe tick 唯有 cache 被清成 None 時才會重送。
+    _last_mirrored_presence_key = None
+    # Mirror the target user's current presence as soon as we're ready,
+    # so we don't have to wait for them to toggle status before the bot
+    # reflects anything. Search all visible guilds for a username match.
+    try:
+        found = not TARGET_PRESENCE_USERNAME   # 沒設定就不找，也不抱怨
+        for guild in client.guilds if TARGET_PRESENCE_USERNAME else ():
+            for member in guild.members:
+                if _matches_target_user(member):
+                    await _mirror_member_presence(member)
+                    print(f"initial presence mirror: {member} "
+                          f"(guild={guild.name})")
+                    found = True
+                    break
+            if found:
+                break
+        if not found:
+            print(
+                f"target user @{TARGET_PRESENCE_USERNAME} not found in any "
+                f"visible guild yet — will mirror on next presence_update"
+            )
+    except Exception as error:  # pylint: disable=broad-except
+        print(f"initial presence mirror failed: {error!r}", file=sys.stderr)
+
+
 @client.event
 async def on_ready() -> None:
     global _webrunner_pid, _event_offset, _generate_inflight
     global _last_mirrored_presence_key, _METRICS_ERRORS
     print(f"logged in as {client.user} (id={client.user.id if client.user else '?'})")
     print(f"watching channel id {CHANNEL_ID}")
+    if _PRESENCE_ONLY:
+        await _initialize_presence()
+        _ensure_background_tasks_alive(source="on_ready")
+        return
     # Recover previous webrunner instance from PID file if still alive.
     pid, pid_decided = _load_pid()
     if pid is not None:
@@ -24992,39 +25021,7 @@ async def on_ready() -> None:
         # stderr、不累加錯誤計數，所以 `/sys metrics` 與 `/sys doctor` 都看不到。
         print(f"slash sync failed: {error!r}", file=sys.stderr)
         _METRICS_ERRORS += 1
-    # 清掉 presence dedup cache（與 on_resumed 相同理由，但這裡涵蓋 RESUME
-    # 失敗的情況）：PC 睡眠 / 休眠、或 Discord 維修導致 gateway session 過期到
-    # 無法 RESUME 時，discord.py 只能重新 IDENTIFY，觸發的是 on_ready 而非
-    # on_resumed。重新 IDENTIFY 後 Discord 已丟失我們的 presence 狀態，但探測
-    # 算出的 key 仍等於睡眠前殘留的 _last_mirrored_presence_key，
-    # _apply_combined_presence 會命中 dedup early-return、永遠不再送出 presence，
-    # 直到遊戲 / 音樂剛好變化才恢復（就是「睡醒後 presence 卡住」的症狀）。清成
-    # None 強制下面的 initial mirror 與下一次 probe tick 真的重送。也涵蓋下方
-    # 「找不到目標使用者」分支——那條完全不呼叫 _apply_combined_presence、只仰賴
-    # 之後的 probe tick，而 probe tick 唯有 cache 被清成 None 時才會重送。
-    _last_mirrored_presence_key = None
-    # Mirror the target user's current presence as soon as we're ready,
-    # so we don't have to wait for them to toggle status before the bot
-    # reflects anything. Search all visible guilds for a username match.
-    try:
-        found = not TARGET_PRESENCE_USERNAME   # 沒設定就不找，也不抱怨
-        for guild in client.guilds if TARGET_PRESENCE_USERNAME else ():
-            for member in guild.members:
-                if _matches_target_user(member):
-                    await _mirror_member_presence(member)
-                    print(f"initial presence mirror: {member} "
-                          f"(guild={guild.name})")
-                    found = True
-                    break
-            if found:
-                break
-        if not found:
-            print(
-                f"target user @{TARGET_PRESENCE_USERNAME} not found in any "
-                f"visible guild yet — will mirror on next presence_update"
-            )
-    except Exception as error:  # pylint: disable=broad-except
-        print(f"initial presence mirror failed: {error!r}", file=sys.stderr)
+    await _initialize_presence()
     _dorossi_restore_queued_turns_once()
     # 啟動本機 presence probe loop + event watcher。Probe 即使目標使用者
     # 隱身（Discord 完全不會丟 presence_update 過來）也能繼續把遊戲 /
@@ -25156,6 +25153,12 @@ def _ensure_background_tasks_alive(*, source: str) -> None:
         print(notice)
         return task
 
+    _presence_probe_task = _revive(
+        _presence_probe_task, _presence_probe_loop, "presence-probe",
+        f"presence probe started ({source}, "
+        f"interval={PRESENCE_PROBE_INTERVAL_SEC}s)")
+    if _PRESENCE_ONLY:
+        return
     _schedule_task = _revive(
         _schedule_task, _schedule_loop, "schedule-loop",
         f"schedule loop started ({source})")
@@ -25165,10 +25168,6 @@ def _ensure_background_tasks_alive(*, source: str) -> None:
     _daily_health_task = _revive(
         _daily_health_task, _daily_health_loop, "daily-health",
         f"daily health task started ({source})")
-    _presence_probe_task = _revive(
-        _presence_probe_task, _presence_probe_loop, "presence-probe",
-        f"presence probe started ({source}, "
-        f"interval={PRESENCE_PROBE_INTERVAL_SEC}s)")
     _wake_watch_task = _revive(
         _wake_watch_task, _dorossi_wake_watch_loop, "wake-watch",
         f"wake watch started ({source})")
@@ -25198,12 +25197,13 @@ async def on_resumed() -> None:
     global _last_mirrored_presence_key
     print("Discord session resumed")
     _ensure_background_tasks_alive(source="on_resumed")
-    # 斷線（網路、平台）期間停下來的自走任務在這裡接回去。掃描可以重複跑，已經在跑的
-    # 不會再接一份（見 `_dorossi_autoresume_pending_loops`）。
-    _schedule_coro(_dorossi_resume_scan(), label="dorossi-autoresume-scan")
-    # 斷線時放回去的排隊提問、送不出去而停著的答案。
-    _schedule_coro(_dorossi_after_reconnect("on_resumed"),
-                   label="dorossi-after-reconnect")
+    if not _PRESENCE_ONLY:
+        # 斷線（網路、平台）期間停下來的自走任務在這裡接回去。掃描可以重複跑，已經在跑的
+        # 不會再接一份（見 `_dorossi_autoresume_pending_loops`）。
+        _schedule_coro(_dorossi_resume_scan(), label="dorossi-autoresume-scan")
+        # 斷線時放回去的排隊提問、送不出去而停著的答案。
+        _schedule_coro(_dorossi_after_reconnect("on_resumed"),
+                       label="dorossi-after-reconnect")
     _last_mirrored_presence_key = None  # force re-apply on next probe tick
     try:
         await _apply_combined_presence()
@@ -25220,6 +25220,8 @@ async def on_raw_reaction_add(
     the file from disk + favorites. 限定 CHANNEL_ID、限非 bot 自己的人；
     必須是 bot 之前上傳並登記在 _RECENT_IMAGE_MSGS 的訊息才有效（重啟前
     的舊圖訊息因 in-memory map 已空、不會誤動）。"""
+    if _PRESENCE_ONLY:
+        return
     if payload.channel_id != CHANNEL_ID:
         return
     if client.user is not None and payload.user_id == client.user.id:
@@ -25357,6 +25359,8 @@ async def _react_delete(payload: discord.RawReactionActionEvent,
 
 @client.event
 async def on_message(message: discord.Message) -> None:
+    if _PRESENCE_ONLY:
+        return
     if message.author == client.user:
         return
     content = message.content
@@ -25403,6 +25407,9 @@ async def on_message(message: discord.Message) -> None:
         await safe_reply(message, OWNER_ONLY_DENIED)
         return
     if not await _check_command_permission(message, head, rest):
+        return
+
+    if not await _text_confirmation(message, content):
         return
 
     # `!cmd` dispatch counter — `_METRICS_ERRORS` 增量在 except 區塊。
@@ -25729,6 +25736,8 @@ async def dispatch_external_message(message) -> None:
         # 訊號，照單全收的話群組裡每個非擁有者的每一句話都會換來一句「僅限特定使用者」。
         return
     # 沒有斜線選單的平台上，文字是唯一的入口：非指令文字就是提問。
+    if not await _text_confirmation(message, content):
+        return
     await _handle_mention(message, question_entry=True)
 
 
@@ -25757,14 +25766,12 @@ def _own_platform_config() -> dict:
 
 
 def _text_command_hints() -> dict[str, str]:
-    """Slash command -> its text command (`/gen pause` -> `!pause`), for rewriting hints on
-    platforms without a slash menu.
+    """斜線指令 → 它的文字指令（`/gen pause` → `!pause`），給沒有斜線選單的平台改寫提示用。
 
-    Only **one-to-one** aliases: `extras["bang"]` belongs to this slash command alone. Shared
-    aliases are deliberately left out (`!win` stands for ten `/win ...`) -- the text surface
-    reads the sub-command as an argument, and not always under the same word
-    (`/win state close` is `!win close` there), so a mechanical mapping would teach a form
-    that does not work; those hints stay in slash form.
+    只收**一對一**的別名：`extras["bang"]` 只屬於這一個斜線指令。共用的別名刻意不收
+    （`!win` 對應十個 `/win …`）——文字表面把子指令當參數讀，而且不一定是同一個字
+    （`/win state close` 在文字表面是 `!win close`），機械式對應會教出打不通的寫法；
+    沒收進來的提示原樣留著斜線寫法。
     """
     owners: dict[str, list[str]] = {}
     for command in tree.walk_commands():
@@ -25773,7 +25780,10 @@ def _text_command_hints() -> dict[str, str]:
         bang = command.extras.get("bang")
         if isinstance(bang, str) and bang.startswith("!"):
             owners.setdefault(bang, []).append("/" + command.qualified_name)
-    return {slashes[0]: bang for bang, slashes in owners.items() if len(slashes) == 1}
+    hints = {slashes[0]: bang for bang, slashes in owners.items() if len(slashes) == 1}
+    hints["/dorossi ask"] = "dorossi"
+    return hints
+
 
 
 def _build_chat_transports() -> None:
@@ -26015,6 +26025,8 @@ async def _tree_check(interaction: discord.Interaction) -> bool:
     channel-only commands elsewhere is purely access-control and leaks no
     brand strings into other channels.
     """
+    if _PRESENCE_ONLY:
+        return False
     # ⚠️ `CommandTree._call` invokes this on its FIRST line, while the
     # autocomplete branch sits ~24 lines further down — so this hook fires on
     # every KEYSTROKE in an autocomplete field, not only on invocation.
@@ -26146,7 +26158,7 @@ async def _slash_run_with_file(interaction: discord.Interaction,
     await _slash_run(interaction, handler, *args, detach_ack=detach_ack)
 
 async def _slash_run(interaction: discord.Interaction, handler, *args,
-                     detach_ack: str | None = None) -> None:
+                     detach_ack: str | None = None, _confirmed: bool = False) -> None:
     """Defer, adapt, dispatch — the one body every slash command shares.
 
     `detach_ack` is for commands that can outlive the 15-minute interaction
@@ -26157,6 +26169,17 @@ async def _slash_run(interaction: discord.Interaction, handler, *args,
     text dispatchers already normalise fences at the dispatch layer (14246 and
     7702); the slash path did not, which meant a fenced paste behaved
     differently depending on which surface you used."""
+    command = getattr(interaction, "command", None)
+    if not _confirmed and _requires_confirmation(command, getattr(interaction, "namespace", None)):
+        proxy = interaction.extras.get("proxy") or _InteractionMessageProxy(interaction)
+        async def authorize(component):
+            checked = _ConfirmedCommandInteraction(component, command, getattr(interaction, "namespace", None))
+            return checked if await _tree_check(checked) else None
+        async def execute(checked):
+            await _slash_run(checked, handler, *args, detach_ack=detach_ack, _confirmed=True)
+        view = _reply_confirm.ConfirmView(owner_id=interaction.user.id, authorize=authorize, execute=execute)
+        view.message = await safe_reply(proxy, "⚠️ 這會清空或刪除資料。請確認或取消。", view=view)
+        return
     proxy = interaction.extras.get("proxy") or _InteractionMessageProxy(interaction)
     try:
         if not interaction.response.is_done():
@@ -26196,12 +26219,12 @@ async def _slash_run(interaction: discord.Interaction, handler, *args,
         # `safe_reply(proxy, …)` 而不是 `proxy.reply(…)` 的理由見上面那條。
         _METRICS_ERRORS += 1
         await safe_reply(proxy, _queue_not_utf8_reply(proxy, error))
-    # **Not in a `finally`**: an exception the two branches above do not catch goes
-    # up to `_tree_error`, which replies with the internal-error line. In a `finally`,
-    # `finish()` would first add "done" — the user would see success and then failure.
-    # Only a normal return (or one of the two aborts above, which already replied)
-    # needs the guaranteed reply.
+    # **不放在 `finally`**（2026-09-25 改）：沒被上面兩支接住的例外會往上交給
+    # `_tree_error`，由它回「指令發生內部錯誤」。放在 `finally` 的話，`finish()` 會
+    # 先補一句「✅ 完成。」——使用者先看到成功、緊接著又看到失敗。只有正常結束
+    # （或上面兩種已經回過話的中止）才需要保證有一則回覆。
     await proxy.finish()
+
 
 
 @tree.command(name="help", description="指令說明（tw / cn / en）",
@@ -26336,17 +26359,19 @@ _DOROSSI_AUTOCOMPLETE_LIMIT = 25
 
 
 def _dorossi_model_options(backend: str, typed: str) -> list:
-    """`/dorossi model` 的候選值：**這個後端**的 allowlist ＋「預設」，按輸入過濾。
+    """`/dorossi model` 的候選值：全後端 allowlist，優先列目前後端，按輸入過濾。
 
     純函式（只讀那兩張表），回傳 `(顯示名, 值)` 的 list，長度必定 ≤
     `_DOROSSI_AUTOCOMPLETE_LIMIT`。回出去的永遠只有**別名**，完整 model id 不會出現
     在候選清單裡。
     """
     needle = (typed or "").strip().lower()
-    pairs = [(alias, alias) for alias in dorossi_model_choices(backend)]
-    pairs.append(("預設", DOROSSI_TUNE_DEFAULT))
+    aliases = list(dorossi_model_choices(backend))
+    aliases += [alias for alias in DOROSSI_ALL_MODEL_CHOICES if alias not in aliases]
+    pairs = [("預設", DOROSSI_TUNE_DEFAULT)] + [(alias, alias) for alias in aliases]
     matched = [pair for pair in pairs if needle in pair[1].lower()]
     return matched[:_DOROSSI_AUTOCOMPLETE_LIMIT]
+
 
 
 @dorossi_group.command(name="model_list", description="列出每個後端支援的模型",
@@ -26377,6 +26402,8 @@ async def _dorossi_model_autocomplete(interaction: discord.Interaction,
 
     取不到工作階段一律退回模組設定的後端（fail-soft：選單寧可少列，也不要炸掉）。
     """
+    if interaction.user.id != DOROSSI_USER_ID:
+        return []
     try:
         uid = str(interaction.user.id)
         state = _dorossi_load_state()
@@ -26389,6 +26416,7 @@ async def _dorossi_model_autocomplete(interaction: discord.Interaction,
         backend = DOROSSI_BACKEND
     return [discord.app_commands.Choice(name=name, value=value)
             for name, value in _dorossi_model_options(backend, current)]
+
 
 
 @dorossi_group.command(name="effort", description="顯示或設定這個工作階段的思考力度",
@@ -28149,18 +28177,29 @@ async def slash_locate_ui_tree(interaction: discord.Interaction,
 
 @locate_group.command(name="gone", description="等某個東西從畫面上消失",
                       extras={"bang": "!wait_gone"})
-@discord.app_commands.describe(kind="要等哪一種目標消失", target="目標內容",
-                               seconds="最長等幾秒")
+@discord.app_commands.describe(kind="要等哪一種目標消失",
+                               target="文字／視窗目標；圖片可填門檻（預設 0.9）",
+                               seconds="最長等幾秒", template="圖片目標的樣板圖片")
 @discord.app_commands.choices(kind=[
     discord.app_commands.Choice(name="文字", value="text"),
     discord.app_commands.Choice(name="視窗", value="window"),
     discord.app_commands.Choice(name="圖片", value="image"),
 ])
 async def slash_locate_gone(
-        interaction: discord.Interaction, kind: str, target: str,
-        seconds: discord.app_commands.Range[int, 1, 600] = 30) -> None:
-    await _slash_run(interaction, cmd_wait_gone, f"{kind} {seconds} {target}",
-                     detach_ack="⏳ 等待中…")
+        interaction: discord.Interaction, kind: str, target: str = "",
+        seconds: discord.app_commands.Range[int, 1, 600] = 30,
+        template: discord.Attachment = None) -> None:
+    # 圖片一律帶秒數與門檻，避免單獨的 1 秒被相容解析器當成門檻。
+    image_target = target.strip() or str(LOCATE_THRESHOLD_DEFAULT)
+    payload = (f"{kind} {seconds} {image_target if kind == 'image' else target}"
+               if kind == "image" or target.strip() else kind)
+    if kind == "image" and template is not None:
+        await _slash_run_with_file(interaction, template, cmd_wait_gone, payload,
+                                   detach_ack="⏳ 等待中…")
+    else:
+        await _slash_run(interaction, cmd_wait_gone, payload,
+                         detach_ack="⏳ 等待中…")
+
 
 
 @locate_group.command(name="pixel", description="等某一點變成（或不再是）指定顏色",
@@ -29133,7 +29172,16 @@ async def _run_transport_only() -> bool:
         _ensure_chat_transports_alive(source="watchdog")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    global _PRESENCE_ONLY
+    parser = argparse.ArgumentParser(description="啟動 bot。")
+    parser.add_argument("--platform", default=ACTIVE_PLATFORM)
+    parser.add_argument("--presence-only", action="store_true",
+                        help="只啟用狀態偵測與更新")
+    args = parser.parse_args(argv or [])
+    if args.presence_only and (args.platform != "discord" or ACTIVE_PLATFORM != "discord"):
+        parser.error("--presence-only 只支援 discord 平台")
+    _PRESENCE_ONLY = args.presence_only
     # 單一實例閘門，擺在**最前面**：拿不到鎖時什麼都還沒做，連 token 都還沒讀，
     # 所以第二個實例不會碰到任何共用狀態就結束。鎖必須綁在區域變數上活到 return
     # ——物件被回收 = fd 被關 = 鎖沒了。
@@ -29158,13 +29206,15 @@ def main() -> int:
         # 只代表另一個平台的行程正在監督批次，本行程照常提供其餘功能，只是對批次
         # 控制指令讓位。取不到**不是**啟動失敗——那會讓「第二個平台」變成「第二個
         # 平台不能用」。
-        _claim_batch_supervision()
+        if not _PRESENCE_ONLY:
+            _claim_batch_supervision()
         # import 全部跑完之後才取樣——晚算等於拿磁碟跟磁碟自己比。放在單一實例閘
         # 之後，第二個實例不會多印一行。
         _log_code_fingerprint()
         _install_reconnect_log_filter()
         try:
-            check_setup()
+            if not _PRESENCE_ONLY:
+                check_setup()
             # 憑證只有**預設平台的那個行程**需要：其他平台的行程不登入它，讀了也
             # 用不到，而「要求一個用不到的憑證」會讓只想跑另一個平台的人卡在 rc=5。
             token = (read_token(TOKEN_FILE)
@@ -29183,15 +29233,16 @@ def main() -> int:
             # 就收掉它們。`/sys restart` 走的正是「client.close() → main() 回傳 → 行
             # 程結束」這條路，不清的話每重啟一次就多留一批沒人管的行程，而下指令
             # 的人從對話裡完全看不到。按住的鍵同理——留著等於把桌面鎖住。
-            try:
-                stopped = _gui.job_stop_all()
-                if stopped:
-                    print(f"main: stopped {stopped} background job(s) on exit",
+            if not _PRESENCE_ONLY:
+                try:
+                    stopped = _gui.job_stop_all()
+                    if stopped:
+                        print(f"main: stopped {stopped} background job(s) on exit",
+                              file=sys.stderr)
+                    _gui.release_all_inputs()
+                except Exception as error:  # pylint: disable=broad-except
+                    print(f"main: shutdown cleanup failed: {error!r}",
                           file=sys.stderr)
-                _gui.release_all_inputs()
-            except Exception as error:  # pylint: disable=broad-except
-                print(f"main: shutdown cleanup failed: {error!r}",
-                      file=sys.stderr)
     finally:
         # OS 在行程結束時本來就會放掉，這裡只是明確收尾——順帶讓「lock 必須活到
         # 這裡」在程式碼上看得出來，不會被當成沒用的變數清掉。
@@ -29199,5 +29250,135 @@ def main() -> int:
     return 0
 
 
+
+_pending_confirmations = {}
+_CONFIRMATION_TIMEOUT_SEC = 60.0
+
+async def _dorossi_abortable(turn: _DorossiTurnState | None, factory):
+    """讓等待空位與沒有子行程的後端，都能在要求中止時立即取消等待。"""
+    if turn is None:
+        return await factory()
+    if turn.abort:
+        raise _DorossiTurnAborted()
+    pending = asyncio.current_task()
+    turn.pending = pending
+    try:
+        return await factory()
+    except asyncio.CancelledError:
+        if turn.abort:
+            raise _DorossiTurnAborted() from None
+        raise
+    finally:
+        if turn.pending is pending:
+            turn.pending = None
+
+
+class _ConfirmedCommandInteraction:
+    """元件互動沿用原指令的權限資料，回覆則使用這一次互動。"""
+    def __init__(self, interaction, command, namespace):
+        self._interaction = interaction
+        self.command = command
+        self.namespace = namespace
+        self.type = discord.InteractionType.application_command
+        self.extras = {}
+
+    def __getattr__(self, name):
+        return getattr(self._interaction, name)
+
+
+def _requires_confirmation(command, namespace=None) -> bool:
+    name = getattr(command, "qualified_name", "")
+    if name == "dorossi workspace_clean" and getattr(namespace, "dry", False):
+        return False
+    return (name.rsplit(" ", 1)[-1] in {
+                "clear", "delete", "remove", "reset", "purge", "pop", "rm_line",
+                "cleanup_debug", "workspace_clean", "failed_clear"}
+            and name != "input key clear")
+
+
+
+def _destructive_text_prefixes():
+    commands = [command for command in tree.walk_commands()
+                if not isinstance(command, discord.app_commands.Group)]
+    counts = collections.Counter(command.extras.get("bang") for command in commands)
+    prefixes = {"dorossi queue failed clear", "queue failed clear", "queue clear", "genqueue clear",
+                "session delete", "session reset", "allowdir remove",
+                "!c1_clear", "!c2_clear", "!c1_remove", "!c2_remove",
+                "!tp_clear", "!tp_remove", "!tn_clear", "!tn_remove",
+                "!c1_pop", "!c2_pop", "!tp_pop", "!tn_pop"}
+    for command in commands:
+        if not _requires_confirmation(command):
+            continue
+        qualified = command.qualified_name
+        mention = command.extras.get("mention")
+        if mention:
+            prefixes.add(mention)
+        if qualified.startswith("dorossi "):
+            prefixes.add(qualified)
+        bang = command.extras.get("bang")
+        if not bang:
+            continue
+        if counts[bang] == 1:
+            prefixes.add(bang)
+        else:
+            words = qualified.split()
+            head = bang.lstrip("!")
+            if head in words:
+                prefixes.add(" ".join([bang, *words[words.index(head) + 1:]]))
+    return prefixes
+
+
+
+async def _text_confirmation(message, content: str) -> bool:
+    """沒有按鈕時，60 秒內重送同一條指令確認；每次仍經原本的權限閘。"""
+    channel = message.channel
+    actor_id = getattr(message.author, "id", None)
+    if actor_id is None:
+        lowered = content.strip().lower()
+        return not any(lowered == prefix or lowered.startswith(prefix + " ")
+                       for prefix in _destructive_text_prefixes())
+    key = (actor_id, getattr(getattr(channel, "transport", None), "name", "native"),
+           getattr(channel, "platform_chat_id", getattr(channel, "id", None)))
+    now = time.monotonic()
+    for stale in [key for key, (_, until) in _pending_confirmations.items() if until <= now]:
+        _pending_confirmations.pop(stale, None)
+    previous = _pending_confirmations.pop(key, None)
+    signature = content.strip()
+    lowered = signature.lower()
+    words = lowered.split()
+    if len(words) > 1 and words[0] == "workspace_clean" and words[1] in {"dry", "preview"}:
+        return True
+    if lowered in {"取消", "cancel"} and previous is not None:
+        await safe_reply(message, "已取消，沒有變更。")
+        return False
+    required = any(lowered == prefix or lowered.startswith(prefix + " ")
+                   for prefix in _destructive_text_prefixes())
+    if not required:
+        return True
+    if previous is not None and previous[0] == signature:
+        return True
+    if len(_pending_confirmations) >= 500:
+        _pending_confirmations.pop(next(iter(_pending_confirmations)))
+    _pending_confirmations[key] = (signature, now + _CONFIRMATION_TIMEOUT_SEC)
+    await safe_reply(message, "⚠️ 這會清空或刪除資料。60 秒內再次傳送相同指令即可確認；傳送「取消」可取消。")
+    return False
+
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
+
+
+def _render_claude_local_usage(totals: dict) -> str:
+    if not totals.get("available"):
+        return "無法讀取本機工作階段用量紀錄。"
+    lines = []
+    for label, key in (("今日", "today"), ("近 7 日", "last7d"), ("本機留存累計", "lifetime")):
+        bucket = totals[key]
+        unknown = (f"；{bucket['unpriced']} 次呼叫費率未知"
+                   if bucket["unpriced"] else "")
+        lines.append(f"{label}：{bucket['tokens']:,} tokens"
+                     f"（≈ US${bucket['usd']:,.2f}{unknown}）")
+    lines.append("包含輸入、輸出、快取讀取及建立；金額為 API 費率估算，非訂閱帳單。"
+                 "僅涵蓋本機留存紀錄。")
+    return "\n".join(lines)

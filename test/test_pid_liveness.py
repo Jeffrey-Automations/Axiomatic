@@ -116,6 +116,7 @@ def _live_stack_sources(pkg_root: Path | None = None,
     return package + root
 
 
+
 def _assert_scan_floor(sources) -> None:
     """掃到的檔案太少就當成範圍斷了，而不是「沒有違規」。
 
@@ -128,14 +129,17 @@ def _assert_scan_floor(sources) -> None:
         "範圍可能斷了。空的掃描跟乾淨的掃描長得一模一樣。")
 
 
+
 def _parse(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), str(path))
+
 
 
 def _functions(tree: ast.Module):
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             yield node
+
 
 
 def _is_os_name_nt_test(node: ast.expr) -> bool:
@@ -148,6 +152,7 @@ def _is_os_name_nt_test(node: ast.expr) -> bool:
     return (isinstance(left, ast.Attribute) and left.attr == "name"
             and isinstance(left.value, ast.Name) and left.value.id == "os"
             and isinstance(right, ast.Constant) and right.value == "nt")
+
 
 
 def _signal_zero_calls(tree: ast.Module) -> list[ast.Call]:
@@ -166,6 +171,7 @@ def _signal_zero_calls(tree: ast.Module) -> list[ast.Call]:
     return found
 
 
+
 def _windows_returns_before(func, lineno: int) -> bool:
     """函式裡有沒有「`if os.name == "nt": … return`」擋在 `lineno` 前面。"""
     for node in ast.walk(func):
@@ -178,6 +184,7 @@ def _windows_returns_before(func, lineno: int) -> bool:
     return False
 
 
+
 def _enclosing_function(tree: ast.Module, lineno: int):
     best = None
     for func in _functions(tree):
@@ -185,6 +192,7 @@ def _enclosing_function(tree: ast.Module, lineno: int):
             if best is None or func.lineno > best.lineno:
                 best = func
     return best
+
 
 
 def _pid_alive_definitions() -> dict[str, ast.FunctionDef]:
@@ -197,6 +205,7 @@ def _pid_alive_definitions() -> dict[str, ast.FunctionDef]:
             if func.name == "_pid_alive":
                 found[path.name] = func
     return found
+
 
 
 _SOURCE_IDS = [p.name for p in _live_stack_sources()]
@@ -221,6 +230,7 @@ def test_signal_zero_never_reaches_windows(source):
             "POSIX 分支才留 os.kill。見 CLAUDE.md「Windows PID liveness」。")
 
 
+
 def test_every_pid_alive_copy_has_a_windows_path():
     """每一份 `_pid_alive` 都要有 Windows 走得通的探測，不能只有 POSIX 那條。"""
     definitions = _pid_alive_definitions()
@@ -241,6 +251,7 @@ def test_every_pid_alive_copy_has_a_windows_path():
             "只留 POSIX 的 os.kill 等於在本機（Windows）永遠回錯答案。")
 
 
+
 def test_the_win32_fallback_pins_argtypes_and_restype():
     """ctypes 退路一定要自己釘型別——預設 restype 是 c_int，64-bit HANDLE 會截斷。
 
@@ -258,6 +269,21 @@ def test_the_win32_fallback_pins_argtypes_and_restype():
             if "OpenProcess" not in body:
                 continue
             checked += 1
+            if path.name == "_process_job.py" and "_kernel()" in body:
+                # 這個模組集中綁定所有 Win32 API，再回傳同一個已定型的 DLL。
+                # Windows 上直接檢查真正綁定的函式，包含 HANDLE 的指標寬度。
+                if os.name == "nt":
+                    import ctypes
+                    import _process_job
+                    kernel = _process_job._kernel()
+                    assert kernel.OpenProcess.argtypes and kernel.CloseHandle.argtypes
+                    assert ctypes.sizeof(kernel.OpenProcess.restype) == ctypes.sizeof(ctypes.c_void_p)
+                    assert ctypes.sizeof(kernel.CloseHandle.argtypes[0]) == ctypes.sizeof(ctypes.c_void_p)
+                else:
+                    factory = next(n for n in ast.walk(tree)
+                                   if isinstance(n, ast.FunctionDef) and n.name == "_kernel")
+                    assert "function.argtypes, function.restype" in ast.unparse(factory)
+                continue
             for win_func in _CTYPES_FUNCS:
                 if f".{win_func}(" not in body:
                     continue
@@ -269,6 +295,7 @@ def test_the_win32_fallback_pins_argtypes_and_restype():
                         "`if not handle` 因此攔不住，錯誤全被吞掉。"
                         "見 CLAUDE.md「Windows PID liveness」。")
     assert checked, "找不到任何 OpenProcess 退路——這支測試的抓法過期了。"
+
 
 
 # 指標寬度的型別。`HANDLE` 在 64-bit 是 8 bytes；`c_int` 是 4。
@@ -312,6 +339,7 @@ def _handle_type_problems(tree) -> list[str]:
     return problems
 
 
+
 def test_every_handle_type_is_pointer_wide():
     """**釘了**不等於**釘對了**——而釘錯的那一個正是規則自己列的缺陷。
 
@@ -332,6 +360,7 @@ def test_every_handle_type_is_pointer_wide():
         "。64-bit 的 HANDLE 在 c_int 下會被截斷成負數而不是 0，"
         "`if not handle` 攔不住，錯誤全被吞掉。見 CLAUDE.md「Windows PID "
         "liveness」。")
+
 
 
 @pytest.mark.parametrize("spelled, is_a_problem", [
@@ -361,6 +390,7 @@ def test_the_handle_width_check_can_tell_the_near_misses_apart(spelled,
         assert len(problems) == 2, problems
 
 
+
 def test_the_undecidable_answers_stay_the_way_the_doc_says():
     """三份副本對「判不出來」刻意給不同答案，這個分歧本身要被釘住。
 
@@ -381,6 +411,7 @@ def test_the_undecidable_answers_stay_the_way_the_doc_says():
             "Chrome stack；要改就連 CLAUDE.md 一起改。")
 
 
+
 def _oserror_answer(func):
     """`_pid_alive` 裡 ``except OSError`` 直接 return 的常數（找不到回 None）。"""
     for node in ast.walk(func):
@@ -394,6 +425,7 @@ def _oserror_answer(func):
                     stmt.value, ast.Constant):
                 return stmt.value.value
     return None
+
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +457,7 @@ def _claude_md() -> str:
     return (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
 
 
+
 def _backticked_module_names(chunk: str) -> list[str]:
     """一段文字裡、反引號包起來、看起來像模組名的東西（去掉 `.py`）。
 
@@ -443,6 +476,7 @@ def _backticked_module_names(chunk: str) -> list[str]:
     return found
 
 
+
 def _documented_copies() -> tuple[int | None, set[str]]:
     """CLAUDE.md 那句話裡的（數字詞, 檔名集合）。"""
     match = _DOC_COUNT_RE.search(_claude_md())
@@ -450,6 +484,7 @@ def _documented_copies() -> tuple[int | None, set[str]]:
         return None, set()
     return (_WORD_TO_INT.get(match.group(1).lower()),
             set(_backticked_module_names(match.group(2))))
+
 
 
 def _documented_undecidable() -> dict[str, bool]:
@@ -468,8 +503,10 @@ def _documented_undecidable() -> dict[str, bool]:
     return answers
 
 
+
 def _stem(name: str) -> str:
     return name[:-3] if name.endswith(".py") else name
+
 
 
 def test_the_claude_md_pid_alive_enumerations_are_extractable():
@@ -485,6 +522,7 @@ def test_the_claude_md_pid_alive_enumerations_are_extractable():
         "兩個值都要出現，不然那個分歧已經在文件裡被 harmonise 掉了。")
 
 
+
 def test_the_documented_copy_count_matches_its_own_list():
     """「There are **three**」的那個數字詞，要跟它自己列出來的份數一致。
 
@@ -495,6 +533,7 @@ def test_the_documented_copy_count_matches_its_own_list():
     assert count == len(copies), (
         f"CLAUDE.md 說有 {count} 份 `_pid_alive`，但同一句話列了 "
         f"{len(copies)} 個：{sorted(copies)}。加減副本時兩邊要一起改。")
+
 
 
 def test_the_claude_md_copy_list_matches_the_local_transcription():
@@ -510,6 +549,7 @@ def test_the_claude_md_copy_list_matches_the_local_transcription():
     assert not stale, (
         f"`_DOCUMENTED_COPIES` 有這些、CLAUDE.md 那句話沒列：{stale}。"
         "CLAUDE.md 是規則的正本，本檔只是謄本——兩邊要一起改。")
+
 
 
 def test_the_claude_md_undecidable_answers_match_the_local_transcription():
@@ -535,6 +575,7 @@ def test_the_claude_md_undecidable_answers_match_the_local_transcription():
           "下一個人會照著錯的那一份寫第四份副本。")
 
 
+
 def test_every_documented_pid_alive_copy_is_a_real_file():
     """CLAUDE.md 點名的每個副本都要是磁碟上真的有的模組。
 
@@ -550,6 +591,7 @@ def test_every_documented_pid_alive_copy_is_a_real_file():
         f"CLAUDE.md 的 `_pid_alive` 段落點名了這些模組，但磁碟上沒有：{ghosts}。")
 
 
+
 def test_the_documented_copies_are_still_the_real_ones():
     """`CLAUDE.md` 列的三份要都還在，多出來的第四份也要補進文件。"""
     on_disk = set(_pid_alive_definitions())
@@ -563,6 +605,7 @@ def test_the_documented_copies_are_still_the_real_ones():
         "「a fourth copy must too」），但要把它補進 CLAUDE.md 的列舉、"
         "本檔的 `_DOCUMENTED_COPIES` 與 `_UNDECIDABLE_POSIX_ANSWER`——"
         "「判不出來時回什麼」要當場選邊，不是抄一份就算。")
+
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +628,7 @@ def test_every_repo_root_script_is_scanned():
     assert not missing, (
         f"repo root 有 {len(missing)} 支腳本不在掃描範圍內：{missing}。"
         "這條規則管的是整個專案，不是被挑出來的幾支。")
+
 
 
 def test_the_scope_is_derived_not_a_list_that_matches_today(tmp_path):
@@ -610,6 +654,7 @@ def test_the_scope_is_derived_not_a_list_that_matches_today(tmp_path):
     assert "_thing.py" in found, sorted(found)
 
 
+
 def test_test_files_stay_out_of_the_scope(tmp_path):
     """反面：測試檔本身必須排除——它們可以合法地示範壞寫法。
 
@@ -626,11 +671,13 @@ def test_test_files_stay_out_of_the_scope(tmp_path):
     assert found == {"real.py"}, sorted(found)
 
 
+
 def test_an_empty_derivation_yields_nothing_to_scan(tmp_path):
     """前提：空目錄真的會讓範圍變成空的（下面那支對照組的前提）。"""
     empty = tmp_path / "empty"
     empty.mkdir()
     assert not _live_stack_sources(pkg_root=empty, repo_root=empty)
+
 
 
 @pytest.mark.parametrize("count,should_fire", [
@@ -656,9 +703,11 @@ def test_the_scan_floor_fires_on_a_corpus_between_the_thresholds(
         _assert_scan_floor(corpus)
 
 
+
 def test_the_real_scan_clears_its_own_floor():
     """正面：真實資料要真的超過下限，否則上面那組對照是在保護一個死條件。"""
     _assert_scan_floor(_live_stack_sources())
+
 
 
 # 兩個真的會走遍全部原始碼的地方。加一個新的掃描就把它加進來——這份清單本身由
@@ -702,10 +751,12 @@ def _gating_errors(gated_names, by_name) -> list[str]:
     return errors
 
 
+
 def _functions_by_name(source: str) -> dict:
     tree = ast.parse(source, "<gating>")
     return {node.name: node for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef)}
+
 
 
 def test_every_real_scan_is_gated_by_the_floor():
@@ -719,6 +770,7 @@ def test_every_real_scan_is_gated_by_the_floor():
     by_name = _functions_by_name(Path(__file__).read_text(encoding="utf-8"))
     errors = _gating_errors(_GATED_SCANS, by_name)
     assert not errors, "\n".join(errors)
+
 
 
 _GATING_CASES = [
@@ -759,6 +811,7 @@ def test_the_gating_check_can_still_see_a_violation(label, names, _unused,
         f"{label}：抓到了，但講的不是那件事：{errors}")
 
 
+
 def test_the_gating_check_passes_on_a_clean_synthetic_corpus():
     """反面：上面那組不能是靠「永遠回錯誤」才綠的。"""
     source = (
@@ -770,6 +823,7 @@ def test_the_gating_check_passes_on_a_clean_synthetic_corpus():
         "    _assert_scan_floor(sources)\n")
     assert _gating_errors(("gated_a", "gated_b"),
                           _functions_by_name(source)) == []
+
 
 
 # ---------------------------------------------------------------------------
@@ -831,18 +885,21 @@ def _platform_string_compares(tree: ast.Module) -> list[tuple[int, str]]:
     return out
 
 
+
 def _spelling_offenders(paths) -> list[str]:
     """這些檔案裡，用 `sys.platform` 判 Windows／POSIX 的地方。
 
     **抽成函式不是排版**：真資料現在是乾淨的，所以「組違規字串」那一行在真資料上
     一次都不會執行——把 `offenders.append(...)` 換成 `pass`，整組測試依然全綠
     （2026-09-12 變異測試實測 SURVIVED）。抽出來之後合成語料才走得到這條路。
+    同一個判語見 `architecture.md` §8.58。
     """
     offenders: list[str] = []
     for path in paths:
         for lineno, text in _platform_string_compares(_parse(path)):
             offenders.append(f"{path.name}:{lineno}  {text}")
     return offenders
+
 
 
 def test_windows_is_detected_with_one_spelling_only():
@@ -861,6 +918,7 @@ def test_windows_is_detected_with_one_spelling_only():
         "`sys.platform` 只保留給**別的**平台（例如 `== \"darwin\"`）。"
         "\n理由：其餘幾支守門只認得 `os.name == \"nt\"`，而兩種拼法並存過一次，"
         "代價是四支假綠的測試（見本段最上面的說明）。")
+
 
 
 def _platform_patch_offenders(paths) -> list[str]:
@@ -886,6 +944,7 @@ def _platform_patch_offenders(paths) -> list[str]:
     return offenders
 
 
+
 def test_no_test_fakes_a_platform_by_patching_sys_platform():
     """測試不准用 `sys.platform` 當平台替身——沒有正式碼在讀它。
 
@@ -903,6 +962,7 @@ def test_no_test_fakes_a_platform_by_patching_sys_platform():
         "接不到被測的那條 `if`——測試會全綠，跑的卻是另一條分支。"
         "\n要模擬平台就換 `os.name`（正式碼真的在讀），或請正式碼開一個具名接縫"
         "再換那一支（範例：`discord_rpc._running_on_windows`）。")
+
 
 
 def test_the_platform_spelling_scanners_actually_see_something():
@@ -933,13 +993,14 @@ def test_the_platform_spelling_scanners_actually_see_something():
         "就不再有真資料撐著，請確認是刻意移除的。")
 
 
+
 def test_the_platform_offender_collectors_run_on_a_seeded_violation(tmp_path):
     """把違規**種進去**，確認兩支收集器真的會收集。
 
     這是上面兩支唯一的執行證據。真資料現在是乾淨的，所以「把違規組成字串」那一行
     在真資料上一次都不會執行——實測把 `offenders.append(...)` 換成 `pass`，整組
     測試依然全綠。本專案對這個形狀的判語：**不要用 grep 去找違規的形狀，把違規
-    注入進去**。
+    注入進去**（`architecture.md` §8.58 同一條）。
     """
     bad_src = tmp_path / "seeded_source.py"
     bad_src.write_text(
@@ -985,6 +1046,7 @@ def test_the_platform_offender_collectors_run_on_a_seeded_violation(tmp_path):
         "換 `os.name` 是被允許的——正式碼真的在讀它。")
 
 
+
 # ===========================================================================
 # 第五道：行為上的對帳——靜態檢查看不到「答案是不是對的」
 #
@@ -1016,6 +1078,7 @@ class _no_psutil:
         return False
 
 
+
 def _a_definitely_dead_pid() -> int:
     """起一個立刻結束的子行程，回它的 pid（已確認收屍完畢）。"""
     import subprocess
@@ -1026,6 +1089,7 @@ def _a_definitely_dead_pid() -> int:
                             stderr=subprocess.DEVNULL)
     proc.wait(timeout=30)
     return proc.pid
+
 
 
 class _exited_but_still_held:
@@ -1058,6 +1122,7 @@ class _exited_but_still_held:
         return False
 
 
+
 def _ctypes_probes() -> dict:
     """**推導**出「每一份有 ctypes 退路的抄本 → 它的探測函式」。
 
@@ -1075,6 +1140,7 @@ def _ctypes_probes() -> dict:
         if probe is not None:
             probes[name] = probe
     return probes
+
 
 
 _CTYPES_COPIES = sorted(_ctypes_probes())
@@ -1099,11 +1165,13 @@ def test_the_behavioural_corpus_is_derived_and_not_empty():
     assert set(probes) <= _DOCUMENTED_COPIES
 
 
+
 @_needs_windows
 @pytest.mark.parametrize("copy_name", _CTYPES_COPIES)
 def test_every_ctypes_probe_sees_a_live_process(copy_name):
     with _no_psutil():
         assert _ctypes_probes()[copy_name](os.getpid()) is True
+
 
 
 @_needs_windows
@@ -1122,6 +1190,7 @@ def test_every_ctypes_probe_sees_a_dead_process(copy_name):
         pytest.skip("pid 被回收了，這次測不到")
     with _no_psutil():
         assert _ctypes_probes()[copy_name](dead) is False
+
 
 
 @_needs_windows
@@ -1149,6 +1218,7 @@ def test_every_ctypes_probe_agrees_with_psutil_and_with_each_other():
             f"pid={pid}：psutil 說 {expected}，而各抄本說 {answers}")
 
 
+
 @_needs_windows
 def test_no_ctypes_probe_ever_signals_anything(monkeypatch):
     """探測是**查詢**，不是操作。`os.kill` 一次都不准被叫到。
@@ -1164,6 +1234,7 @@ def test_no_ctypes_probe_ever_signals_anything(monkeypatch):
             probe(os.getpid())
             probe(dead)
     assert called == [], f"探測對 pid 送了訊號：{called}"
+
 
 
 @_needs_windows
@@ -1183,6 +1254,7 @@ def test_a_broken_ctypes_reads_as_alive(copy_name, monkeypatch):
     dead = _a_definitely_dead_pid()
     with _no_psutil():
         assert _ctypes_probes()[copy_name](dead) is True
+
 
 
 class _Kernel32WhoseExitCodeQueryFails:
@@ -1209,6 +1281,7 @@ class _Kernel32WhoseExitCodeQueryFails:
         self.CloseHandle = self._Func(1, self.calls, "close")
 
 
+
 @_needs_windows
 @pytest.mark.parametrize("copy_name", _CTYPES_COPIES)
 def test_an_unreadable_exit_code_reads_as_alive_and_closes_the_handle(copy_name,
@@ -1222,6 +1295,7 @@ def test_an_unreadable_exit_code_reads_as_alive_and_closes_the_handle(copy_name,
     with _no_psutil():
         assert _ctypes_probes()[copy_name](os.getpid()) is True
     assert kernel32.calls == ["open", "exit_code", "close"], kernel32.calls
+
 
 
 @_needs_windows
@@ -1246,6 +1320,7 @@ def test_every_copy_asks_psutil_first(copy_name):
         monkey.undo()
 
 
+
 @_needs_windows
 @pytest.mark.parametrize("copy_name", _CTYPES_COPIES)
 def test_every_ctypes_probe_reads_the_exit_code_of_a_process_still_held(
@@ -1259,6 +1334,7 @@ def test_every_ctypes_probe_reads_the_exit_code_of_a_process_still_held(
     with _exited_but_still_held() as pid:
         with _no_psutil():
             assert _ctypes_probes()[copy_name](pid) is False
+
 
 
 @_needs_windows

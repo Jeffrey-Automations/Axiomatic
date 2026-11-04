@@ -60,6 +60,7 @@ def _self_pid_names(node: ast.AST) -> set[str]:
     return names
 
 
+
 def _has_self_pid_comparison(node: ast.AST) -> bool:
     """真的拿某個 pid 去跟「我自己的 pid」比對了嗎？
 
@@ -79,6 +80,7 @@ def _has_self_pid_comparison(node: ast.AST) -> bool:
                     and getattr(side.func, "attr", "") == "getpid"):
                 return True
     return False
+
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +104,7 @@ def _trees() -> list[tuple[Path, ast.Module]]:
     return out
 
 
+
 def _scanners_in(tree: ast.Module) -> dict[str, ast.AST]:
     """走 `process_iter` 的**最外層**函式。
 
@@ -121,12 +124,14 @@ def _scanners_in(tree: ast.Module) -> dict[str, ast.AST]:
     return found
 
 
+
 def _all_scanners() -> dict[tuple[str, str], ast.AST]:
     out: dict[tuple[str, str], ast.AST] = {}
     for path, tree in _trees():
         for name, node in _scanners_in(tree).items():
             out[(path.name, name)] = node
     return out
+
 
 
 # 掃到的 pid 最後會被殺掉——必須自我排除。
@@ -142,11 +147,7 @@ _KILLS_WHAT_IT_FINDS = {
         "啟動器用它決定「有沒有別人在跑」，重複的那個會被收掉。自我排除做成"
         "`self_pid` 參數，因為呼叫端有時要排除的不是自己。",
     ("discord_bot.py", "cmd_kill"):
-        "`/proc kill` 的名稱比對，直接殺。",
-    ("webrunner_novelai.py", "_kill_orphan_chrome"):
-        "孤兒 Chrome 清掃。",
-    ("webrunner_je_only.py", "_kill_orphan_chrome"):
-        "同上，另一個變體。",
+        "`/proc kill` 的名稱比對，直接殺（`cmd_kill` 經 `asyncio.to_thread` 呼叫它）。",
 }
 
 # 唯讀掃描：結果只用來顯示或判斷，不會有人被殺。每一筆都要寫理由。
@@ -187,6 +188,7 @@ def _scans_without_self_exclusion(scanners: dict, must_exclude: set) -> list:
     return missing
 
 
+
 def test_every_process_scan_is_classified():
     """掃得到的每一支都要登記在兩份清單的其中一份。
 
@@ -204,6 +206,7 @@ def test_every_process_scan_is_classified():
         "只是讀來看的 → 加進 `_READ_ONLY_SCANS` 並寫下理由。")
 
 
+
 def _stale_entries(classified: set, scanners: set) -> list:
     """登記了卻已經不走 `process_iter` 的那幾筆。
 
@@ -213,12 +216,14 @@ def _stale_entries(classified: set, scanners: set) -> list:
     return sorted(classified - scanners)
 
 
+
 def test_the_stale_check_actually_fires():
     """對照組：改過名的登記要被抓到，還在的不能被誤報。"""
     scanners = {("a.py", "still_here")}
     classified = {("a.py", "still_here"), ("a.py", "was_renamed")}
     assert _stale_entries(classified, scanners) == [("a.py", "was_renamed")]
     assert _stale_entries(scanners, scanners) == []
+
 
 
 def test_the_classification_has_no_stale_entries():
@@ -230,10 +235,12 @@ def test_the_classification_has_no_stale_entries():
         "從清單裡拿掉，或把掃描補回去。")
 
 
+
 def _thin_reasons(registry: dict) -> list:
     """理由欄太短的那幾筆。抽成一支才有辦法在合成語料上驗它會開火。"""
     return sorted(key for key, why in registry.items()
                   if len(why.strip()) < 10)
+
 
 
 def test_every_read_only_scan_states_its_reason():
@@ -246,10 +253,12 @@ def test_every_read_only_scan_states_its_reason():
     assert not thin, f"這些唯讀掃描沒有寫理由：{thin}"
 
 
+
 def test_the_reason_floor_actually_fires():
     """對照組：樹上已經沒有太短的理由了，所以這道下限在真實資料上不會執行。"""
     assert _thin_reasons({("a.py", "f"): "同上。"}) == [("a.py", "f")]
     assert _thin_reasons({("a.py", "f"): "只讀 exe 名稱，沒有人拿它去殺東西。"}) == []
+
 
 
 def test_every_killing_scan_excludes_itself():
@@ -266,6 +275,7 @@ def test_every_killing_scan_excludes_itself():
         f"這些會殺人的掃描看不到自我排除：{missing}。"
         "要有一個裝著自己 pid 的名字（`x = os.getpid()`，或名為 `self_pid` 的"
         "參數），而且真的拿它去比對。")
+
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +303,7 @@ def test_the_chrome_scan_never_returns_its_own_process(monkeypatch):
         f"掃描把執行它的那個行程也列進去了：{found}")
 
 
+
 def test_the_launcher_scan_never_returns_its_own_process(monkeypatch):
     """`find_launcher_pids` 要跳過自己，而這一支**不是**防禦性的。
 
@@ -310,6 +321,7 @@ def test_the_launcher_scan_never_returns_its_own_process(monkeypatch):
     assert pids == [_OTHER], f"掃描把執行它的那個行程也列進去了：{pids}"
 
 
+
 def test_the_launcher_scan_still_finds_the_others(monkeypatch):
     """近似反例：自我排除不得變成「什麼都不回」。
 
@@ -322,6 +334,7 @@ def test_the_launcher_scan_still_finds_the_others(monkeypatch):
     monkeypatch.setattr(os, "getpid", lambda: _OURS)
     pids, scan_ok = pc.find_launcher_pids(script)
     assert (pids, scan_ok) == ([_OTHER], True)
+
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +363,7 @@ def test_the_scanner_derivation_sees_nested_helpers_once():
     assert set(found) == {"kills_things", "nested_only"}, sorted(found)
 
 
+
 def test_the_self_exclusion_check_fires_on_a_scanner_without_it():
     """對照組：判斷本身要在合成語料上開火，而且只對「該有卻沒有」的那一支。"""
     bare = ast.parse(
@@ -368,6 +382,7 @@ def test_the_self_exclusion_check_fires_on_a_scanner_without_it():
         scanners, {("x.py", "sweeps"), ("x.py", "careful")}) == [("x.py", "sweeps")]
     # 沒有被列進「會殺人」那一份的，即使沒有自我排除也不報。
     assert _scans_without_self_exclusion(scanners, {("x.py", "careful")}) == []
+
 
 
 _ACCEPTED_SPELLINGS = [
@@ -395,6 +410,7 @@ _ACCEPTED_SPELLINGS = [
 def test_each_accepted_spelling_of_the_self_exclusion_is_recognised(label, source):
     """三種寫法都要認得——認漏一種就會對一支其實正確的掃描叫狼來了。"""
     assert _has_self_pid_comparison(ast.parse(source).body[0]), label
+
 
 
 _BROKEN_SPELLINGS = [

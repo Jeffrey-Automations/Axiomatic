@@ -42,7 +42,7 @@ _SUPERVISOR_GLOBALS = (
     "_webrunner_stop_requested",
     "_webrunner_oneshot",
     "_webrunner_oneshot_reaper_task",
-    "_webrunner_fallback_task",
+    "_webrunner_supervisor_task",
     "_webrunner_log_handle",
 )
 
@@ -164,7 +164,7 @@ def test_starting_the_standalone_supervisor_touches_no_bot_state(env, monkeypatc
     after = {name: getattr(b, name) for name in _SUPERVISOR_GLOBALS}
     assert before == after
     # 也不得掛上 bot 的看門狗：那一套會對獨立監督者的子行程做退避重生。
-    assert b._webrunner_fallback_task is None
+    assert b._webrunner_supervisor_task is None
 
 
 # --------------------------------------------------------------------------
@@ -644,7 +644,7 @@ def test_stop_kills_the_launcher_before_sweeping_the_batch(monkeypatch, tmp_path
     monkeypatch.setattr(b, "_release_chrome_slot", lambda: None)
     monkeypatch.setattr(b, "_clear_pid", lambda: None)
     monkeypatch.setattr(b, "SINGLE_IMAGE_REQUEST_FILE", tmp_path / "req.json")
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_oneshot_reaper_task", None)
     asyncio.run(b.cmd_stop(_fake_message(b.OWNER_USER_ID)))
     assert order == ["launcher", "sweep"], order
@@ -676,7 +676,7 @@ def test_stop_still_stops_when_the_chrome_slot_is_held(monkeypatch, tmp_path):
     monkeypatch.setattr(b, "_release_chrome_slot", lambda: order.append("release"))
     monkeypatch.setattr(b, "_clear_pid", lambda: None)
     monkeypatch.setattr(b, "SINGLE_IMAGE_REQUEST_FILE", tmp_path / "req.json")
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_oneshot_reaper_task", None)
     asyncio.run(b.cmd_stop(_fake_message(b.OWNER_USER_ID)))
     assert asked == [("stop", b.CHROME_SLOT_STOP_TIMEOUT_SEC)], asked
@@ -708,7 +708,7 @@ def test_stop_says_so_when_it_could_not_check(monkeypatch, tmp_path):
     monkeypatch.setattr(b, "_release_chrome_slot", lambda: None)
     monkeypatch.setattr(b, "_clear_pid", lambda: None)
     monkeypatch.setattr(b, "SINGLE_IMAGE_REQUEST_FILE", tmp_path / "req.json")
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_oneshot_reaper_task", None)
     asyncio.run(b.cmd_stop(_fake_message(b.OWNER_USER_ID)))
     assert any("沒能確認" in (text or "") for text in replies), replies
@@ -789,3 +789,22 @@ def test_the_relay_entry_point_is_reachable_as_a_script():
     entry = ast.unparse(guards[0])
     assert "DETACH_RELAY_FLAG" in entry
     assert "_relay_main" in entry
+
+
+@pytest.mark.parametrize("variant", ["--help", "je;calc", "JE2", "../selenium"])
+def test_an_unknown_mode_never_reaches_the_launcher_argv(env, monkeypatch, variant):
+    """模式字串會原樣放進獨立監督者的命令列（`[python, -u, start_webrunner.py, 模式]`），
+    所以白名單之外的一律擋在掃描與 spawn 之前——像旗標的字串（`--help`）交出去就是
+    改了那支程式的行為。"""
+    calls = _arm(monkeypatch, before=(), after=(1234,))
+    asyncio.run(b.cmd_launcher(_fake_message(b.OWNER_USER_ID), f"start {variant}"))
+    assert calls["spawned"] == [] and calls["n"] == 0, calls
+    assert env.replies == ["用法：`/launcher start`。"], env.replies
+
+
+@pytest.mark.parametrize("variant", ["je", "JE"])
+def test_a_known_mode_is_passed_through_lower_cased(env, monkeypatch, variant):
+    """對照組：白名單裡的模式（大小寫不拘）照樣交出去，而且是正規化之後的樣子。"""
+    calls = _arm(monkeypatch, before=(), after=(1234,))
+    asyncio.run(b.cmd_launcher(_fake_message(b.OWNER_USER_ID), f"start {variant}"))
+    assert [argv[-1] for argv, _cwd in calls["spawned"]] == [str(b.LAUNCHER_SCRIPT)]

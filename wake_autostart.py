@@ -32,10 +32,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
+from xml.etree import ElementTree
 import sys
 import time
 
-from install_autostart import (BATCH_TASK, _schtasks,
+from install_autostart import (BATCH_TASK, bot_task, _schtasks,
                                _wanted_task_names)
 from axiomatic._supervisor import other_launcher_pids
 
@@ -98,6 +100,21 @@ def wake(task_name: str, *, run=_schtasks, running=other_launcher_pids,
     return 0
 
 
+def _registered_presence_only() -> bool:
+    task_name, _script, _extra = bot_task("discord")
+    result = _schtasks("/Query", "/TN", task_name, "/XML")
+    if result.returncode != 0:
+        return False
+    try:
+        root = ElementTree.fromstring(result.stdout)
+        arguments = root.findtext(
+            ".//{http://schemas.microsoft.com/windows/2004/02/mit/task}Arguments",
+            default="")
+        return "--presence-only" in shlex.split(arguments, posix=False)
+    except (ElementTree.ParseError, ValueError):
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="直接叫醒工作排程器裡的監督者（預設全部叫醒）。")
@@ -106,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="只叫醒平台的監督者（每個平台一支）")
     scope.add_argument("--batch-only", action="store_true",
                        help="只叫醒批次的監督者（會開始產圖）")
+    scope.add_argument("--presence-only", action="store_true",
+                       help="只叫醒已註冊為僅狀態模式的 discord 工作")
     args = parser.parse_args(argv or [])
 
     if os.name != "nt":
@@ -115,7 +134,14 @@ def main(argv: list[str] | None = None) -> int:
     which = (["bot"] if args.bot_only
              else ["batch"] if args.batch_only
              else ["bot", "batch"])
-    targets = _wanted_task_names(which)
+    if args.presence_only:
+        if not _registered_presence_only():
+            print("請先執行 py -3 install_autostart.py --install --presence-only。",
+                  file=sys.stderr)
+            return 1
+        targets = [bot_task("discord")[0]]
+    else:
+        targets = _wanted_task_names(which)
     if not targets:
         print("`\\Axiomatic\\` 底下沒有符合的工作。先執行 "
               "py -3 install_autostart.py --install", file=sys.stderr)

@@ -1095,7 +1095,7 @@ _BOUNDING_CALLS = frozenset({
 # asyncio 子行程的管線屬性。這是**機制**不是命名習慣：`create_subprocess_exec`
 # 只會把管線掛在這三個名字上。
 _PIPE_ATTRS = frozenset({"stdout", "stderr", "stdin"})
-_SPAWNERS = frozenset({"create_subprocess_exec", "create_subprocess_shell"})
+_SPAWNERS = frozenset({"create_subprocess_exec", "create_subprocess_shell", "_spawn_backend"})
 
 # 刻意的豁免。**列管而不是放寬判準**：放寬判準會連下一個真的缺陷一起放掉。
 # 每一筆都要寫「為什麼它不是缺陷」，而且兩個方向都對帳（見

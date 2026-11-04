@@ -19,7 +19,7 @@
 | 行程 | 角色 | 檔案 |
 |---|---|---|
 | **平台行程** | 接指令、判斷是誰在問、編輯佇列檔、監督工作、回報結果。**一個聊天平台一個** | `discord_bot.py`（模組名是歷史遺留，它不綁任何平台）＋ `_chat_platform.py`、`_*_transport.py` |
-| **webrunner** | 出圖這個工作負載：真正去操作瀏覽器的批次程式 | `webrunner_novelai.py` / `webrunner_je_only.py` |
+| **webrunner** | 出圖這個工作負載：真正去操作瀏覽器的批次程式 | `webrunner_je_only.py` / `webrunner_je_only.py` |
 
 兩者**只透過檔案溝通**（待辦清單、設定 JSON、輸出圖片、事件記錄），彼此不直接
 `import`。因此任一邊重啟都不會弄壞另一邊的狀態；平台行程之間也一樣，它們不共用

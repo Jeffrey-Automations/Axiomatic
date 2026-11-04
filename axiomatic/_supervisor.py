@@ -12,6 +12,10 @@ console and the log file at once, and there should be only one implementation.
 from __future__ import annotations
 
 import errno
+if __package__:
+    from ._process_job import popen as _job_popen
+else:
+    from _process_job import popen as _job_popen
 import os
 import subprocess  # nosec B404 — the supervisor's whole job is to spawn children
 import sys
@@ -69,6 +73,7 @@ RC_SETUP_INCOMPLETE = 5
 #     will get nowhere. Respawning even once is too much.
 RC_ZERO_PROGRESS = 3
 RC_GENERATION_BLOCKED = 4
+RC_SERVED_ONESHOT = 6
 
 
 def webrunner_exit_needs_human(rc: int) -> bool:
@@ -553,52 +558,43 @@ def reap_child(proc, log, *, grace_sec: float, kill_sec: float) -> int:
 def stream_child(cmd: list[str], log, *, cwd: str, on_spawn=None,
                  pump_name: str = "log-pump",
                  grace_sec: float = 30.0, kill_sec: float = 10.0) -> int:
-    """Run the child once, tee its stdout+stderr to the console and the log file
-    at once, and return the rc.
+    """跑一次子行程，把它的 stdout＋stderr 同時寫到主控台與記錄檔，回 rc。
 
-    The child is forced to `PYTHONIOENCODING=utf-8`: a pipe is not a console, so
-    CPython falls back to the system locale encoding (cp950 here), and Chinese
-    output can then blow up the **child** itself. The decode end also uses
-    `errors="replace"`, so no odd byte interrupts supervision. The caller's `-u`
-    still has to stay, or the child's output would pile up in its own buffer and
-    the log would come out in bursts.
+    子行程強制 `PYTHONIOENCODING=utf-8`：管線不是主控台，CPython 會退回系統地區
+    編碼（本機是 cp950），中文輸出就可能讓**子行程**自己炸掉。解碼端一併用
+    `errors="replace"`，任何怪位元組都不會中斷監督。呼叫端給的 `-u` 也還是要留，
+    否則子行程的輸出會在它自己的緩衝區裡積著、記錄檔變成一陣一陣的。
 
-    **"Forced" = overwrite, not `setdefault`** (fixed 2026-09-12). This line used
-    to be `env.setdefault(...)`, while the note above has said "forced" from day
-    one — the difference is who wins when the caller's environment **already
-    carries a value**. Overwrite is chosen because the decode end of the `Popen`
-    below is a **hardcoded** `encoding="utf-8"`: any mismatch between the two ends
-    is silent data corruption, `errors="replace"` guarantees no exception, and so
-    the rc is normal, there is no red text, and only the Traditional-Chinese
-    progress lines, resume-mismatch reasons, and give-up reasons in the log turn
-    into whole runs of U+FFFD. And the launcher's most common start paths (desktop
-    shortcut, autostart, scheduled task, someone else's shell) are exactly the
-    ones that carry "a value in the environment we never set". The other 16 places
-    in this project that specify a child's encoding all overwrite
-    (`{**os.environ, "PYTHONIOENCODING": "utf-8"}`); this was the one exception,
-    and its direction happened to be the silently-broken side.
+    **「強制」＝覆寫，不是 `setdefault`**（2026-09-12 修）。這一行原本是
+    `env.setdefault(...)`，而上面這段說明從第一天就寫著「強制」——兩者差在呼叫端
+    環境**已經帶著一個值**的時候誰贏。選覆寫的理由是下面 `Popen` 的解碼端是
+    **寫死的** `encoding="utf-8"`：兩端只要不一致就是安靜的資料損壞，
+    `errors="replace"` 保證不會有例外，於是 rc 正常、沒有紅字，只有記錄檔裡的繁中
+    進度行、resume 不符的原因、放棄理由整段變成 U+FFFD。而啟動器最常見的起法
+    （桌面捷徑、開機自動啟動、排程工作、別人的殼）正是「環境裡有一個我們沒設過的
+    值」。本專案其餘 16 個交代子行程編碼的地方全部是覆寫
+    （`{**os.environ, "PYTHONIOENCODING": "utf-8"}`），這裡曾是唯一的例外，方向還
+    剛好是安靜壞掉的那一邊。
 
-    It also deliberately does **not** take the middle path of "only overwrite when
-    it is not a UTF-8 variant" (letting through `utf-8:surrogateescape` and the
-    like): that would need a stretch of codec normalisation (and `codecs.lookup`
-    itself throws `LookupError`), buying only the preservation of the caller's
-    error handler — which has no effect on our end, because we are already
-    `errors="replace"`. What the supervisor's log looks like should not depend on
-    who lit it up, or from which shell.
+    也刻意**不**走「只有不是 UTF-8 變體才覆寫」的中間路線（放行
+    `utf-8:surrogateescape` 之類）：那要多一段 codec 正規化（而 `codecs.lookup`
+    自己會丟 `LookupError`），換來的只是保留呼叫端的錯誤處理器——那個處理器對我們
+    這一端毫無作用，因為我們本來就 `errors="replace"`。監督者的記錄檔長什麼樣，
+    不該取決於誰、從哪個殼把它點起來。
 
-    Behavioural tests cover both halves (`test_supervisor.py`): the variable
-    absent from the environment (`test_the_child_gets_utf8_io_encoding`), and a
-    wrong value present in the environment
-    (`test_a_wrong_pythonioencoding_in_the_parent_is_overridden`). **Only the
-    latter tells overwrite apart from `setdefault`.** `test_text_encoding`'s
-    static scan structurally cannot see this site — `cmd` is a variable the caller
-    supplies, and the scanner cannot recognise this as a Python child — so these
-    two named tests are its entire coverage.
+    行為測試兩半都有（`test_supervisor.py`）：環境裡沒有那個變數
+    （`test_the_child_gets_utf8_io_encoding`），以及環境裡帶著一個錯的值
+    （`test_a_wrong_pythonioencoding_in_the_parent_is_overridden`）。**只有後者
+    分得出覆寫與 `setdefault`。** 這一站 `test_text_encoding` 的靜態掃描結構上
+    看不到——`cmd` 是呼叫端給的變數，掃描器認不出這是 Python 子行程——所以這兩支
+    具名測試就是它的全部覆蓋。
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
-    proc = subprocess.Popen(  # nosec B603 — cmd is assembled by the caller, no shell
-        cmd,
+    spawn = _job_popen if any(str(part).endswith("webrunner_je_only.py") for part in cmd) else subprocess.Popen
+    job_options = {"guarded": True} if spawn is _job_popen else {}
+    proc = spawn(  # nosec B603 — cmd 由呼叫端組出來，不經 shell
+        cmd, **job_options,
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -615,61 +611,85 @@ def stream_child(cmd: list[str], log, *, cwd: str, on_spawn=None,
                                 name=pump_name, daemon=True)
         pump.start()
     except Exception:  # pylint: disable=broad-except
-        # The child **is already up**, so this path cannot just re-raise (fixed
-        # 2026-09-07). `on_spawn` does real I/O — `start_webrunner._on_spawn`
-        # writes `webrunner.pid` — and a full disk or wrong permissions throw
-        # OSError. Re-raising would leave an orphan whose stdout is a PIPE nobody
-        # pumps and nobody waits on: its next print wedges in the filled pipe, and
-        # it is holding a whole Chrome tree. The supervisor itself dying while the
-        # batch sits there stuck is exactly the hardest kind of ending to
-        # diagnose. Reap first, then re-raise the exception.
+        # 子行程**已經起來了**，所以這條路不能只是往上拋（2026-09-07 修）。
+        # `on_spawn` 會做真的 I/O——`start_webrunner._on_spawn` 寫 `webrunner.pid`
+        # ——磁碟滿了或權限不對就丟 OSError。拋掉的話會留下一個 stdout 是 PIPE、
+        # 沒有人抽、也沒有人 wait 的孤兒：它下一次 print 就卡死在滿掉的管線裡，
+        # 而它手上握著整棵 Chrome。監督者自己死掉、批次還在那裡卡著不動，正是
+        # 最難查的那種收場。先收屍再把例外往上送。
         #
-        # `grace_sec=0`: the child here did **not** receive Ctrl+C and has no
-        # reason to finish on its own, so waiting out a grace period is wasted
-        # time — terminate straight away, and any leftover Chrome gets swept by
-        # `_kill_orphan_chrome()` on the webrunner's next start.
+        # `grace_sec=0`：這裡的子行程**沒有**收到 Ctrl+C，沒有理由自己收工，等
+        # 寬限期只是白等——直接 terminate，剩下的 Chrome 由 webrunner 下次啟動
+        # 的 `_kill_orphan_chrome()` 掃掉。
         #
-        # **Do not** change these two handlers to `except BaseException`: project
-        # rules forbid it (`test_exception_handlers.test_nothing_swallows_cancellation`,
-        # because that would swallow `CancelledError` / `KeyboardInterrupt` too),
-        # and it is not needed here either — what actually leaves an orphan is
-        # `on_spawn` throwing `OSError` (the pid file cannot be written), which is
-        # an `Exception`. A Ctrl+C landing in this tiny window is already covered
-        # by the **console group**: the child and the launcher are in the same
-        # group, so the child received the same Ctrl+C itself.
+        # **不要**把這兩個 handler 改成 `except BaseException`：專案規則禁止
+        # （`test_exception_handlers.test_nothing_swallows_cancellation`，理由是
+        # 那會連 `CancelledError`／`KeyboardInterrupt` 一起吞掉），而這裡也不需要
+        # ——真正會留下孤兒的是 `on_spawn` 丟 `OSError`（pid 檔寫不進去），那是
+        # `Exception`。Ctrl+C 落在這個微小視窗裡的情況本來就由**主控台群組**兜著：
+        # 子行程跟啟動器在同一個群組，同一個 Ctrl+C 它自己也收到了。
         try:
             say(log, "supervisor: spawn hook failed; terminating the child "
                      "that was already started", err=True)
             reap_child(proc, log, grace_sec=0, kill_sec=kill_sec)
         except Exception:  # pylint: disable=broad-except  # nosec B110
-            pass               # a failed reap must not mask the original exception
+            pass               # 收屍失敗也不能蓋掉原本那個例外
         raise
     try:
         return proc.wait()
     except KeyboardInterrupt:
-        # Same console group, so the child received Ctrl+C too. The pump thread is
-        # still alive, so even a burst of wrap-up output will not wedge it in a
-        # filled pipe.
+        # 同一個主控台群組，子行程也收到了 Ctrl+C。抽水執行緒還活著，所以它在
+        # 收尾時大量輸出也不會把自己卡在滿掉的管線裡。
         reap_child(proc, log, grace_sec=grace_sec, kill_sec=kill_sec)
         raise
     finally:
         pump.join(timeout=_LOG_PUMP_JOIN_SEC)
-        # If the pump is still stuck in read, **do not** close (condition added
-        # 2026-09-07). Measured: `BufferedReader.close()` throws no exception and
-        # does not wrest the stream away from the pump — it contends for the same
-        # lock, and so **blocks until that read returns** (measured 19.05 seconds,
-        # exactly how long the child stayed alive).
+        # 抽水還卡在 read 就**不要**關（2026-09-07 加的條件）。實測：
+        # `BufferedReader.close()` 不會丟例外，也不會把串流從抽水手上抽走——它去
+        # 搶同一把鎖，於是**一路擋到那次 read 回來為止**（量到 19.05 秒，正好是
+        # 子行程還活著的時間）。
         #
-        # The normal path never reaches this: `proc.wait()` returning = the child
-        # is dead = pipe EOF = the pump ends immediately. What does reach it is the
-        # "reap failed, child still alive" path (`reap_child`'s `terminate()` /
-        # `kill()` throwing their own exception) — then this line would wedge the
-        # supervisor **permanently** at the last step of wrapping up, while it
-        # still holds the single-instance lock, so nobody can restart and nothing
-        # shows on screen. The pump is a daemon thread, so the OS reclaims the fd
-        # when the process ends.
+        # 正常路徑走不到：`proc.wait()` 回來＝子行程已死＝管線 EOF＝抽水立刻結束。
+        # 走得到的是「收屍失敗、子行程還活著」那條（`reap_child` 裡的
+        # `terminate()`／`kill()` 自己丟例外）——那時候這一行會把監督者**永久**卡在
+        # 收工的最後一步，而它手上還握著單一實例鎖，於是誰也重啟不了，畫面上什麼
+        # 都沒有。抽水是 daemon 執行緒，行程結束時 OS 會把 fd 收掉。
         if proc.stdout is not None and not pump.is_alive():
             try:
                 proc.stdout.close()
             except OSError:
                 pass
+
+
+def start_log_pump(stream, path):
+    """把子行程管線轉存到獨立附加 handle，避免覆寫同檔的函式庫紀錄。"""
+    if stream is None:
+        return None
+
+    def pump():
+        try:
+            with open(path, "a", encoding="utf-8", buffering=1) as log:
+                for line in stream:
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8", errors="replace")
+                    log.write(line)
+        except (OSError, ValueError) as error:
+            print(f"log pump failed: {type(error).__name__}", file=sys.stderr)
+        finally:
+            stream.close()
+
+    thread = threading.Thread(target=pump, name="batch-log-pump", daemon=True)
+    thread.start()
+    return thread
+
+
+def webrunner_exit_made_no_progress(rc: int) -> bool:
+    """webrunner 結束後：True = 這一輪對批次佇列零推進，計入零產出放棄閘。
+
+    兩種：`RC_ZERO_PROGRESS`（嘗試過生成、一張都沒存）與 `RC_SERVED_ONESHOT`
+    （跑成了單圖伺服器，批次佇列一筆都沒碰）。兩種都**活很久**——前者要跑完
+    `consecutive_fail_abort`，後者光閒置逾時就 120 秒——所以只看「活了多久」的
+    rapid-fail 閘永遠不會響，要走這道慢速閘才數得到。兩支監督者都呼叫這一支，
+    規則只有一份。
+    """
+    return rc in (RC_ZERO_PROGRESS, RC_SERVED_ONESHOT)

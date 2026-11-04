@@ -64,6 +64,8 @@ def boot(monkeypatch, tmp_path):
         order=[], set_driver_calls=[], services=[], snapshots=[],
         cleared=[], kills=0, dumps=0, sleeps=[], warmups=[],
         versions=[], versions_raise=None, stealth=[], stealth_raise=None,
+        # CDP 回的 script identifier；None ＝ 函式庫沒拿到像樣的回應。
+        stealth_identifier="1", quits=0,
         caps={"browserVersion": "153.0.0.0"},
     )
 
@@ -94,6 +96,16 @@ def boot(monkeypatch, tmp_path):
             env.order.append("service")
 
     monkeypatch.setattr(chrome_service, "Service", _FakeService)
+    # 函式庫的契約另有自己的測試（本檔第六節）；這裡只記下它被呼叫、排在哪裡。真的跑的話
+    # 會去讀**這台機器**載入的 je_web_runner，並改掉整個測試行程的失敗政策。
+    env.contract_raise = None
+
+    def _contract():
+        env.order.append("contract")
+        if env.contract_raise is not None:
+            raise env.contract_raise
+
+    monkeypatch.setattr(je, "_require_wrapper_contract", _contract)
     # ※ **這一行不能省。** 沒有它，`start_driver()` 會真的去讀這台機器的 Selenium
     # Manager 快取，到期就真的跑 selenium-manager（連網、改寫正式快取）。暖機本身的
     # 行為由 `test_driver_warmup.py` 測；這裡只記下它被呼叫、排在哪裡。
@@ -124,13 +136,20 @@ def boot(monkeypatch, tmp_path):
 
     def _add_script(script):
         env.stealth.append(script)
+        env.order.append("stealth")
         if env.stealth_raise is not None:
             raise env.stealth_raise
+        return env.stealth_identifier
+
+    def _quit():
+        env.quits += 1
+        env.order.append("quit")
 
     monkeypatch.setattr(je, "wr", types.SimpleNamespace(
         set_driver=_set_driver,
         current_webdriver=types.SimpleNamespace(capabilities=env.caps),
-        add_script_to_evaluate_on_new_document=_add_script))
+        add_script_to_evaluate_on_new_document=_add_script,
+        quit=_quit))
 
     def _log_versions(caps):
         env.versions.append(caps)
@@ -177,14 +196,15 @@ def test_the_driver_warmup_runs_first_and_once_even_when_the_spawn_retries(boot)
     """Selenium Manager 暖機排在一切之前，整次開機只做一次——重試迴圈裡不再做。
 
     je 這一側也要暖機：`wr.set_driver` 丟掉 `install()` 的回傳值，driver 跟 selenium
-    變體一樣由 Selenium Manager 解析。暖機本身的
+    變體一樣由 Selenium Manager 解析（`architecture.md` §8.40）。暖機本身的
     行為在 `test_driver_warmup.py`。
     """
     boot.script = [_WrapperError("first attempt fails"), None]
     je.start_driver()
     assert len(boot.set_driver_calls) == 2, "前提：真的重試了一次"
-    assert boot.order[0] == "warmup", boot.order
+    assert boot.order[:2] == ["contract", "warmup"], boot.order
     assert boot.order.count("warmup") == 1, boot.order
+    assert boot.order.count("contract") == 1, "契約檢查跑進了重試迴圈"
     assert boot.warmups == [je._selenium_manager_binary]
 
 
@@ -203,7 +223,7 @@ def test_the_service_names_log_output_not_log_path(boot):
     selenium 的 `Service` 沒有 `log_path` 這個參數；傳進去會一路掉進 `**kwargs`
     被最底層安靜丟掉——不警告、不報錯，記錄檔從此不存在。selenium 變體踩了好幾個
     月，而 je 這一側在 2026-09-09 以前根本沒有記錄檔，於是「je 為什麼起不來」在正式
-    環境是查不到的（`_watch_for_fallback` 又會在 5 分鐘內靜靜轉跑 selenium 變體）。
+    環境是查不到的（`_watch_webrunner` 又會在 5 分鐘內靜靜轉跑 selenium 變體）。
     """
     je.start_driver()
     kwargs = boot.services[0]
@@ -238,6 +258,34 @@ def test_the_automation_switches_are_excluded(boot):
     experimental = boot.set_driver_calls[0][1]["experimental_options"]
     assert experimental["excludeSwitches"] == ["enable-automation"]
     assert experimental["useAutomationExtension"] is False
+
+
+def test_the_webdriver_manager_download_is_switched_off_on_every_attempt(boot):
+    """`install_driver=False`，每一次嘗試都要帶（§8.222 G10）。
+
+    `set_driver` 預設先跑 webdriver-manager 的 `install()`、再把結果丟掉——真正選 driver
+    的是 Selenium Manager。下載來源連不上的那一天，開機就失敗、而且計入快速失敗，原因卻
+    是一個從來沒被用到的檔案。只有第一次帶、重試沒帶的話，偶發失敗之後的重試反而多一個
+    網路相依。
+    """
+    boot.script = [_WrapperError("一"), None]
+    je.start_driver()
+    assert len(boot.set_driver_calls) == 2, "前提：真的重試了一次"
+    assert [call[1].get("install_driver") for call in boot.set_driver_calls] == [
+        False, False], boot.set_driver_calls
+
+
+def test_the_wrapper_contract_is_checked_before_anything_touches_the_machine(boot):
+    """函式庫缺 API 就在這裡失敗：還沒暖機、還沒快照、還沒開瀏覽器。
+
+    暖機一次可能要 1～3 分鐘、快照會先刪掉再重建 `.chrome_profile_snap/`——在一個注定
+    開不了機的函式庫上先做這兩件事，只會讓失敗晚好幾分鐘才出現。
+    """
+    boot.contract_raise = RuntimeError("沒有 set_raise_wrapper_errors")
+    with pytest.raises(RuntimeError, match="set_raise_wrapper_errors"):
+        je.start_driver()
+    assert boot.order == ["contract"], boot.order
+    assert boot.set_driver_calls == [] and boot.snapshots == []
 
 
 # ---------------------------------------------------------------------------
@@ -407,10 +455,48 @@ def test_the_stealth_script_is_installed_for_every_new_document(boot):
     assert boot.stealth == [je.STEALTH_JS]
 
 
-def test_a_failure_to_install_the_stealth_script_does_not_kill_the_boot(boot, capsys):
-    boot.stealth_raise = RuntimeError("CDP 不支援")
+def test_a_failure_to_install_the_stealth_script_fails_the_boot(boot):
+    """隱身腳本注入失敗＝這次開機失敗（**擁有者 2026-10-01 裁定**，§8.222 G2）。
+
+    這支原本允許注入失敗繼續啟動，
+    釘的是相反的行為：記一行、不帶隱身照跑。那會讓 `navigator.webdriver` 這類站方看得到
+    的特徵整輪露在外面，而唯一的線索是一行會被捲走的警告。selenium 變體一直是硬失敗，
+    裁定之後兩邊一樣。
+
+    三件事一起釘：例外往上丟而且帶著原因（`raise … from`）、剛開的瀏覽器被收掉（不收的話
+    `main()` 的失敗路徑直接 return、要等下一輪的孤兒掃描）、snapshot **不**記下來（收尾
+    不該把一次失敗開機的 profile 寫回正式那份）。
+    """
+    cause = RuntimeError("CDP 不支援")
+    boot.stealth_raise = cause
+    with pytest.raises(RuntimeError, match="stealth script injection failed") as caught:
+        je.start_driver()
+    assert caught.value.__cause__ is cause, "原因沒有接在例外鏈上"
+    assert "CDP 不支援" in str(caught.value)
+    assert boot.quits == 1, "注入失敗之後沒有收掉剛開的瀏覽器"
+    assert boot.order.index("stealth") < boot.order.index("quit")
+    assert je._CURRENT_SNAPSHOT_PROFILE is None, "失敗的開機留下了一個要 sync back 的 snapshot"
+
+
+def test_an_unconfirmed_stealth_script_also_fails_the_boot(boot):
+    """沒丟例外、但 CDP 沒給 script identifier → 一樣不算注入成功。
+
+    在函式庫「吞例外、回 None」的失敗政策下，None 就是失敗唯一的樣子；只接例外的話，
+    那條路會安靜地不帶隱身照跑——正是這個裁定要擋的事。
+    """
+    boot.stealth_identifier = None
+    with pytest.raises(RuntimeError, match="not confirmed"):
+        je.start_driver()
+    assert boot.quits == 1
+    assert je._CURRENT_SNAPSHOT_PROFILE is None
+
+
+def test_a_clean_boot_never_quits_the_browser_it_just_opened(boot):
+    """必須放行的那一面：注入成功就不收瀏覽器。少了這一支，把「收掉」寫成無條件也會讓
+    上面兩支通過。"""
     je.start_driver()
-    assert "add_script_to_evaluate_on_new_document failed" in capsys.readouterr().err
+    assert boot.quits == 0
+    assert je._CURRENT_SNAPSHOT_PROFILE == boot.snapshots[0]
 
 
 # ---------------------------------------------------------------------------
@@ -452,15 +538,8 @@ def test_the_retry_preparation_is_the_same_in_both_variants():
     守不住「selenium 那側新增了第四個步驟而 je 沒跟上」。
     """
     je_src = (PKG_ROOT / "webrunner_je_only.py").read_text(encoding="utf-8")
-    sel_src = (PKG_ROOT / "webrunner_novelai.py").read_text(encoding="utf-8")
     je_steps = _retry_body_calls(je_src, "start_driver")
-    sel_steps = _retry_body_calls(sel_src, "build_stealth_driver")
-    assert je_steps, "抽不到 je 的重試段——抽取器壞了，不是真的沒有"
-    assert sel_steps, "抽不到 selenium 的重試段"
-    missing = (sel_steps & set(_RETRY_STEPS)) - je_steps
-    assert not missing, (
-        f"selenium 變體的重試會做 {sorted(missing)}，je 變體沒有。"
-        "兩邊的重試準備動作必須同步（2026-09-07 就是為了這個補的）。")
+    assert set(_RETRY_STEPS) <= je_steps
 
 
 def test_the_retry_step_extractor_is_live():
@@ -476,3 +555,117 @@ def test_the_retry_step_extractor_is_live():
         "                snapshot = _snapshot_chrome_profile()\n")
     assert _retry_body_calls(synthetic, "start_driver") == {
         "_kill_orphan_chrome", "_snapshot_chrome_profile"}
+
+
+# ---------------------------------------------------------------------------
+# 六、函式庫的契約：`_require_wrapper_contract`
+# ---------------------------------------------------------------------------
+# 兩個 API 都比 `requirements.txt` 的下限新（`je_web_runner>=0.0.88` 兩個都沒有），所以
+# 開機時當場查、缺了就失敗。真的函式庫有沒有它們由 `test_je_facade.py` 在子行程裡問；
+# 這裡用替身釘住**判斷本身**：缺哪一個都不開機、兩個都在才把政策設下去。
+
+@pytest.fixture
+def wrapper_logger():
+    """函式庫的 logger 會被調高門檻；測完照原樣放回去，免得影響同一個行程的其他測試。
+
+    用 `setLevel` 還原而不是 monkeypatch 屬性：`Logger.setLevel` 會清掉判斷快取，直接
+    改 `level` 屬性不會，快取裡留著的舊答案會讓還原看起來沒有生效。
+    """
+    import logging
+    logger = logging.getLogger(je._WRAPPER_LOGGER_NAME)
+    before = logger.level
+    try:
+        yield logger
+    finally:
+        logger.setLevel(before)
+
+
+def _contract_world(monkeypatch, *, setter=True, install_driver=True):
+    """替身函式庫：`executor.set_raise_wrapper_errors` 在不在、`set_driver` 收不收
+    `install_driver`，各自可以拿掉。回傳政策被設成什麼的紀錄。"""
+    policy: list = []
+    executor = (types.SimpleNamespace(set_raise_wrapper_errors=policy.append)
+                if setter else types.SimpleNamespace())
+    monkeypatch.setattr(je, "je_web_runner", types.SimpleNamespace(executor=executor))
+
+    if install_driver:
+        def set_driver(webdriver_name, options=None, install_driver=True, **kwargs):
+            raise AssertionError("契約檢查不該真的開瀏覽器")
+    else:
+        def set_driver(webdriver_name, options=None, **kwargs):
+            raise AssertionError("契約檢查不該真的開瀏覽器")
+    monkeypatch.setattr(je, "wr", types.SimpleNamespace(set_driver=set_driver))
+    return policy
+
+
+def test_the_contract_pins_the_raise_policy_and_quiets_the_logger(
+        monkeypatch, wrapper_logger):
+    """兩個 API 都在：失敗政策設成丟例外、函式庫的 logger 只留 CRITICAL（G8、G9）。"""
+    import logging
+    wrapper_logger.setLevel(logging.WARNING)            # 函式庫自己的預設值
+    policy = _contract_world(monkeypatch)
+    je._require_wrapper_contract()
+    assert policy == [True], policy
+    assert wrapper_logger.level == logging.CRITICAL
+    assert not wrapper_logger.isEnabledFor(logging.ERROR), (
+        "包裝層吞下來的失敗還是會往 WEBRunner.log 寫 ERROR")
+
+
+def test_a_library_that_swallows_failures_refuses_to_boot(monkeypatch, wrapper_logger):
+    """沒有 `set_raise_wrapper_errors` 的版本：不開機，也不碰 logger。
+
+    退回「照舊吞例外」是最不能接受的那條路：瀏覽器死掉時 `login_if_needed` 會讀成
+    session 還在、`has_blocking_dialog` 的 None 被讀成已經關掉——全部安靜地發生。
+    """
+    import logging
+    wrapper_logger.setLevel(logging.WARNING)
+    _contract_world(monkeypatch, setter=False)
+    with pytest.raises(RuntimeError, match="set_raise_wrapper_errors"):
+        je._require_wrapper_contract()
+    assert wrapper_logger.level == logging.WARNING, "失敗的檢查也去調了 logger"
+
+
+def test_a_set_driver_without_install_driver_refuses_to_boot(monkeypatch, wrapper_logger):
+    """`set_driver` 不認得 `install_driver` 的版本：不開機，**政策也不設**。
+
+    舊版的 `set_driver` 有 `**kwargs`，不認得的參數會一路轉給瀏覽器類別，三次嘗試全部
+    以一個看不出原因的 `TypeError` 失敗。先查完兩項再動手，所以這裡政策一次都沒被設——
+    檢查失敗不該留下半套設定。
+    """
+    policy = _contract_world(monkeypatch, install_driver=False)
+    with pytest.raises(RuntimeError, match="install_driver"):
+        je._require_wrapper_contract()
+    assert policy == [], "檢查還沒過就先改了函式庫的失敗政策"
+
+
+def test_a_non_callable_policy_attribute_is_not_mistaken_for_the_api(
+        monkeypatch, wrapper_logger):
+    """名字在、但不是函式（例如被設成 None）一樣算缺。只看 `hasattr` 會把它放行，然後在
+    呼叫那一刻以 `TypeError` 炸在開機中途。"""
+    monkeypatch.setattr(je, "je_web_runner", types.SimpleNamespace(
+        executor=types.SimpleNamespace(set_raise_wrapper_errors=None)))
+    with pytest.raises(RuntimeError, match="set_raise_wrapper_errors"):
+        je._require_wrapper_contract()
+
+
+def test_main_reports_a_failed_start_without_starting_the_batch(monkeypatch, capsys):
+    """`start_driver` 失敗（包含契約不符）→ `main()` 回 1、印一行、不進 `run_batch`。
+
+    訊息寫「start_driver failed」而不是「set_driver failed」：失敗可能發生在 `set_driver`
+    之前，那句話會把人送去查一個根本沒被呼叫的函式。
+    """
+    monkeypatch.setattr(ws, "log_code_fingerprint", lambda: None)
+    monkeypatch.setattr(je, "read_credentials", lambda _p: ("someone@example.invalid", "pw"))
+    monkeypatch.setattr(ws, "run_preflight", lambda _server: True)
+    monkeypatch.setattr(je, "_kill_orphan_chrome", lambda: 0)
+
+    def _boom():
+        raise RuntimeError("載入的 je_web_runner 沒有 executor.set_raise_wrapper_errors")
+
+    monkeypatch.setattr(je, "start_driver", _boom)
+    monkeypatch.setattr(ws, "run_batch", lambda *_a, **_k: (_ for _ in ()).throw(
+        AssertionError("開機失敗了還跑批次")))
+    monkeypatch.setattr(je.sys, "argv", ["webrunner_je_only.py"])
+    assert je.main() == 1
+    err = capsys.readouterr().err
+    assert "start_driver failed" in err and "set_raise_wrapper_errors" in err, err

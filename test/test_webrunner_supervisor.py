@@ -1,4 +1,4 @@
-"""bot 這一側的背景程式監督者（`discord_bot._watch_for_fallback`）——270 行裡有
+"""bot 這一側的背景程式監督者（`discord_bot._watch_webrunner`）——270 行裡有
 138 行敘述，其中 **78 行從來沒有被任何測試執行過**。
 
 `test_bot_helpers` 已經有一組針對它的測試，但那一組刻意只走**一條**路：變體釘死
@@ -39,6 +39,7 @@ import _supervisor  # noqa: E402
 BOT_SOURCE = Path(__file__).resolve().parent.parent / "axiomatic" / "discord_bot.py"
 RC_BLOCKED = _supervisor.RC_GENERATION_BLOCKED
 RC_ZERO = b.RC_ZERO_PROGRESS
+RC_ONESHOT = b.RC_SERVED_ONESHOT
 
 
 # --------------------------------------------------------------------------
@@ -127,7 +128,7 @@ def sup_env(monkeypatch):
             if env.on_sleep is not None:
                 env.on_sleep(delay)
 
-    def fake_spawn(variant, *, single_image_server=False):
+    def fake_spawn(variant="je", *, single_image_server=False):
         if env.spawn_reports_success_without_a_process:
             env.spawns.append(variant)
             return True, "已啟動（但沒有行程）"
@@ -167,7 +168,7 @@ def sup_env(monkeypatch):
     monkeypatch.setattr(b, "_webrunner_proc", None)
     monkeypatch.setattr(b, "_webrunner_pid", None)
     monkeypatch.setattr(b, "_webrunner_variant", None)
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     # 失敗的當下監督者會問一次「網路還在嗎」（`_batch_network_is_down`）。這裡一律
     # 回「在」：真的去探測的話，測試結果會隨著跑測試那台機器當下有沒有網路而變，
     # 斷網的機器上整組會走進「停下來等網路」那條路而掛住。斷網那條路有自己的測試
@@ -186,11 +187,11 @@ def sup_env(monkeypatch):
     monkeypatch.setattr(b, "WEBRUNNER_RAPID_FAIL_THRESHOLD_SEC", 30.0)
     monkeypatch.setattr(b, "WEBRUNNER_RAPID_FAIL_GIVEUP_COUNT", 3)
     monkeypatch.setattr(b, "WEBRUNNER_ZERO_PROGRESS_GIVEUP_COUNT", 2)
-    monkeypatch.setattr(b, "WEBRUNNER_FALLBACK_WINDOW_SEC", 300)
+
     return env
 
 
-def _start(env, rc=1, alive=0.0, variant="selenium"):
+def _start(env, rc=1, alive=0.0, variant="je"):
     """擺好「第一個正在跑的行程」，也就是監督者被掛上去的那一刻的狀態。"""
     proc = _Proc(rc, alive, env.clock)
     env.procs.append(proc)
@@ -204,8 +205,8 @@ def _run(env, own_task=True):
     """跑完整個監督者。回傳它結束時的三個全域值。"""
     async def _body():
         if own_task:
-            b._webrunner_fallback_task = asyncio.current_task()
-        await b._watch_for_fallback(env.channel)
+            b._webrunner_supervisor_task = asyncio.current_task()
+        await b._watch_webrunner(env.channel)
         return (b._webrunner_proc, b._webrunner_pid, b._webrunner_variant)
 
     result = asyncio.run(_body())
@@ -326,17 +327,6 @@ def test_the_blocked_notice_failing_still_clears_the_state(sup_env):
 # 三、je → selenium 的啟動視窗
 # --------------------------------------------------------------------------
 
-def test_a_je_crash_inside_the_startup_window_switches_to_the_fallback(sup_env):
-    """主要模式在啟動視窗內死掉 → 換備援模式，而不是一直重生同一個。
-
-    少了這條，一台裝不起主要模式的機器會無限重生它——每一輪都花完整的啟動時間，
-    然後死在同一個地方，而備援模式明明可以跑。
-    """
-    _start(sup_env, rc=1, alive=10.0, variant="je")
-    sup_env.script = [(0, 100.0)]
-    _run(sup_env)
-    assert sup_env.spawns == ["selenium"]
-    assert "改用備援模式重啟" in _said(sup_env)
 
 
 def test_a_je_crash_after_the_startup_window_is_an_ordinary_respawn(sup_env,
@@ -350,7 +340,7 @@ def test_a_je_crash_after_the_startup_window_is_an_ordinary_respawn(sup_env,
     所以「讓視窗過去」只能靠把視窗調小，事先推進時鐘沒有用——第一版就是這樣寫的，
     結果量到的是視窗**內**的行為。
     """
-    monkeypatch.setattr(b, "WEBRUNNER_FALLBACK_WINDOW_SEC", 5)
+
     _start(sup_env, rc=1, alive=10.0, variant="je")
     sup_env.script = [(0, 100.0)]
     _run(sup_env)
@@ -358,39 +348,8 @@ def test_a_je_crash_after_the_startup_window_is_an_ordinary_respawn(sup_env,
     assert "改用備援模式" not in _said(sup_env)
 
 
-def test_the_fallback_only_happens_once(sup_env):
-    """換過一次之後就不再是「第一次跑主要模式」了。
-
-    旗標沒清的話，備援模式自己崩一次也會再「fallback」一次——而它已經是備援了，
-    等於在原地繞圈，每一圈都重跑一次登入。
-
-    ⚠️ 擋下第二次的是**兩道**條件——`je_fallback_pending` 與 `current_variant ==
-    "je"`——而量過之後：**單獨拿掉任何一道，這支測試都還是綠的**。兩道在這支函式裡
-    是同一件事的兩種寫法（旗標只在變體是 je 時為真，而唯一會換變體的兩條路都同時
-    把旗標關掉），所以沒有任何輸入分得開它們。
-
-    先前這段註解寫的是「承重的是變體那一半」——那是**猜的，而且猜錯了**：把變體那
-    一半拿掉，測試照樣綠。分不開就是分不開，正確的記法是「承重的是這一對」，而變異
-    測試裡對應的也是把兩道一起拿掉的那一個。
-    """
-    _start(sup_env, rc=1, alive=10.0, variant="je")
-    sup_env.script = [(1, 10.0), (0, 100.0)]
-    _run(sup_env)
-    assert sup_env.spawns == ["selenium", "selenium"]
-    assert _said(sup_env).count("改用備援模式重啟") == 1
 
 
-def test_the_fallback_waits_for_the_browser_slot_and_gives_it_back(sup_env):
-    """先拿 Chrome 槽再 spawn；拿不到就退出，而且一定要還。
-
-    不拿槽的話，瀏覽器驗證正在跑時會開出第二個瀏覽器 stack，兩邊搶同一個設定檔；
-    不還的話，之後每一次要用瀏覽器的工作都會永遠等下去。
-    """
-    _start(sup_env, rc=1, alive=10.0, variant="je")
-    sup_env.script = [(0, 100.0)]
-    _run(sup_env)
-    assert sup_env.acquired == ["webrunner-fallback"]
-    assert sup_env.released == 1
 
 
 def test_a_refused_browser_slot_ends_the_supervision_without_spawning(sup_env):
@@ -412,7 +371,7 @@ def test_a_refused_browser_slot_ends_the_supervision_without_spawning(sup_env):
 
 def test_an_ordinary_crash_respawns_the_same_variant(sup_env, monkeypatch):
     """重生的是**同一個**變體——監督者不會順手換掉使用者選的模式。"""
-    monkeypatch.setattr(b, "WEBRUNNER_FALLBACK_WINDOW_SEC", 5)
+
     _start(sup_env, rc=1, alive=100.0, variant="je")
     sup_env.script = [(0, 100.0)]
     _run(sup_env)
@@ -491,7 +450,7 @@ def test_repeated_instant_crashes_give_up_instead_of_churning(sup_env):
     _start(sup_env, rc=1, alive=0.0)
     sup_env.script = [(1, 0.0)] * 10
     proc, pid, variant = _run(sup_env)
-    assert sup_env.spawns == ["selenium"] * (b.WEBRUNNER_RAPID_FAIL_GIVEUP_COUNT - 1)
+    assert sup_env.spawns == ["je"] * (b.WEBRUNNER_RAPID_FAIL_GIVEUP_COUNT - 1)
     assert "supervisor 放棄重啟" in _said(sup_env)
     assert (proc, pid, variant) == (None, None, None)
     # 每一次重生前會清一次 pid 檔，放棄的那一次再清一次——所以是重生次數 ＋ 1。
@@ -590,7 +549,7 @@ def test_a_stop_that_lands_during_the_spawn_kills_the_new_process(sup_env):
     sup_env.script = [(1, 100.0)]
     real_spawn = b._spawn_webrunner
 
-    def _spawn_then_stop(variant, **kwargs):
+    def _spawn_then_stop(variant="je", **kwargs):
         result = real_spawn(variant, **kwargs)
         b._webrunner_stop_requested = True
         return result
@@ -657,13 +616,13 @@ def test_the_finished_supervisor_clears_only_its_own_registration(sup_env):
     """
     _start(sup_env, rc=0, alive=1.0)
     _run(sup_env, own_task=True)
-    assert b._webrunner_fallback_task is None
+    assert b._webrunner_supervisor_task is None
 
     sentinel = object()
     _start(sup_env, rc=0, alive=1.0)
-    b._webrunner_fallback_task = sentinel
+    b._webrunner_supervisor_task = sentinel
     _run(sup_env, own_task=False)
-    assert b._webrunner_fallback_task is sentinel, (
+    assert b._webrunner_supervisor_task is sentinel, (
         "清掉了別人的註冊——那個 task 還在跑，而 `/stop` 之後找不到它")
 
 
@@ -676,17 +635,6 @@ def test_the_finished_supervisor_clears_only_its_own_registration(sup_env):
 # 抽風的那一刻，監督者順便忘了收尾」。
 # --------------------------------------------------------------------------
 
-def test_a_dead_channel_does_not_stop_the_fallback(sup_env):
-    """通知送不出去，備援模式還是要換過去。
-
-    換變體的那幾行排在通知之後。通知沒有被保護的話，一次送出失敗就會讓整支監督者
-    跳到最外層的 blanket handler——主要模式起不來，而備援根本沒被試過。
-    """
-    sup_env.send_all_raise = True
-    _start(sup_env, rc=1, alive=10.0, variant="je")
-    sup_env.script = [(0, 100.0)]
-    _run(sup_env)
-    assert sup_env.spawns == ["selenium"]
 
 
 def test_a_dead_channel_does_not_stop_the_rapid_fail_giveup(sup_env):
@@ -737,7 +685,7 @@ def test_a_terminate_that_fails_still_clears_the_state(sup_env):
     sup_env.script = [(1, 100.0)]
     real_spawn = b._spawn_webrunner
 
-    def _spawn_then_stop(variant, **kwargs):
+    def _spawn_then_stop(variant="je", **kwargs):
         result = real_spawn(variant, **kwargs)
         b._webrunner_proc.terminate = _boom
         b._webrunner_stop_requested = True
@@ -772,22 +720,10 @@ def test_a_failed_respawn_ends_the_supervision(sup_env):
     _start(sup_env, rc=1, alive=40.0)
     sup_env.script = []            # 第一次重生就失敗
     _run(sup_env)
-    assert sup_env.spawns == ["selenium"]
+    assert sup_env.spawns == ["je"]
     assert "沒有更多腳本了" in _said(sup_env)
 
 
-def test_a_fallback_that_cannot_start_either_ends_the_supervision(sup_env):
-    """連備援模式都起不來 → 到此為止。
-
-    Case A 與 Case B 各自檢查一次 spawn 的回傳值，這是**備援那一半**。與另一半
-    同樣的狀況：行為上它被頂端的 `if proc is None: return` 遮蔽（理由見
-    `test_a_failed_respawn_ends_the_supervision`），所以守它的是靜態那一支。
-    """
-    _start(sup_env, rc=1, alive=10.0, variant="je")
-    sup_env.script = []
-    _run(sup_env)
-    assert sup_env.spawns == ["selenium"]
-    assert "改用備援模式重啟" in _said(sup_env)
 
 
 def test_a_refused_browser_slot_on_an_ordinary_respawn_also_ends_it(sup_env):
@@ -838,7 +774,7 @@ def test_a_spawn_that_reports_success_without_a_process_ends_the_supervision(
     _start(sup_env, rc=1, alive=40.0)
     sup_env.spawn_reports_success_without_a_process = True
     _run(sup_env)
-    assert sup_env.spawns == ["selenium"]
+    assert sup_env.spawns == ["je"]
     assert "監督機制異常結束" not in _said(sup_env)
 
 
@@ -894,12 +830,12 @@ def _unchecked_spawns(func: ast.AST) -> list:
 def test_every_spawn_site_checks_whether_the_spawn_worked():
     """兩個 spawn 點都要在**自己那一段**檢查回傳值。"""
     func = _named_function(BOT_SOURCE.read_text(encoding="utf-8"),
-                           "_watch_for_fallback")
+                           "_watch_webrunner")
     spawns = [n.lineno for n in ast.walk(func)
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
               and n.func.id == "_spawn_webrunner"]
-    assert len(spawns) == 2, (
-        f"spawn 點從 2 個變成 {len(spawns)} 個——新的那個也要檢查回傳值，"
+    assert len(spawns) == 1, (
+        f"spawn 點從 1 個變成 {len(spawns)} 個——新的那個也要檢查回傳值，"
         "並且把這個數字改過來。")
     assert _unchecked_spawns(func) == []
 
@@ -937,10 +873,10 @@ def _named_function(source: str, name: str):
 def test_the_supervisor_never_measures_an_interval_on_the_wall_clock():
     """監督者裡不該有任何一次 `time.time()`。"""
     func = _named_function(BOT_SOURCE.read_text(encoding="utf-8"),
-                           "_watch_for_fallback")
+                           "_watch_webrunner")
     hits = _wall_clock_reads(func)
     assert hits == [], (
-        f"`_watch_for_fallback` 在 {hits} 讀了可調整的牆上時鐘。"
+        f"`_watch_webrunner` 在 {hits} 讀了可調整的牆上時鐘。"
         "這裡量的是間隔，一律用 `time.monotonic()`；會落地或跨行程比對的絕對"
         "時間戳才留在 `time.time()`，而這支函式沒有那種東西。")
 
@@ -958,3 +894,20 @@ def test_the_wall_clock_scan_can_tell_the_shapes_apart(source, expected):
     函式本身而不是呼叫它。放行步驟只有這種案例殺得掉。
     """
     assert len(_wall_clock_reads(_named_function(source, "f"))) == expected
+
+
+def test_a_batch_that_came_back_as_a_single_image_server_is_respawned(sup_env):
+    """rc=5（`RC_SERVED_ONESHOT`）：這個監督者起的是批次，回來的卻是單圖伺服器。
+
+    bot 的批次 spawn 從來不帶單張伺服器旗標，所以看到 5 代表宣告在某處退化了、那一輪
+    批次佇列一筆都沒碰。要**重生**——不是收工（那是 2026-06-27 的安靜停擺），也不是
+    「需要人處理」（那一類的意思是重試沒用，這裡重生出來的就是批次）。
+    """
+    _start(sup_env, rc=RC_ONESHOT, alive=200.0)
+    sup_env.script = [(0, 100.0)]
+    _run(sup_env)
+    said = _said(sup_env)
+    assert sup_env.spawns == ["je"], (
+        f"rc=5 之後應該重生同一個變體一次，實際 {sup_env.spawns}")
+    assert "產圖已自動停止" not in said, "rc=5 被當成「需要人處理」了"
+    assert "放棄重啟" not in said

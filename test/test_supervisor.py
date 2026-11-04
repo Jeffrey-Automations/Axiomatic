@@ -4426,5 +4426,48 @@ def test_a_pid_file_deleted_mid_read_counts_as_no_batch(monkeypatch, tmp_path):
         "'no batch is running', not 'cannot decide'.")
 
 
+
+
+def test_bot_spawn_preserves_library_lines_between_stdout_lines(tmp_path, monkeypatch):
+    import discord_bot as bot
+    import _supervisor as supervisor
+    script = tmp_path / "fake_batch.py"
+    log = tmp_path / "batch.log"
+    script.write_text(
+        "from pathlib import Path\n"
+        "print('before', flush=True)\n"
+        f"with open({str(log)!r}, 'a', encoding='utf-8') as out:\n"
+        "    out.write('library: 完整紀錄\\n')\n"
+        "for i in range(20): print(f'stdout {i}', flush=True)\n", encoding="utf-8")
+    for name in ("_webrunner_proc", "_webrunner_pid", "_webrunner_log_handle", "_webrunner_variant"):
+        monkeypatch.setattr(bot, name, None)
+    monkeypatch.setattr(bot, "_webrunner_stop_requested", False)
+    monkeypatch.setattr(bot, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(bot, "WEBRUNNER_LOG", log)
+    monkeypatch.setattr(bot, "WEBRUNNER_SCRIPT", script)
+    monkeypatch.setattr(bot, "_rotate_webrunner_log", lambda: None)
+    monkeypatch.setattr(bot, "_rotate_ndjson_tail", lambda path: None)
+    monkeypatch.setattr(bot, "_save_pid", lambda pid: None)
+    pumps = []
+    def pump(stream, path):
+        thread = supervisor.start_log_pump(stream, path)
+        pumps.append(thread)
+        return thread
+    monkeypatch.setattr(bot, "start_log_pump", pump)
+    try:
+        assert bot._spawn_webrunner()[0]
+        assert bot._webrunner_proc.wait(timeout=15) == 0
+        pumps[0].join(timeout=5)
+        assert not pumps[0].is_alive()
+        content = log.read_text(encoding="utf-8")
+        assert "library: 完整紀錄\n" in content
+        assert all(f"stdout {i}\n" in content for i in range(20))
+    finally:
+        if bot._webrunner_proc is not None and bot._webrunner_proc.poll() is None:
+            bot._webrunner_proc.kill()
+            bot._webrunner_proc.wait(timeout=5)
+        if bot._webrunner_log_handle is not None:
+            bot._webrunner_log_handle.close()
+
 if __name__ == "__main__":
     sys.exit(main())

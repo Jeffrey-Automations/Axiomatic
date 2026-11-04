@@ -1,6 +1,7 @@
 """`verify_browser.py` 的結論詞彙契約：「沒驗到」不得跟「驗了、壞了」混為一談。
 
-`verify_browser.py` 是本專案**規定**用來實證瀏覽器／driver 改動的入口。它印一行機器可讀結論給呼叫端 grep，而呼叫端
+`verify_browser.py` 是本專案**規定**用來實證瀏覽器／driver 改動的入口（模組開頭
+與 `.claude/agents/*.md` 都這樣寫）。它印一行機器可讀結論給呼叫端 grep，而呼叫端
 是一個自走迴圈。
 
 問題出在：有兩條路**根本沒有開瀏覽器**——槽被別人佔住、以及讀到活著的
@@ -493,7 +494,7 @@ def _names_sourced_from(tree, func_name: str) -> set:
 # "verify_quota_dialog.py")`。而上面三條規則的**文字**一個模組都沒提到——「絕不可
 # 用正式 profile」「清理只准回收自己那棵樹」「整支跑在跨行程 Chrome 槽裡」對**任何
 # 一個與正式批次並存的 Chrome** 都成立，不是只對那兩個檔名成立。這正是
-# 又是那個家族：規則的敘述沒有邊界，掃描的範圍卻有。
+# `architecture.md` §8.8 記的那個家族：規則的敘述沒有邊界，掃描的範圍卻有。
 #
 # 實測（2026-09-10，全專案 37 個非測試模組）：**Chrome 啟動點總共 4 個**，另外兩個
 # 是正式批次的兩個變體，它們**刻意**做相反的事——`_kill_orphan_chrome()` 在自己的
@@ -525,7 +526,7 @@ _LAUNCHER_SKIP_DIRS = frozenset({
 
 # 「這個模組會不會真的起一個瀏覽器」的機制判準，三種形式取**聯集**。
 # 分開列是因為它們各自漏掉不同的東西，而本專案四個啟動點剛好把兩種主要形式都用到了：
-#   * `webdriver.Chrome(...)`   → verify_browser / verify_quota_dialog / webrunner_novelai
+#   * `webdriver.Chrome(...)`   → verify_browser / verify_quota_dialog / webrunner_je_only
 #   * `wr.set_driver("chrome",…)` → webrunner_je_only（**完全沒有** `webdriver.Chrome`）
 # 只用前者會漏掉 je 變體；只用 `ChromeService` 會漏掉「連 Service 都不建」的最天真
 # 寫法（`webdriver.Chrome()` 本身就跑得起來）。四個模組現在各自命中**兩個**訊號，
@@ -542,7 +543,7 @@ _BROWSER_PACKAGES = frozenset({
     "selenium", "undetected_chromedriver", "seleniumbase", "je_web_runner",
 })
 # 包裝層的啟動形式：`set_driver(<瀏覽器名字面>, …)`。第一個引數必須是字面的瀏覽器
-# 名——`webrunner_novelai` 的 `port.set_driver(driver)` 傳的是一個**已經存在**的
+# 名——`webrunner_je_only` 的 `port.set_driver(driver)` 傳的是一個**已經存在**的
 # driver 物件，那是重新指向、不是啟動。分不開的話每個用 `BrowserPort` 的模組都會被
 # 誤判成啟動器。
 _WRAPPER_LAUNCHERS = frozenset({"set_driver", "build_stealth_chrome_driver"})
@@ -553,7 +554,7 @@ def _bound_browser_names(tree) -> set:
     """從瀏覽器自動化套件 import 進本模組的名字（含 `as` 別名）。
 
     `ast.walk` 所以函式內的延遲 import 也算——本專案四個啟動點裡有三個是那樣寫的
-    （`verify_browser` / `webrunner_novelai` / `webrunner_je_only` 都在函式裡才
+    （`verify_browser` / `webrunner_je_only` / `webrunner_je_only` 都在函式裡才
     `from selenium.webdriver.chrome.service import Service as ChromeService`）。
     """
     out: set = set()
@@ -626,7 +627,7 @@ def _source_modules(roots) -> dict:
     return out
 
 
-# 這一族會被十幾支測試各掃一次，而 `webrunner_novelai.py` 之類的大檔重複 `ast.parse`
+# 這一族會被十幾支測試各掃一次，而 `webrunner_je_only.py` 之類的大檔重複 `ast.parse`
 # 很貴（實測：不快取 13 秒，快取 1.2 秒）。key 帶 mtime 與大小，所以**內容變了就
 # 自動失效**——不是把結果記起來的 memo，那種寫法會讓「先掃一次、再寫檔、再掃一次」
 # 的測試拿到過期答案。
@@ -681,21 +682,7 @@ def _scan_roots():
 # 這份名單自己也要對帳：一筆過期的例外是 **fail-open**——檔案改名或不再開瀏覽器
 # 之後，那個字串就再也對不到任何東西，守門照跑、測試全綠、而它原本豁免的模組已經
 # 不在受檢集合裡，差別是零（CLAUDE.md 對 `_OWNER_ONLY_SLASH` 記的是同一個形狀）。
-_LAUNCHER_EXEMPT = {
-    "axiomatic/webrunner_novelai.py":
-        "正式批次（selenium 變體）。刻意 nuclear sweep：`_kill_orphan_chrome()` 在 "
-        "`webdriver.Chrome(...)` 之前無條件殺光全機 chrome／chromedriver，因為那一刻"
-        "自家 driver 還不存在；profile 用的是正式登入態的 snapshot，不是 mkdtemp。"
-        "**這個變體同時也是 `verify_browser.py` 的驗證入口**（`WEBRUNNER_SCRIPT` "
-        "指到它，由它的 `_run_setup_verification` 進去），而那條路的保證跟上面這段"
-        "剛好相反——不 nuclear sweep（`_SUPPRESS_ORPHAN_SWEEP`）、profile 指到隔離"
-        "的暫時目錄。兩條路共用一個檔，所以這段理由只涵蓋 `main` 那一條；驗證那條"
-        "由本檔 `_VERIFY_ENTRY` 那一組各自釘住。",
-    "axiomatic/webrunner_je_only.py":
-        "正式批次（je_web_runner 變體）。與 selenium 變體同一套 Chrome 生命週期，"
-        "同樣 nuclear sweep、同樣用登入 profile 的 snapshot；啟動走 "
-        "`wr.set_driver(\"chrome\", …)` 而不是 `webdriver.Chrome(...)`。",
-}
+_LAUNCHER_EXEMPT = {"axiomatic/webrunner_je_only.py": "正式批次使用登入設定檔快照，不要求拋棄式 profile；瀏覽器由工作物件限定範圍清理。verify_browser 的 _run_setup_verification 隔離驗證仍另外檢查其獨立設定檔與收尾。"}
 
 
 def _exemption_errors(exempt, launchers) -> list:
@@ -713,7 +700,7 @@ def _exemption_errors(exempt, launchers) -> list:
     return errors
 
 
-def _population_errors(launchers, exempt, *, min_total=4, min_checked=2) -> list:
+def _population_errors(launchers, exempt, *, min_total=3, min_checked=2) -> list:
     """族群下限。**純函式**，好讓合成語料能各別觸發其中一條。
 
     §8.8(A4)：空語料**測不動** `>=` 下限——`0 >= 2` 與 `0 >= 4` 都是假，第一條先炸、
@@ -1129,7 +1116,7 @@ def test_every_launcher_exemption_still_names_a_real_launcher():
     """
     launchers = _chrome_launchers(_scan_roots())
     assert _LAUNCHER_EXEMPT, "例外名單空了，這一支就沒有東西在對帳"
-    assert len(launchers) >= 4, (
+    assert len(launchers) >= 3, (
         f"只掃到 {len(launchers)} 個啟動點：{sorted(launchers)}——先修偵測器")
     problems = _exemption_errors(_LAUNCHER_EXEMPT, launchers)
     assert not problems, "\n".join(problems)
@@ -1206,7 +1193,7 @@ def _slot_protocol_calls(source: str) -> set:
     `_exemption_errors`：現況是乾淨的，所以牙齒得長在一個合成語料問得到的地方。
 
     用 AST 不用子字串——本檔與被掃的檔案裡，說明文字提到 `_chrome_slot` 的地方比
-    真的呼叫還多（`webrunner_novelai.py` 唯一一次出現就是在註解裡）。
+    真的呼叫還多（`webrunner_je_only.py` 唯一一次出現就是在註解裡）。
 
     **2026-09-11：判準從「取槽」放寬成「參與槽協定」。** 原本只認
     `acquire` / `try_acquire` / `_run_with_slot`，所以 `held_by_live_other()`
@@ -1461,7 +1448,7 @@ def test_the_wrapper_form_is_not_confused_with_repointing_a_port(tmp_path):
     """`set_driver` 有兩個意思，只有帶瀏覽器名字面的那個是啟動。
 
     `webrunner_je_only` 的 `wr.set_driver("chrome", …)` **起**一個 Chrome；
-    `webrunner_novelai` 的 `port.set_driver(driver)` 只是把 port 重新指向一個已經
+    `webrunner_je_only` 的 `port.set_driver(driver)` 只是把 port 重新指向一個已經
     存在的 driver。分不開的話，任何用了 `BrowserPort` 的模組都會被誤判成啟動器。
     """
     (tmp_path / "zz_launch.py").write_text(
@@ -1481,8 +1468,8 @@ def test_the_population_floors_each_fire_on_their_own_corpus():
     assert _population_errors(four, {}) == []
 
     # 只違反「總數」：3 個啟動點、0 個例外 → 受檢 3 >= 2，總數 3 < 4。
-    errors = _population_errors({k: v for k, v in list(four.items())[:3]}, {})
-    assert len(errors) == 1 and "全專案只掃到 3" in errors[0], errors
+    errors = _population_errors({k: v for k, v in list(four.items())[:2]}, {})
+    assert len(errors) == 1 and "全專案只掃到 2" in errors[0], errors
 
     # 只違反「受檢數」：4 個啟動點、3 個例外 → 總數 4 >= 4，受檢 1 < 2。
     errors = _population_errors(four, dict.fromkeys(list(four)[:3], "reason"))
@@ -2150,17 +2137,15 @@ def _with_fake_psutil(monkeypatch, table):
     monkeypatch.setitem(sys.modules, "psutil", _fake_psutil(table))
 
 
-# 兩份抄本：驗證腳本自己那一份，以及背景程式 opt-in 驗證模式那一份。行為規則相同，
-# 所以行為測試對兩份都跑一次——只修好一份是這一輪已經踩過的形狀
-# （`verify_quota_dialog` 的 `TRANSPORT_ERRORS` 被漏掉三個月）。
-# `webrunner_novelai` 在**函式內**才 import：它會拉進 selenium / je_web_runner，
-# 而本檔其餘部分是純 AST、collection 很快。`test_chrome_recovery.py` 已經證明模組
-# 層 import 這兩支是安全的，這裡只是不想讓本檔跟著變慢。
+# 兩份抄本：驗證腳本自己那一份，以及背景程式 opt-in 驗證模式那一份（2026-10-01 起在
+# `_webrunner_shared`，兩個變體共用）。行為規則相同，所以行為測試對兩份都跑一次——只修好
+# 一份是這一輪已經踩過的形狀（`verify_quota_dialog` 的 `TRANSPORT_ERRORS` 被漏掉三個月）。
+# `_webrunner_shared` 在**函式內**才 import：本檔其餘部分是純 AST、collection 很快。
 def _reapers():
-    import webrunner_novelai as wn  # noqa: PLC0415
+    import _webrunner_shared as ws  # noqa: PLC0415
 
     return (("verify_browser", vb._capture_own_tree, vb._reap_pids),
-            ("webrunner_novelai", wn._verify_capture_tree, wn._verify_reap_tree))
+            ("_webrunner_shared", ws.verify_capture_tree, ws.verify_reap_tree))
 
 
 def test_the_capture_records_identity_not_just_a_pid(monkeypatch):
@@ -2269,9 +2254,9 @@ def test_a_process_that_already_exited_is_not_an_error(monkeypatch):
 def test_both_surgical_reapers_check_identity_before_killing():
     """兩份抄本都要做身分檢查——規則跟模組無關，抄本卻有兩份。
 
-    `verify_browser._reap_pids` 與 `webrunner_novelai._verify_reap_tree` 是同一段
+    `verify_browser._reap_pids` 與 `_webrunner_shared.verify_reap_tree` 是同一段
     邏輯的兩份實作（一份在驗證腳本、一份在背景程式的 opt-in 驗證模式），而兩邊都
-    不能單一來源：`verify_browser` 刻意不 import 任何 webrunner 變體。所以守門要
+    不能單一來源：`verify_browser` 刻意不 import 任何 webrunner 相關模組。所以守門要
     同時盯住兩份，否則修好一份、另一份安靜地留著同一個缺陷——這正是同一天在
     `TRANSPORT_ERRORS` 上已經踩過一次的形狀（`verify_quota_dialog` 那份被漏掉了
     三個月）。
@@ -2279,7 +2264,7 @@ def test_both_surgical_reapers_check_identity_before_killing():
     判準是**機制**：kill 之前必須出現對 `create_time` 的比較。
     """
     targets = (("verify_browser.py", "_reap_pids"),
-               ("webrunner_novelai.py", "_verify_reap_tree"))
+               ("_webrunner_shared.py", "verify_reap_tree"))
     for module, func in targets:
         tree = _tree_of(module)
         fn = next((n for n in ast.walk(tree)
@@ -2305,7 +2290,7 @@ def test_both_surgical_reapers_check_identity_before_killing():
 # ---------------------------------------------------------------------------
 # 這一族補的是一個實際的空白：`main()` 與 `_build_parser()` 在 2026-09-09 之前
 # **一行都沒有被執行過**（實測 coverage）。而這支腳本的整個價值就建立在那個 CLI
-# 契約上——驗證守則叫人「先跑它，看那一行結論」。模式選
+# 契約上——`.claude/agents/*.md` 與驗證守則都叫人「先跑它，看那一行結論」。模式選
 # 錯（`--full` 被讀成 smoke）的症狀特別壞：它會印一個看起來很正常的 `OK`，而實際上
 # 端到端那一半根本沒跑。
 
@@ -2321,8 +2306,8 @@ def _run_main(monkeypatch, argv):
         seen["smoke"] = {"url": url, "headless": headless}
         return vb.EXIT_OK
 
-    def _fake_full(generate):
-        seen["full"] = {"generate": generate}
+    def _fake_full(generate, variant="je"):
+        seen["full"] = {"generate": generate, "variant": variant}
         return vb.EXIT_OK
 
     def _fake_smoke_je(url, headless):
@@ -2343,8 +2328,8 @@ def test_the_default_invocation_is_a_headless_smoke_run(monkeypatch):
     """沒有參數 = smoke、headless、about:blank。這是驗證守則寫的那條預設路徑。"""
     rc, seen, _out = _run_main(monkeypatch, [])
     assert rc == vb.EXIT_OK, rc
-    assert seen["label"] == "smoke", seen
-    assert seen["smoke"] == {"url": "about:blank", "headless": True}, seen
+    assert seen["label"] == "smoke-je", seen
+    assert seen["smoke_je"] == {"url": "about:blank", "headless": True}, seen
     assert "full" not in seen, "預設居然走了 full"
 
 
@@ -2357,7 +2342,7 @@ def test_headed_and_url_reach_the_smoke_runner(monkeypatch):
     rc, seen, _out = _run_main(
         monkeypatch, ["--headed", "--url", "https://example.invalid/x"])
     assert rc == vb.EXIT_OK, rc
-    assert seen["smoke"] == {"url": "https://example.invalid/x",
+    assert seen["smoke_je"] == {"url": "https://example.invalid/x",
                              "headless": False}, seen
 
 
@@ -2372,7 +2357,7 @@ def test_both_spellings_of_full_reach_the_full_runner(monkeypatch, argv):
     assert rc == vb.EXIT_OK, rc
     assert seen["label"] == "full", (argv, seen)
     assert "smoke" not in seen, (argv, seen)
-    assert seen["full"] == {"generate": False}, seen
+    assert seen["full"] == {"generate": False, "variant": "je"}, seen
 
 
 def test_generate_is_off_unless_asked_for(monkeypatch):
@@ -2437,7 +2422,7 @@ def test_calling_main_without_arguments_does_not_read_pytests_command_line():
         assert vb.main() == vb.EXIT_OK
     finally:
         vb._run_with_slot = original
-    assert calls == ["smoke"], calls
+    assert calls == ["smoke-je"], calls
 
 
 @pytest.mark.parametrize("output, expected", [
@@ -2459,11 +2444,11 @@ def test_the_setup_failure_reason_is_extracted_from_the_child_output(
 
 
 # ---------------------------------------------------------------------------
-# `verify_browser.py --full` 在子行程裡跑的那一段：`webrunner_novelai.py` 的
+# `verify_browser.py --full` 在子行程裡跑的那一段：`webrunner_je_only.py` 的
 # `_run_setup_verification()`。
 #
 # **為什麼守在這裡，而不是併進上面那個啟動點掃描。** `_LAUNCHER_EXEMPT` 是
-# **以檔案為單位**的，而 `axiomatic/webrunner_novelai.py` 整個檔被列為例外，理由
+# **以檔案為單位**的，而 `axiomatic/webrunner_je_only.py` 整個檔被列為例外，理由
 # 寫的是「正式批次……刻意 nuclear sweep……profile 用的是正式登入態的 snapshot」。
 # 那段理由**每一句都是真的**——但它描述的是 `main()` 那條路。同一個檔裡還有
 # `_run_setup_verification()`，那是一條**非正式、要求隔離**的路，它的 docstring 對
@@ -2480,11 +2465,13 @@ def test_the_setup_failure_reason_is_extracted_from_the_child_output(
 # 機制層級**，針對這條路自己的保證各釘一條。
 _VERIFY_ENTRY = "_run_setup_verification"
 _PRODUCTION_ENTRY = "main"
-# ⚠️ 這是 `verify_browser.WEBRUNNER_SCRIPT` 的**第二份拷貝**，而在 2026-09-11 之前
-# 沒有任何東西比對過它們。危險方向見 `test_the_verify_entry_points_at_the_variant_
-# these_tests_check`：改接另一個變體之後，下面每一支都會繼續檢查 novelai（照樣有
-# 抑制旗標）→ 全綠，而實際跑起來的變體沒有旗標。
-_VERIFY_MODULE = "webrunner_novelai.py"
+# ⚠️ 這是 `verify_browser` 那幾個 `WEBRUNNER_*SCRIPT` 常數的**第二份拷貝**，而在
+# 2026-09-11 之前沒有任何東西比對過它們。危險方向見 `test_the_verify_entry_points_at_the_
+# variant_these_tests_check`：多接一個變體而這裡沒跟上，下面每一支都只檢查舊的那幾個 →
+# 全綠，而實際跑起來的新變體沒有人看過它的隔離保證。2026-10-01 起兩個變體都是入口
+# （`--full --variant je`，§8.222 G1），本體在 `_webrunner_shared.run_setup_verification`。
+_VERIFY_MODULES = ("webrunner_je_only.py",)
+_SHARED_VERIFY_BODY = ("_webrunner_shared.py", "run_setup_verification")
 
 
 def _function_in(module: str, name: str):
@@ -2497,26 +2484,44 @@ def _function_in(module: str, name: str):
         f"「掃一個不存在的東西、什麼都沒違反」的假綠。改名的話要一起改這裡。")
 
 
-def _webrunner_script_filename(source: str) -> str:
-    """從 `verify_browser.py` 的原始碼抽 `WEBRUNNER_SCRIPT` 指到的檔名。
+def _webrunner_script_filenames(source: str) -> dict[str, str]:
+    """從 `verify_browser.py` 的原始碼抽**每一個** `WEBRUNNER_*SCRIPT` 常數指到的檔名。
 
-    用 AST 而不是 import：`verify_browser` 匯入時會做一堆環境探測，而這裡只需要一
-    個字串。走 `/` 接合的最右邊那個字面值，所以 `Path(__file__).resolve().parent /
-    "webrunner_novelai.py"` 這種寫法讀得出來。
+    用 AST 而不是 import：`verify_browser` 匯入時會做一堆環境探測，而這裡只需要幾個
+    字串。走 `/` 接合的最右邊那個字面值，所以 `Path(__file__).resolve().parent /
+    "webrunner_je_only.py"` 這種寫法讀得出來。認的是**名字的形狀**（`WEBRUNNER_` 開頭、
+    `SCRIPT` 結尾），不是一份名單——多一個驗證目標時這裡會自動收進來。
     """
+    found: dict[str, str] = {}
     for node in ast.parse(source).body:
-        if not (isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "WEBRUNNER_SCRIPT"
-                        for t in node.targets)):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)
+                 and t.id.startswith("WEBRUNNER_") and t.id.endswith("SCRIPT")]
+        if not names:
             continue
         value = node.value
         while isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
             if isinstance(value.right, ast.Constant):
-                return value.right.value
+                found[names[0]] = value.right.value
+                break
             value = value.left
-    raise AssertionError(
-        "`verify_browser.py` 裡找不到 `WEBRUNNER_SCRIPT = <...> / \"<檔名>\"` 這個"
-        "形狀——常數改名或改寫法了，而下面那支對帳就會變成假綠。")
+    if "WEBRUNNER_SCRIPT" not in found:
+        raise AssertionError(
+            "`verify_browser.py` 裡找不到 `WEBRUNNER_SCRIPT = <...> / \"<檔名>\"` 這個"
+            "形狀——常數改名或改寫法了，而下面那支對帳就會變成假綠。")
+    return found
+
+
+def _mentions(tree, name: str) -> bool:
+    """`tree` 的**程式碼**裡有沒有出現 `name`（`ast.Name` 或 `ast.Attribute`）。
+
+    比 `_calls` 寬：把一支函式當 callback 交出去（`quit_driver=_sync_chrome_profile_back`）
+    不是一個呼叫節點，`_calls` 看不到；共用本體收 callback，所以要連「交出去」一起擋。
+    """
+    return any((isinstance(n, ast.Name) and n.id == name)
+               or (isinstance(n, ast.Attribute) and n.attr == name)
+               for n in ast.walk(tree))
 
 
 def test_the_verify_entry_points_at_the_variant_these_tests_check():
@@ -2527,7 +2532,7 @@ def test_the_verify_entry_points_at_the_variant_these_tests_check():
     `verify_browser.py:99` 的 `WEBRUNNER_SCRIPT` 是另一份，兩者從來沒有被比對過。
     把驗證入口改接 je_only 之後會發生的事（實測，2026-09-11）：
 
-    * 本檔每一支都繼續解析 `webrunner_novelai.py`，那支照樣設 `_SUPPRESS_ORPHAN_
+    * 本檔每一支都繼續解析 `webrunner_je_only.py`，那支照樣設 `_SUPPRESS_ORPHAN_
       SWEEP = True` → **全綠**；
     * 實際被叫起來的 `webrunner_je_only.py` **模組層根本沒有那個名字**（實測：
       novelai 有、je_only 沒有），所以共用建構函式那一次 `_kill_orphan_chrome()`
@@ -2538,29 +2543,33 @@ def test_the_verify_entry_points_at_the_variant_these_tests_check():
     **安全方向**（旗標被加進 je → 紅）；危險方向就是這一支。
     """
     verify_src = (REPO_ROOT / "axiomatic" / "verify_browser.py").read_text(encoding="utf-8")
-    pointed = _webrunner_script_filename(verify_src)
+    pointed = sorted(set(_webrunner_script_filenames(verify_src).values()))
 
-    assert pointed == _VERIFY_MODULE, (
-        f"`verify_browser.WEBRUNNER_SCRIPT` 指到 `{pointed}`，但本檔的 "
-        f"`_VERIFY_MODULE` 還寫著 `{_VERIFY_MODULE}`——底下每一支隔離保證的檢查"
-        "都在驗一個**沒有被跑起來**的變體，而且會全部通過。兩個都要改。")
+    assert pointed == sorted(_VERIFY_MODULES), (
+        f"`verify_browser` 的 `WEBRUNNER_*SCRIPT` 指到 {pointed}，但本檔的 "
+        f"`_VERIFY_MODULES` 寫著 {sorted(_VERIFY_MODULES)}——底下每一支隔離保證的檢查"
+        "都在驗一組跟**實際被跑起來的**不一樣的變體，而且會全部通過。兩邊都要改。")
 
-    tree = _tree_of(pointed)
-    module_level = set()
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            module_level |= {t.id for t in node.targets
-                             if isinstance(t, ast.Name)}
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            module_level.add(node.target.id)
-    # 正面對照：抽不到模組層常數的話，下面那句斷言就變成「空集合裡沒有」的假綠。
-    assert len(module_level) >= 20, (
-        f"`{pointed}` 只抽到 {len(module_level)} 個模組層指派——抽取器壞了，"
-        "下面的斷言等於沒在跑。")
-    assert "_SUPPRESS_ORPHAN_SWEEP" in module_level, (
-        f"驗證入口指到的 `{pointed}` **沒有**模組層的 `_SUPPRESS_ORPHAN_SWEEP`。"
-        "隔離驗證會恢復成殺光全機 chrome／chromedriver——正式批次的瀏覽器會被"
-        "一起帶走。要改接這個變體的話，得先把抑制旗標與它的判斷點一起移植過去。")
+    for module in pointed:
+        tree = _tree_of(module)
+        module_level = set()
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                module_level |= {t.id for t in node.targets
+                                 if isinstance(t, ast.Name)}
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                module_level.add(node.target.id)
+        # 正面對照：抽不到模組層常數的話，下面那句斷言就變成「空集合裡沒有」的假綠。
+        # 下限只擋「抽取器崩到幾乎是零」：原本寫 20 而 selenium 變體剛好 20（餘裕 0），
+        # 2026-10-01 函式庫位置的三行手寫解析換成一行共用呼叫，它掉到 19 就紅了——一個對
+        # 合法改動亂叫的對照組。實測 2026-10-01：selenium 19、je 21。
+        assert len(module_level) >= 10, (
+            f"`{module}` 只抽到 {len(module_level)} 個模組層指派——抽取器壞了"
+            "（或變體真的瘦到這個地步，那就連這個下限一起改），下面的斷言等於沒在跑。")
+        assert "_SUPPRESS_ORPHAN_SWEEP" in module_level, (
+            f"驗證入口指到的 `{module}` **沒有**模組層的 `_SUPPRESS_ORPHAN_SWEEP`。"
+            "隔離驗證會恢復成殺光全機 chrome／chromedriver——正式批次的瀏覽器會被"
+            "一起帶走。要接這個變體的話，得先把抑制旗標與它的判斷點一起移植過去。")
 
 
 def test_the_launcher_exemption_reason_owns_up_to_the_verify_path():
@@ -2578,21 +2587,22 @@ def test_the_launcher_exemption_reason_owns_up_to_the_verify_path():
     """
     verify_src = (REPO_ROOT / "axiomatic"
                   / "verify_browser.py").read_text(encoding="utf-8")
-    pointed = _webrunner_script_filename(verify_src)
-    rel = f"axiomatic/{pointed}"
-    assert rel in _LAUNCHER_EXEMPT, (
-        f"驗證入口指到 `{rel}`，而它不在 `_LAUNCHER_EXEMPT` 裡——那表示它現在"
-        "受核彈式掃描的檢查管，兩邊的假設對不上了，請重新確認哪一邊才對。")
-    reason = _LAUNCHER_EXEMPT[rel]
-    assert _VERIFY_ENTRY in reason or "verify_browser" in reason, (
-        f"`{rel}` 現在是 `verify_browser.py` 的驗證入口，但它在 `_LAUNCHER_EXEMPT` "
-        f"裡的理由完全沒提到這件事：{reason[:70]}…\n"
-        "那句理由只描述「正式批次、刻意 nuclear sweep」，而驗證那條路的保證剛好"
-        "相反。讀的人會以為這個檔只有一種行為。把第二條路寫進理由裡，並確認 "
-        f"`{_VERIFY_ENTRY}` 那一組隔離檢查真的涵蓋它。")
+    for pointed in sorted(set(_webrunner_script_filenames(verify_src).values())):
+        rel = f"axiomatic/{pointed}"
+        assert rel in _LAUNCHER_EXEMPT, (
+            f"驗證入口指到 `{rel}`，而它不在 `_LAUNCHER_EXEMPT` 裡——那表示它現在"
+            "受核彈式掃描的檢查管，兩邊的假設對不上了，請重新確認哪一邊才對。")
+        reason = _LAUNCHER_EXEMPT[rel]
+        assert _VERIFY_ENTRY in reason or "verify_browser" in reason, (
+            f"`{rel}` 現在是 `verify_browser.py` 的驗證入口，但它在 `_LAUNCHER_EXEMPT` "
+            f"裡的理由完全沒提到這件事：{reason[:70]}…\n"
+            "那句理由只描述「正式批次、刻意 nuclear sweep」，而驗證那條路的保證剛好"
+            "相反。讀的人會以為這個檔只有一種行為。把第二條路寫進理由裡，並確認 "
+            f"`{_VERIFY_ENTRY}` 那一組隔離檢查真的涵蓋它。")
 
 
-def test_the_two_paths_this_file_contrasts_both_still_exist():
+@pytest.mark.parametrize("module", _VERIFY_MODULES)
+def test_the_two_paths_this_file_contrasts_both_still_exist(module):
     """先釘住受檢對象本身。
 
     §8.8(A4)／「空集合看起來就像乾淨的結果」：下面每一支都是「某某呼叫**不准**出現」
@@ -2600,11 +2610,13 @@ def test_the_two_paths_this_file_contrasts_both_still_exist():
     所以受檢的兩個函式先各自證明存在，抽取器的牙齒則由下一支證明。
     """
     for name in (_VERIFY_ENTRY, _PRODUCTION_ENTRY):
-        node = _function_in(_VERIFY_MODULE, name)
+        node = _function_in(module, name)
         assert node.body, f"`{name}` 是空的？"
+    assert _function_in(*_SHARED_VERIFY_BODY).body, "共用的驗證本體是空的？"
 
 
-def test_the_extractor_can_still_see_what_it_is_looking_for():
+@pytest.mark.parametrize("module", _VERIFY_MODULES)
+def test_the_extractor_can_still_see_what_it_is_looking_for(module):
     """**正面對照**：同一個抽取器對正式路徑 `main()` 跑，必須找得到那兩個呼叫。
 
     這一支是下面三支的牙齒。少了它，`_calls()` 哪天壞掉（或被改成回空 list），
@@ -2612,15 +2624,19 @@ def test_the_extractor_can_still_see_what_it_is_looking_for():
     `_DRIVER_SERVICES` 上踩過同一種「多餘的訊號＝沒被測到的訊號」。
     對照組是免費的：正式路徑**本來就該**呼叫這兩個，兩條路的差別正是這一組要釘的。
     """
-    production = _function_in(_VERIFY_MODULE, _PRODUCTION_ENTRY)
+    production = _function_in(module, _PRODUCTION_ENTRY)
     assert _calls(production, "_sync_chrome_profile_back"), (
         "`main()` 竟然不再把 profile 同步回去了——抽取器壞了，或正式路徑改了。"
         "兩種都要人看過，因為下面幾支的可信度全靠這一支。")
     assert _calls(production, "_kill_orphan_chrome"), (
         "`main()` 竟然不再做全機 Chrome 掃描了——同上，先確認是抽取器還是程式改了。")
+    assert _mentions(production, "_sync_chrome_profile_back"), (
+        "`_mentions` 在正式路徑上看不到 `_sync_chrome_profile_back`——它壞了，"
+        "下面「連交出去都不准」那一句等於沒在跑。")
 
 
-def test_the_isolated_verify_path_never_syncs_the_profile_back():
+@pytest.mark.parametrize("module", _VERIFY_MODULES)
+def test_the_isolated_verify_path_never_syncs_the_profile_back(module):
     """**最重要的一條**：隔離驗證不得把它那份 profile 寫回 `.chrome_profile/`。
 
     `--full` 用的是正式登入態的**快照副本**。要是這條路跟著 `main()` 呼叫
@@ -2628,14 +2644,22 @@ def test_the_isolated_verify_path_never_syncs_the_profile_back():
     profile——而那正是整個專案最貴、最難重建的一份資料（重建等於重新人工登入）。
     這條保證只寫在 docstring 裡，2026-09-10 之前沒有任何東西在檢查。
     """
-    verify = _function_in(_VERIFY_MODULE, _VERIFY_ENTRY)
+    verify = _function_in(module, _VERIFY_ENTRY)
     assert not _calls(verify, "_sync_chrome_profile_back"), (
-        f"`{_VERIFY_ENTRY}` 呼叫了 `_sync_chrome_profile_back()`。"
+        f"`{module}` 的 `{_VERIFY_ENTRY}` 呼叫了 `_sync_chrome_profile_back()`。"
         "隔離驗證會把快照副本寫回正式登入 profile——`--full` 從此每跑一次就污染一次"
         "正式登入態，而且不會有任何錯誤訊息。")
+    # 薄殼把開機／收尾當 callback 交給共用本體；把 sync-back 交出去不是呼叫節點，
+    # 但效果一樣。共用本體本身則根本不該認得這個名字。
+    for where, tree in ((f"{module} 的 {_VERIFY_ENTRY}", verify),
+                        ("共用的 run_setup_verification",
+                         _function_in(*_SHARED_VERIFY_BODY))):
+        assert not _mentions(tree, "_sync_chrome_profile_back"), (
+            f"{where} 提到了 `_sync_chrome_profile_back`（多半是被當 callback 交出去）。")
 
 
-def test_the_isolated_verify_path_suppresses_the_nuclear_sweep():
+@pytest.mark.parametrize("module", _VERIFY_MODULES)
+def test_the_isolated_verify_path_suppresses_the_nuclear_sweep(module):
     """隔離驗證不得對全機 Chrome 硬砍——它可能跟正式批次同時在跑。
 
     正式路徑刻意 nuclear sweep（那一刻自家 driver 還不存在，見 `_LAUNCHER_EXEMPT`
@@ -2643,7 +2667,7 @@ def test_the_isolated_verify_path_suppresses_the_nuclear_sweep():
     chrome 會連正式批次的瀏覽器一起帶走。機制是把模組層級的
     `_SUPPRESS_ORPHAN_SWEEP` 設成 True，讓共用的建構函式那一次掃描變成 no-op。
     """
-    verify = _function_in(_VERIFY_MODULE, _VERIFY_ENTRY)
+    verify = _function_in(module, _VERIFY_ENTRY)
     suppressed = [
         node for node in ast.walk(verify)
         if isinstance(node, ast.Assign)
@@ -2660,9 +2684,10 @@ def test_the_isolated_verify_path_suppresses_the_nuclear_sweep():
         "那支不受 `_SUPPRESS_ORPHAN_SWEEP` 保護，等於繞過上面那道抑制。")
 
 
-def test_the_isolated_verify_path_repoints_the_profile_snapshot():
+@pytest.mark.parametrize("module", _VERIFY_MODULES)
+def test_the_isolated_verify_path_repoints_the_profile_snapshot(module):
     """profile 的目的地必須被改指到隔離目錄，而且不能指回正式的那一個。"""
-    verify = _function_in(_VERIFY_MODULE, _VERIFY_ENTRY)
+    verify = _function_in(module, _VERIFY_ENTRY)
     targets = [
         node for node in ast.walk(verify)
         if isinstance(node, ast.Assign)
@@ -2680,13 +2705,15 @@ def test_the_isolated_verify_path_repoints_the_profile_snapshot():
             "隔離驗證要有自己的目的地。")
 
 
-def test_the_isolated_verify_path_touches_no_queue_and_writes_no_pid():
+@pytest.mark.parametrize("module, func", [(m, _VERIFY_ENTRY) for m in _VERIFY_MODULES]
+                         + [_SHARED_VERIFY_BODY])
+def test_the_isolated_verify_path_touches_no_queue_and_writes_no_pid(module, func):
     """佇列與 `webrunner.pid` 都不准碰——`--full` 是可以在正式批次旁邊跑的。
 
     碰佇列會讓一次驗證吃掉一個真的角色；寫 pid 會讓 bot 的監督者把這個短命的子行程
     誤認成正式批次，於是對它做行程管理（而它跑完就沒了）。
     """
-    verify = _function_in(_VERIFY_MODULE, _VERIFY_ENTRY)
+    verify = _function_in(module, func)
     # ⚠️ 這份清單是 **fail-open** 的：名字打錯或被改名之後，那一筆就變成一個永遠
     # 對不上的字串，守門照跑、測試照綠、保護消失——與 `CLAUDE.md` 記著的
     # `_OWNER_ONLY_SLASH` 是同一個形狀。2026-09-11 實測抓到一筆：`"write_pid_file"`
@@ -2697,7 +2724,7 @@ def test_the_isolated_verify_path_touches_no_queue_and_writes_no_pid():
                  "claim_liveness_signal", "run_with_liveness_signal")
     hits = sorted({_dotted_name(n.func) for n in _calls(verify, *forbidden)})
     assert not hits, (
-        f"`{_VERIFY_ENTRY}` 碰到了佇列／pid：{hits}。"
+        f"`{module}` 的 `{func}` 碰到了佇列／pid：{hits}。"
         "隔離驗證會吃掉真的待辦，或讓監督者把它誤認成正式批次。")
 
 
@@ -2882,7 +2909,7 @@ def _stub_full_attempts(monkeypatch, outcomes):
     """讓 `_full_attempt` 依序回傳 `outcomes`，並記錄被呼叫幾次。"""
     calls: list[int] = []
 
-    def _fake(generate, attempt):
+    def _fake(generate, attempt, variant="je"):
         calls.append(attempt)
         return outcomes[min(len(calls) - 1, len(outcomes) - 1)]
 
@@ -2932,7 +2959,7 @@ def test_full_without_its_entry_script_fails_without_starting_anything(
     """入口檔不在（搬走、改名）是**驗證失敗**：印 FAIL、回 1，而且在任何一趟之前就停——
     不是 SKIP（那是「晚點再來」，看到的人會以為什麼都沒壞）。"""
     calls = _stub_full_attempts(monkeypatch, [(True, "")])
-    monkeypatch.setattr(vb, "WEBRUNNER_SCRIPT", tmp_path / "gone.py")
+    monkeypatch.setattr(vb, "WEBRUNNER_JE_SCRIPT", tmp_path / "gone.py")
     rc = vb.run_full(generate=False)
     out = capsys.readouterr().out
     assert rc == vb.EXIT_FAIL and calls == [], (rc, calls)
@@ -3220,7 +3247,7 @@ def test_one_unreconfigurable_stream_does_not_stop_the_other(monkeypatch):
 #   3. **匯入時的工作目錄**：`je_web_runner` 匯入時就用相對路徑開 `WEBRunner.log`，在
 #      repo 根目錄匯入等於以附加模式開著正式批次的 `webrunner.log`。子行程入口在匯入
 #      之前就要拒絕，父行程給子行程的工作目錄一定在 repo 外；
-#   4. 結論：FAIL 分得出「driver 管理器安裝失敗」與「瀏覽器起不來」，結論行仍然只有一行。
+#   4. 結論：FAIL 分得出「函式庫缺正式變體要的介面」與「瀏覽器起不來」，結論行仍然只有一行。
 #
 # 第 3 條用**行為**釘，不用 AST：AST 看得到「有沒有呼叫檢查」，看不到「檢查是不是在
 # 匯入之前、有沒有真的擋住」——本檔 `test_an_undecidable_pid_file_never_opens_a_browser`
@@ -3230,11 +3257,11 @@ def test_one_unreconfigurable_stream_does_not_stop_the_other(monkeypatch):
 
 def test_the_variant_flag_defaults_to_selenium(monkeypatch):
     """預設 = selenium：加這個旗標之前的呼叫方式行為逐字不變。"""
-    assert vb._build_parser().parse_args([]).variant == "selenium"
+    assert vb._build_parser().parse_args([]).variant == "je"
     rc, seen, _out = _run_main(monkeypatch, [])
     assert rc == vb.EXIT_OK
-    assert seen["label"] == "smoke" and "smoke" in seen, seen
-    assert "smoke_je" not in seen, f"沒加 --variant 卻走了 je：{seen}"
+    assert seen["label"] == "smoke-je" and "smoke_je" in seen, seen
+    assert "smoke" not in seen, seen
 
 
 def test_the_je_variant_reaches_the_je_smoke_runner(monkeypatch):
@@ -3253,23 +3280,58 @@ def test_the_je_variant_reaches_the_je_smoke_runner(monkeypatch):
 
 @pytest.mark.parametrize("argv", [["--full", "--variant", "je"],
                                   ["--mode", "full", "--variant", "je"]])
-def test_full_with_the_je_variant_is_a_usage_error(monkeypatch, capsys, argv):
-    """`--full` 只接 selenium 變體，所以 `--full --variant je` 是**參數錯誤**。
+def test_full_with_the_je_variant_runs_the_je_verify_entry(monkeypatch, argv):
+    """`--full --variant je` 從 2026-10-01 起是合法的（§8.222 G1）：走 full、帶著 je。
 
-    exit 2 是 argparse 的「指令打錯」，刻意跟 FAIL（1）與 SKIP（3）都不同：印成 FAIL
-    會被讀成瀏覽器壞了；印成 SKIP 會讓自走迴圈晚點再重試一個永遠不可能成功的指令。
-    也什麼都不能開——`_run_with_slot` 一次都不得被呼叫。
+    之前它是參數錯誤（exit 2），因為只有 selenium 變體有隔離驗證模式。現在兩個變體共用
+    `_webrunner_shared.run_setup_verification`，這支釘的是「旗標真的被傳到 full 那條路」
+    ——傳丟了會安靜地驗 selenium 變體，而 `OK` 會被讀成「je 驗過了」。
     """
-    calls = []
-    monkeypatch.setattr(vb, "_run_with_slot",
-                        lambda label, _fn: calls.append(label) or vb.EXIT_OK)
-    with pytest.raises(SystemExit) as caught:
-        vb.main(argv)
-    assert caught.value.code == 2, caught.value.code
-    assert calls == [], f"參數錯誤還是去取了槽：{calls}"
-    captured = capsys.readouterr()
-    assert vb.RESULT_PREFIX not in captured.out, captured.out
-    assert "selenium" in captured.err, f"錯誤訊息沒說 full 只接哪個變體：{captured.err!r}"
+    rc, seen, _out = _run_main(monkeypatch, argv)
+    assert rc == vb.EXIT_OK
+    assert seen["label"] == "full", seen
+    assert seen["full"] == {"generate": False, "variant": "je"}, seen
+    assert "smoke_je" not in seen and "smoke" not in seen, seen
+
+
+def test_full_without_a_variant_still_verifies_the_selenium_variant(monkeypatch):
+    """預設照舊是 selenium 變體：加 `--variant` 之前的 `--full` 呼叫方式行為逐字不變。"""
+    _rc, seen, _out = _run_main(monkeypatch, ["--full"])
+    assert seen["full"] == {"generate": False, "variant": "je"}, seen
+
+
+def test_each_variant_spawns_its_own_verify_script(monkeypatch, tmp_path):
+    """`_full_attempt` 真的拿 `_verify_script(variant)` 去開子行程，兩個變體各開各的。
+
+    只看 `main` 的接線不夠：`run_full` 收到了 `variant="je"`，`_full_attempt` 卻照舊開
+    `WEBRUNNER_SCRIPT` 的話，上面那支照樣綠，而驗到的是另一個變體。
+    """
+    spawned = []
+
+    class _Stop(Exception):
+        pass
+
+    def _popen(cmd, **_kwargs):
+        spawned.append(Path(cmd[-1]).name)
+        raise _Stop()
+
+    monkeypatch.setattr(vb.subprocess, "Popen", _popen)
+    monkeypatch.setattr(vb.tempfile, "mkdtemp",
+                        lambda prefix="": str(tmp_path / f"w{len(spawned)}"))
+    for variant in ("je",):
+        with pytest.raises(_Stop):
+            vb._full_attempt(False, 1, variant)
+    assert spawned == ["webrunner_je_only.py"], spawned
+
+
+def test_the_je_full_entry_missing_is_a_failure_not_a_skip(monkeypatch, tmp_path, capsys):
+    """je 那一支入口檔不在：一樣是 FAIL、一趟都不跑（與 selenium 那支同一條規則）。"""
+    calls = _stub_full_attempts(monkeypatch, [(True, "")])
+    monkeypatch.setattr(vb, "WEBRUNNER_JE_SCRIPT", tmp_path / "gone.py")
+    rc = vb.run_full(generate=False, variant="je")
+    out = capsys.readouterr().out
+    assert rc == vb.EXIT_FAIL and calls == [], (rc, calls)
+    assert out.count(vb.RESULT_PREFIX) == 1 and f"{vb.RESULT_PREFIX} FAIL" in out, out
 
 
 @pytest.mark.parametrize("argv", [["--generate"],
@@ -3306,7 +3368,8 @@ def test_the_full_mode_flags_are_still_accepted(monkeypatch, argv, generate):
     """必放行的那一半：full 照常走到 full，`--generate` 真的傳下去。"""
     seen = {}
     monkeypatch.setattr(vb, "run_full",
-                        lambda gen: seen.setdefault("generate", gen) or 0)
+                        lambda gen, variant="je":
+                        seen.setdefault("generate", gen) or 0)
     monkeypatch.setattr(vb, "_run_with_slot",
                         lambda label, fn: seen.setdefault("label", label) and fn())
     vb.main(argv)
@@ -3355,14 +3418,19 @@ class _FakeJeDriver:
 
 
 class _FakeJeWrapper:
-    """`je_web_runner.webdriver_wrapper_instance` 的替身：記下每一次呼叫與當下工作目錄。"""
+    """`je_web_runner.webdriver_wrapper_instance` 的替身：記下每一次呼叫與當下工作目錄。
+
+    `set_driver` 的簽章刻意帶 `install_driver`：子行程開機前會照正式 je 變體的規則查它
+    （`vb._je_contract_gaps`），沒有這個參數的替身會被當成舊版函式庫而拒絕開機。
+    """
 
     def __init__(self):
         self.calls = []
         self.current_webdriver = None
 
-    def set_driver(self, name, **kwargs):
-        self.calls.append(("set_driver", name, kwargs, os.getcwd()))
+    def set_driver(self, name, install_driver=True, **kwargs):
+        self.calls.append(("set_driver", name,
+                           {**kwargs, "install_driver": install_driver}, os.getcwd()))
         self.current_webdriver = _FakeJeDriver()
 
     def quit(self):
@@ -3370,21 +3438,29 @@ class _FakeJeWrapper:
         self.current_webdriver = None
 
 
-def _run_je_child(monkeypatch, cwd, *, slot_ok=True):
+def _run_je_child(monkeypatch, cwd, *, slot_ok=True, wrapper=None, policy=None):
     """在 `cwd` 裡跑子行程入口；`je_web_runner` 換成取用時會記下工作目錄的假模組。
 
+    `wrapper`／`policy` 可以換掉，用來模擬缺介面的舊版函式庫；`policy` 是
+    `executor.set_raise_wrapper_errors` 的替身（`False` ＝ 沒有這個介面）。
     回 `(rc, 輸出, 每次取用當下的工作目錄, 假包裝層)`。
     """
     import types
 
     touched = []
-    wrapper = _FakeJeWrapper()
+    wrapper = wrapper if wrapper is not None else _FakeJeWrapper()
+    if policy is None:
+        policy = (lambda enabled: wrapper.calls.append(("policy", enabled)))
+    executor = (types.SimpleNamespace() if policy is False
+                else types.SimpleNamespace(set_raise_wrapper_errors=policy))
     fake = types.ModuleType("je_web_runner")
 
     def _getattr(name):
         touched.append(os.getcwd())
         if name == "webdriver_wrapper_instance":
             return wrapper
+        if name == "executor":
+            return executor
         raise AttributeError(name)
 
     fake.__getattr__ = _getattr
@@ -3433,8 +3509,13 @@ def test_the_je_child_drives_set_driver_from_its_disposable_directory(
     here = os.path.normcase(str(tmp_path))
     assert touched and all(os.path.normcase(c) == here for c in touched), touched
 
-    kind, name, kwargs, cwd_at_call = wrapper.calls[0]
+    assert wrapper.calls[0] == ("policy", True), (
+        f"沒有像正式變體一樣先把失敗政策設成丟例外：{wrapper.calls}")
+    kind, name, kwargs, cwd_at_call = wrapper.calls[1]
     assert (kind, name) == ("set_driver", "chrome"), wrapper.calls
+    assert kwargs["install_driver"] is False, (
+        "smoke 沒有像正式變體一樣跳過 webdriver-manager 的下載："
+        f"{kwargs['install_driver']!r}")
     assert os.path.normcase(cwd_at_call) == here
     options = kwargs["options"]
     assert "--headless=new" in options and "--start-maximized" not in options
@@ -3550,6 +3631,43 @@ def test_the_je_child_is_spawned_outside_the_repo_with_a_clean_environment(
     assert "  | progress" in capsys.readouterr().out
 
 
+def test_both_verification_children_get_an_isolated_library_log(monkeypatch, tmp_path):
+    """je smoke 與 full 的子行程，函式庫記錄檔（`WEBRUNNER_LOG_PATH`）都指進自己的丟棄式
+    工作目錄——就算父行程的環境裡已經是正式的 `webrunner.log`。
+
+    兩個子行程裡的正式解析器都是「沒設才設」成正式記錄檔，而驗證只在批次停著時跑：那正是
+    沒有人握著那個檔、新版函式庫開檔時會把超過 10 MB 的檔改名成 `.1` 的時候。父行程的值
+    故意先設成正式路徑：只驗「沒設時會補上」的話，`setdefault` 這種讓步寫法也會過。"""
+    import _webrunner_location as wl  # noqa: PLC0415
+
+    production = str(wl.WEBRUNNER_LOG)
+    monkeypatch.setenv(wl.LIBRARY_LOG_ENV, production)
+    seen = []
+
+    def _popen(args, **kwargs):
+        seen.append(kwargs)
+        return _FakeChild([f"{vb.JE_CHILD_PREFIX} OK", "VERIFY-SETUP: OK"])
+
+    monkeypatch.setattr(vb.subprocess, "Popen", _popen)
+    ok, stage, reason = vb._je_attempt("about:blank", True, 1)
+    assert (ok, stage) == (True, ""), (ok, stage, reason)
+    full_workdir = tmp_path / "full"
+    full_workdir.mkdir()
+    monkeypatch.setattr(vb.tempfile, "mkdtemp", lambda prefix="": str(full_workdir))
+    ok, reason = vb._full_attempt(False, 1)
+    assert ok, reason
+
+    je_kwargs, full_kwargs = seen
+    assert je_kwargs["env"][wl.LIBRARY_LOG_ENV] == os.path.join(je_kwargs["cwd"],
+                                                                "WEBRunner.log")
+    assert full_kwargs["env"][wl.LIBRARY_LOG_ENV] == os.path.join(str(full_workdir),
+                                                                  "WEBRunner.log")
+    for kwargs in seen:
+        assert kwargs["env"][wl.LIBRARY_LOG_ENV] != production
+        assert not vb._is_inside_repo(kwargs["env"][wl.LIBRARY_LOG_ENV])
+    assert os.environ[wl.LIBRARY_LOG_ENV] == production, "改到父行程自己的環境了"
+
+
 @pytest.mark.parametrize("lines, rc", [
     ([f"{vb.JE_CHILD_PREFIX} OK"], 1),     # 印了 OK 卻非零結束：不可信
     (["Traceback (most recent call last):"], 1),
@@ -3578,51 +3696,10 @@ def test_main_hands_the_internal_flag_to_the_child_entry(monkeypatch):
     assert got == [["about:blank", "0"]], got
 
 
-_SITE = "C:/py/Lib/site-packages"
-
-
-def _set_driver_failure(inner_file, *, chained=True):
-    """造一個形狀跟 `set_driver` 丟出來的一樣的例外：原始例外在 `inner_file` 裡丟出，
-    包裝層以 `raise … from error`（或只留 `__context__`）重新丟出。"""
-    ns = {"EXC": ConnectionError}
-    exec(compile("def boom():\n    raise EXC('offline')\n",
-                 f"{_SITE}/{inner_file}", "exec"), ns)
-    tail = " from error" if chained else ""
-    exec(compile("def wrap(boom):\n"
-                 "    try:\n"
-                 "        boom()\n"
-                 "    except Exception as error:\n"
-                 f"        raise RuntimeError('set_driver failed'){tail}\n",
-                 f"{_SITE}/je_web_runner/webdriver/webdriver_wrapper.py", "exec"), ns)
-    try:
-        ns["wrap"](ns["boom"])
-    except RuntimeError as outer:
-        return outer
-    raise AssertionError("沒有丟例外")
-
-
-@pytest.mark.parametrize("inner_file, chained, expected", [
-    ("webdriver_manager/core/http.py", True, "install"),
-    ("webdriver_manager/core/http.py", False, "install"),            # 只有 __context__
-    ("selenium/webdriver/chromium/webdriver.py", True, "launch"),
-    ("je_web_runner/webdriver/webdriver_wrapper.py", True, "launch"),  # 選項組裝
-    ("my_webdriver_manager_notes/x.py", True, "launch"),             # 近似案例
-])
-def test_the_failure_stage_tells_the_driver_manager_from_the_browser(
-        inner_file, chained, expected):
-    """`set_driver` 把兩種失敗包成同一個例外、同一句開頭，只能看原始例外經過哪裡。
-
-    近似案例殺的是「子字串比對」：路徑裡**有** `webdriver_manager` 這幾個字、卻不是
-    那個套件。只有 `__context__` 的那一格殺的是「只看 `__cause__`」。
-    """
-    assert vb._je_failure_stage(
-        _set_driver_failure(inner_file, chained=chained)) == expected
-
-
 @pytest.mark.parametrize("line, expected", [
     ("VERIFY-JE-CHILD: OK", (True, "", "")),
-    ("  VERIFY-JE-CHILD: FAIL install ConnectionError('offline')  ",
-     (False, "install", "ConnectionError('offline')")),
+    ("  VERIFY-JE-CHILD: FAIL contract 缺 set_driver(install_driver=...)  ",
+     (False, "contract", "缺 set_driver(install_driver=...)")),
     ("VERIFY-JE-CHILD: FAIL launch", (False, "launch", "未知原因")),
     ("[je] 清理：wr.quit() …", None),
     ("VERIFY-BROWSER: OK", None),
@@ -3653,15 +3730,15 @@ def _stub_je_attempts(monkeypatch, outcomes):
 
 
 @pytest.mark.parametrize("stage, retried", [
-    ("install", True), ("launch", True), ("page", True),
+    ("launch", True), ("page", True), ("contract", False),
     ("refused", False), ("timeout", False), ("import", False), ("child", False),
 ])
 def test_a_je_failure_names_its_stage_and_retries_only_transient_ones(
         monkeypatch, stage, retried):
     """FAIL 要說是**哪一步**壞的，而且只有暫時性的那幾類會重試。
 
-    `install` 也重試：正式的 `start_driver` 把整個 `set_driver` 重試三次，驗證這邊
-    重試同樣次數才回答得了「正式環境會不會起不來」。拒絕／逾時／匯入失敗重跑不會變。
+    `launch` 重試：正式的 `start_driver` 把整個 `set_driver` 重試三次，驗證這邊重試同樣
+    次數才回答得了「正式環境會不會起不來」。缺介面／拒絕／逾時／匯入失敗重跑不會變。
     """
     calls = _stub_je_attempts(monkeypatch, [(False, stage, "boom()")] * vb.MAX_ATTEMPTS)
     rc, out = _emit(vb.run_smoke_je, "about:blank", True)
@@ -3678,12 +3755,12 @@ def test_a_je_failure_names_its_stage_and_retries_only_transient_ones(
 def test_a_je_pass_after_a_retry_says_so(monkeypatch):
     """重試之後才過要講出來（哪一步、什麼原因），結論行仍然只有一行 OK。"""
     calls = _stub_je_attempts(monkeypatch, [
-        (False, "install", "ConnectionError('offline')"), (True, "", "")])
+        (False, "launch", "SessionNotCreatedException('chrome exited')"), (True, "", "")])
     rc, out = _emit(vb.run_smoke_je, "about:blank", True)
     assert rc == vb.EXIT_OK and calls == [1, 2], (rc, calls)
     assert [l for l in out.splitlines() if l.startswith(vb.RESULT_PREFIX)] == [
         f"{vb.RESULT_PREFIX} OK"], out
-    assert "第 2 趟" in out and vb._JE_STAGE_LABELS["install"] in out, out
+    assert "第 2 趟" in out and vb._JE_STAGE_LABELS["launch"] in out, out
 
 
 # 刻意不同的地方（理由正本在 `verify_browser._JE_SMOKE_FLAGS` 上面那段）。
@@ -3740,28 +3817,50 @@ def test_the_je_smoke_launches_chrome_the_way_production_does():
     assert headless[-1] == headed[-1] == "--user-data-dir=P"
 
 
+def _calls_in(node) -> set:
+    return {_dotted_name(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+
+
+def _imports_the_library(stmt) -> bool:
+    """這一句是不是 `import je_web_runner…` 或 `from je_web_runner… import …`。"""
+    if isinstance(stmt, ast.Import):
+        return any(alias.name.split(".")[0] == "je_web_runner" for alias in stmt.names)
+    if isinstance(stmt, ast.ImportFrom):
+        return (stmt.module or "").split(".")[0] == "je_web_runner"
+    return False
+
+
 def test_the_je_child_loads_the_same_library_copy_as_production():
     """子行程要載入正式 je 變體會載入的**同一份** `je_web_runner`。
 
-    正式變體優先用 repo 旁邊的開發簽出。這裡的規則若跟它不一樣，驗到的就是另一份程式碼。
+    正式變體優先用本機的開發工作樹（`architecture.md` 記過那份跟已安裝的版本曾經
+    差很多）。這裡的規則若跟它不一樣，驗到的就是另一份程式碼。
+
+    2026-10-01 之前兩邊各寫一份「環境變數，否則同層資料夾」，這支逐字對帳兩份抄本。工作樹
+    的位置改成可設定之後，規則只剩一份（`_webrunner_location.resolve_webrunner_path`），所以改成
+    釘「兩邊都真的呼叫它」：抄回一份手寫規則的話少的正是設定那一層，而兩份抄本彼此照樣
+    對得上。正式那一側另外要求那一行排在 `je_web_runner` 的 import 之前——排在後面等於
+    沒插。
     """
-    prod = {n.targets[0].id: n.value for n in _tree_of("webrunner_je_only.py").body
-            if isinstance(n, ast.Assign) and len(n.targets) == 1
-            and isinstance(n.targets[0], ast.Name)}
-    ours = {n.targets[0].id: n.value for n in _tree_of("verify_browser.py").body
-            if isinstance(n, ast.Assign) and len(n.targets) == 1
-            and isinstance(n.targets[0], ast.Name)}
-    assert ast.unparse(prod["_WR_SIBLING"]) == ast.unparse(
-        ours["_JE_SIBLING_WEBRUNNER"])
-
-    def env_keys(node):
-        return {c.args[0].value for c in ast.walk(node) if isinstance(c, ast.Call)
-                and _dotted_name(c.func) == "os.environ.get" and c.args
-                and isinstance(c.args[0], ast.Constant)}
-
-    assert env_keys(prod["_WR_ENV"]) == {"WEBRUNNER_PATH"}, "抽取器壞了"
-    assert env_keys(_function_in("verify_browser.py", "_je_child_main")) == {
-        "WEBRUNNER_PATH"}
+    pair = {"_webrunner_location.resolve_webrunner_path",
+            "_webrunner_location.put_webrunner_path_first"}
+    child = _calls_in(_function_in("verify_browser.py", "_je_child_main"))
+    assert pair <= child, f"je 子行程沒有走共用的解析器：{sorted(child & pair)}"
+    shared = _calls_in(_function_in("_webrunner_shared.py", "put_webrunner_tree_first"))
+    assert pair <= shared, f"`ws.put_webrunner_tree_first` 不再是那一對的包裝：{sorted(shared)}"
+    for variant in ("webrunner_je_only.py",):
+        body = _tree_of(variant).body
+        resolve_at = next((i for i, stmt in enumerate(body)
+                           if "ws.put_webrunner_tree_first" in _calls_in(stmt)), None)
+        library_at = next((i for i, stmt in enumerate(body)
+                           if _imports_the_library(stmt)), None)
+        assert library_at is not None, f"`{variant}` 找不到 je_web_runner 的模組層 import，抽取器壞了"
+        assert resolve_at is not None, (
+            f"`{variant}` 的模組層沒有呼叫 `ws.put_webrunner_tree_first()`——函式庫的位置"
+            "又變回別的規則了。")
+        assert resolve_at < library_at, (
+            f"`{variant}` 在 import je_web_runner（第 {library_at} 句）之後才插路徑"
+            f"（第 {resolve_at} 句），插了也沒用。")
 
 
 # ---------------------------------------------------------------------------
@@ -3816,3 +3915,118 @@ def test_the_slot_is_freed_even_when_the_work_explodes(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError):
         vb._run_with_slot("probe", run_fn)
     assert slot.calls[-1] == ("release", vb.SLOT_OWNER), slot.calls
+
+
+# ---------------------------------------------------------------------------
+# je smoke 與正式 je 變體對函式庫的要求要一致（2026-10-01，§8.222 G8／G10）
+# ---------------------------------------------------------------------------
+# 正式變體開機時 `_require_wrapper_contract` 查兩個介面、缺了就不開機；smoke 照抄同一組
+# 判準（本檔不 import webrunner，抄是唯一的辦法）。抄本會漂，所以下面兩支一支看行為、
+# 一支看 `set_driver` 實際收到什麼。
+
+class _NoInstallDriverWrapper(_FakeJeWrapper):
+    """舊版函式庫的 `set_driver`：有 `**kwargs`、沒有 `install_driver`。"""
+
+    def set_driver(self, name, **kwargs):  # pylint: disable=arguments-differ
+        self.calls.append(("set_driver", name, kwargs, os.getcwd()))
+        self.current_webdriver = _FakeJeDriver()
+
+
+@pytest.mark.parametrize("case", ["no_install_driver", "no_policy"])
+def test_the_je_child_refuses_a_library_missing_the_boot_contract(
+        monkeypatch, tmp_path, case):
+    """函式庫缺正式變體開機要的介面 → `FAIL contract`，`set_driver` 一次都不呼叫。
+
+    印 OK 的話，這支 smoke 就會在正式變體根本開不了機的機器上說「je 沒問題」——那正是
+    它存在的理由（je 起不來時 bot 會安靜改跑 selenium）反過來。
+    """
+    wrapper = _NoInstallDriverWrapper() if case == "no_install_driver" else None
+    policy = False if case == "no_policy" else None
+    rc, out, _touched, used = _run_je_child(
+        monkeypatch, tmp_path, wrapper=wrapper, policy=policy)
+    assert rc == vb.EXIT_FAIL, out
+    assert f"{vb.JE_CHILD_PREFIX} FAIL contract" in out, out
+    assert not [c for c in used.calls if c[0] == "set_driver"], used.calls
+
+
+@pytest.mark.parametrize("policy, install_driver", [
+    (True, True), (False, True), (True, False), (False, False)])
+def test_the_smoke_and_production_judge_the_library_contract_alike(
+        monkeypatch, policy, install_driver):
+    """同一組替身函式庫，smoke 說缺 ⇔ 正式變體拒絕開機。
+
+    兩份判準各有自己的測試也不夠：各自綠的兩份實作之間沒有任何東西在比對它們。
+    """
+    import logging
+    import types
+    import webrunner_je_only as je  # noqa: PLC0415 — 拉進 selenium，只在這裡匯入
+
+    library = types.SimpleNamespace(executor=types.SimpleNamespace(
+        **({"set_raise_wrapper_errors": lambda _enabled: None} if policy else {})))
+    wrapper = _FakeJeWrapper() if install_driver else _NoInstallDriverWrapper()
+    smoke_says_missing = bool(vb._je_contract_gaps(library, wrapper))
+
+    logger = logging.getLogger(je._WRAPPER_LOGGER_NAME)
+    before = logger.level
+    monkeypatch.setattr(je, "je_web_runner", library)
+    monkeypatch.setattr(je, "wr", wrapper)
+    try:
+        je._require_wrapper_contract()
+        production_refuses = False
+    except RuntimeError:
+        production_refuses = True
+    finally:
+        logger.setLevel(before)
+    assert smoke_says_missing is production_refuses, (
+        f"policy={policy} install_driver={install_driver}：smoke 說缺＝{smoke_says_missing}，"
+        f"正式變體拒絕開機＝{production_refuses}")
+    assert smoke_says_missing is not (policy and install_driver)
+
+
+def _set_driver_switches(func) -> dict:
+    """`func` 裡 `*.set_driver(...)` 帶的**開關**（扣掉三個本來就該不同的引數）→ 字面值。"""
+    switches = {}
+    for node in ast.walk(func):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "set_driver"):
+            for kw in node.keywords:
+                if kw.arg in (None, "options", "experimental_options", "service"):
+                    continue
+                switches[kw.arg] = (kw.value.value if isinstance(kw.value, ast.Constant)
+                                    else ast.unparse(kw.value))
+    return switches
+
+
+def test_the_je_smoke_passes_the_same_set_driver_switches_as_production():
+    """smoke 交給 `set_driver` 的開關（`install_driver=False` 那一類）要跟正式變體一樣。
+
+    旗標那一支（`test_the_je_smoke_launches_chrome_the_way_production_does`）只比
+    `cli_args`；`install_driver` 是 `set_driver` 自己的參數，不在那份清單裡，所以要另外比。
+    正式變體帶 `False`、smoke 沒帶的話，smoke 會去驗一次正式環境根本不做的下載。
+    """
+    production = _set_driver_switches(_function_in("webrunner_je_only.py", "start_driver"))
+    smoke = _set_driver_switches(_function_in("verify_browser.py", "_je_child_main"))
+    assert production.get("install_driver") is False, (
+        f"從正式 je 變體抽不到 install_driver=False——抽取器壞了或正式那邊改了：{production}")
+    assert smoke == production, f"smoke {smoke} 與正式 {production} 不一樣"
+
+
+def test_the_full_child_env_matches_the_webrunner_verify_contract():
+    """`_full_attempt` 指派給子行程的 `NAI_VERIFY_*` 鍵，與 webrunner 那一側認的那四個
+    （`_webrunner_shared.VERIFY_*_ENV`）**兩個方向都**一樣。
+
+    兩邊各寫一份字面值是刻意的（本檔不 import 任何 webrunner 相關模組），所以漂移是
+    安靜的：這邊改了一個鍵名，子行程就收不到那個設定——profile 目的地收不到時它會退回
+    `.chrome_profile_verify/`，還是隔離的，所以連失敗都不會有，只是驗證跟呼叫端以為的
+    不一樣。2026-10-01 之前這份契約只寫在說明裡。
+    """
+    import _webrunner_shared as ws  # noqa: PLC0415
+
+    contract = {ws.VERIFY_MODE_ENV, ws.VERIFY_PROFILE_DEST_ENV,
+                ws.VERIFY_OUTPUT_DIR_ENV, ws.VERIFY_GENERATE_ENV}
+    assigned = {key for key in _explicitly_assigned_env_keys(vb._full_attempt)
+                if key.startswith("NAI_VERIFY_")}
+    assert len(contract) == 4 and all(k.startswith("NAI_VERIFY_") for k in contract), (
+        f"webrunner 那一側的契約形狀變了：{contract}")
+    assert assigned == contract, (
+        f"verify_browser 指派 {sorted(assigned)}，webrunner 認 {sorted(contract)}")

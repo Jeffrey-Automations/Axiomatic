@@ -393,7 +393,7 @@ def test_only_text_blocks_accumulate_into_the_progress_preview():
     assert state.text_block_indices == {0}
 
 
-SECRET_ARG = '{"command":"type D:\\\\Codes\\\\Axiomatic\\\\auth.md"}'
+SECRET_ARG = '{"command":"type C:\\\\Workspace\\\\Axiomatic\\\\auth.md"}'
 
 
 def test_a_tool_calls_arguments_never_reach_the_progress_preview():

@@ -400,7 +400,7 @@ _ALL_CROSS_PROCESS_NAMES = _CROSS_PROCESS_CONSTANTS | _CROSS_PROCESS_DIR_CONSTAN
 # 2026-09-10 之前的掃描範圍，只留給下面的控制組當「縮回去會怎樣」的實例。
 _LEGACY_SOURCES = tuple(PKG_ROOT / name for name in (
     "discord_bot.py", "_webrunner_shared.py", "_run_progress.py",
-    "_batch_config.py", "webrunner_novelai.py", "webrunner_je_only.py"))
+    "_batch_config.py", "webrunner_je_only.py", "webrunner_je_only.py"))
 
 
 def _blind_modules(scanned) -> dict[str, list[str]]:

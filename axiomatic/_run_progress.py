@@ -27,7 +27,7 @@ Design notes:
 - Every function swallows its own I/O / parse errors and degrades to "no
   resume" — a corrupt checkpoint must never crash or stall a run.
 
-Keep this the single source of truth for both `webrunner_novelai.py` and
+Keep this the single source of truth for both `webrunner_je_only.py` and
 `webrunner_je_only.py`; do not fork the logic back into the webrunners.
 """
 from __future__ import annotations

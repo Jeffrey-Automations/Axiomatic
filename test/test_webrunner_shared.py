@@ -1983,7 +1983,7 @@ def test_model_candidates_is_config_driven_in_both_variants():
     print("test_model_candidates_is_config_driven_in_both_variants")
     import _batch_config as bc
     here = Path(__file__).resolve().parent.parent / "axiomatic"
-    for name in ("webrunner_novelai.py", "webrunner_je_only.py"):
+    for name in ("webrunner_je_only.py",):
         src = (here / name).read_text(encoding="utf-8")
         for banned in ("TARGET_MODEL_CANDIDATES", "TARGET_MODEL ="):
             assert banned not in src, (
@@ -2827,7 +2827,7 @@ def test_the_single_image_server_idle_shutdown_ignores_a_wall_clock_jump():
                             mode=ws.RUN_MODE_SINGLE_IMAGE_SERVER)
             waited = clk.now - started_mono
 
-    assert rc == 0, rc
+    assert rc == ws.RC_SERVED_ONESHOT, rc
     assert waited >= idle_timeout, (
         f"牆鐘往後跳讓伺服器提早收工（只撐了 {waited:.1f}s，"
         f"閒置上限是 {idle_timeout:.0f}s）——閒置時鐘還在用 time.time()")
@@ -2935,7 +2935,7 @@ def test_no_interval_is_measured_with_the_adjustable_wall_clock():
     # --- 真正的掃描 ---------------------------------------------------------
     pkg = Path(__file__).resolve().parent.parent / "axiomatic"
     found: list[str] = []
-    for name in ("_webrunner_shared.py", "webrunner_novelai.py",
+    for name in ("_webrunner_shared.py", "webrunner_je_only.py",
                  "webrunner_je_only.py"):
         found += _wall_clock_interval_anchors(
             (pkg / name).read_text(encoding="utf-8"), name)
@@ -3397,7 +3397,7 @@ def test_no_poll_deadline_is_measured_with_the_adjustable_wall_clock():
     # --- 真正的掃描 ---------------------------------------------------------
     pkg = Path(__file__).resolve().parent.parent / "axiomatic"
     found: list[str] = []
-    for name in ("_webrunner_shared.py", "webrunner_novelai.py",
+    for name in ("_webrunner_shared.py", "webrunner_je_only.py",
                  "webrunner_je_only.py"):
         found += _wall_clock_deadline_pairs(
             (pkg / name).read_text(encoding="utf-8"), name)
@@ -5086,7 +5086,7 @@ def test_rc_contract_values_are_distinct():
 # DOM 跑），只是今天還沒呼叫到 `generate_one_image`。
 #
 # 實測 2026-09-10：加寬之後全專案仍然只有 3 個呼叫點
-# （`_webrunner_shared.py:5056`／`:5391`、`webrunner_novelai.py:1465`；
+# （`_webrunner_shared.py:5056`／`:5391`、`webrunner_je_only.py:1465`；
 # `webrunner_je_only.py` 一個都沒有，所以舊清單的第三筆本來就是零產出），
 # 所以這是**趁乾淨把範圍鎖起來**、不是在修東西——正因為乾淨，範圍才需要自己的釘子
 # 。
@@ -7261,7 +7261,7 @@ def _fake_chained_traceback(foreign_frames: int = 12) -> str:
                  "exception:")
     lines.append("")
     lines.append("Traceback (most recent call last):")
-    lines.append(frame(_OUR_DIR + chr(92) + "webrunner_novelai.py", 1466,
+    lines.append(frame(_OUR_DIR + chr(92) + "webrunner_je_only.py", 1466,
                        "main", "return ws.run_batch(port, email, password)"))
     lines.append(frame(_OUR_DIR + chr(92) + "_webrunner_shared.py", 4936,
                        "run_batch", "saved = generate_loop(port, name, cfg)"))
@@ -8258,7 +8258,7 @@ def test_both_variants_log_the_driver_versions():
     已經踩過一次（一支測試斷言某個字串不在原始碼裡，結果匹配到自己的 docstring）。
     """
     pkg = Path(__file__).resolve().parent.parent / "axiomatic"
-    for name in ("webrunner_novelai.py", "webrunner_je_only.py"):
+    for name in ("webrunner_je_only.py",):
         tree = ast.parse((pkg / name).read_text(encoding="utf-8"), name)
         calls = [n for n in ast.walk(tree)
                  if isinstance(n, ast.Call)
@@ -8605,7 +8605,7 @@ def test_both_variants_take_a_code_fingerprint_at_startup():
     """
     print("test_both_variants_take_a_code_fingerprint_at_startup")
     pkg = Path(__file__).resolve().parent.parent / "axiomatic"
-    for name in ("webrunner_novelai.py", "webrunner_je_only.py"):
+    for name in ("webrunner_je_only.py",):
         tree = ast.parse((pkg / name).read_text(encoding="utf-8"), name)
         main_fn = next((n for n in ast.walk(tree)
                         if isinstance(n, ast.FunctionDef) and n.name == "main"),
@@ -9373,7 +9373,7 @@ def test_only_chrome_processes_naming_the_profile_are_picked():
     python 行程命令列裡就帶著 repo 路徑。
     """
     print("test_only_chrome_processes_naming_the_profile_are_picked")
-    root = "D:/Work/Example"
+    root = "C:/Workspace/Axiomatic"
     procs = [
         _ScanProc(101, "chrome.exe",
                   ["chrome.exe", f"--user-data-dir={root}/.chrome_profile_snap",
@@ -9382,11 +9382,11 @@ def test_only_chrome_processes_naming_the_profile_are_picked():
                                       f"--user-data-dir={root}/.chrome_profile_snap"]),
         _ScanProc(103, "chrome.exe", ["chrome.exe"]),
         _ScanProc(104, "chrome.exe",
-                  ["chrome.exe", "--user-data-dir=C:/Users/Example/AppData/Chrome"]),
+                  ["chrome.exe", "--user-data-dir=C:/Users/example/AppData/Chrome"]),
         _ScanProc(105, "msedge.exe",
                   ["msedge.exe", f"--user-data-dir={root}/.chrome_profile_snap"]),
         _ScanProc(106, "python.exe",
-                  ["python.exe", f"{root}/axiomatic/webrunner_novelai.py",
+                  ["python.exe", f"{root}/axiomatic/webrunner_je_only.py",
                    f"{root}/.chrome_profile_snap"]),
     ]
     iter_calls = []
@@ -9720,7 +9720,7 @@ def test_both_variants_publish_the_liveness_signal():
     print("test_both_variants_publish_the_liveness_signal")
     pkg = Path(__file__).resolve().parent.parent / "axiomatic"
     seen = {}
-    for name in ("webrunner_novelai.py", "webrunner_je_only.py"):
+    for name in ("webrunner_je_only.py",):
         tree = ast.parse((pkg / name).read_text(encoding="utf-8"))
         calls = {
             ast.unparse(node.func)
@@ -9730,9 +9730,10 @@ def test_both_variants_publish_the_liveness_signal():
         assert "ws.run_with_liveness_signal" in calls, (
             f"{name} 的 `__main__` 沒有走 `ws.run_with_liveness_signal`，"
             "裸跑時兩個互斥訊號會一個都沒有。")
-    assert "_run_setup_verification" in seen["webrunner_novelai.py"], (
-        "抽取器連既有的 `_run_setup_verification` 都沒抽到——它壞了，"
-        "上面那兩句斷言是空轉的。")
+    for name in ("webrunner_je_only.py",):
+        assert "_run_setup_verification" in seen[name], (
+            f"抽取器在 {name} 連既有的 `_run_setup_verification` 都沒抽到——它壞了，"
+            "上面那兩句斷言是空轉的。")
     print("  PASS\n")
 
 
@@ -9744,19 +9745,23 @@ def test_the_isolated_verification_path_never_claims_the_signal():
     """
     print("test_the_isolated_verification_path_never_claims_the_signal")
     pkg = Path(__file__).resolve().parent.parent / "axiomatic"
-    tree = ast.parse(
-        (pkg / "webrunner_novelai.py").read_text(encoding="utf-8"))
-    verify = next(
-        (n for n in ast.walk(tree)
-         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-         and n.name == "_run_setup_verification"), None)
-    assert verify is not None, "找不到 `_run_setup_verification`"
-    called = {ast.unparse(node.func)
-              for node in ast.walk(verify) if isinstance(node, ast.Call)}
-    for banned in ("ws.claim_liveness_signal", "claim_liveness_signal",
-                   "ws.run_with_liveness_signal"):
-        assert banned not in called, (
-            f"隔離驗證呼叫了 {banned}——它會被監督者誤認成正式批次。")
+    # 2026-10-01 起兩個變體都有這條路（je 是 `--full --variant je`），本體在共用模組。
+    # 三處各查一次：薄殼可能自己叫、共用本體也可能自己叫。
+    for module, func in (("webrunner_je_only.py", "_run_setup_verification"),
+                         ("webrunner_je_only.py", "_run_setup_verification"),
+                         ("_webrunner_shared.py", "run_setup_verification")):
+        tree = ast.parse((pkg / module).read_text(encoding="utf-8"))
+        verify = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and n.name == func), None)
+        assert verify is not None, f"{module} 裡找不到 `{func}`"
+        called = {ast.unparse(node.func)
+                  for node in ast.walk(verify) if isinstance(node, ast.Call)}
+        for banned in ("ws.claim_liveness_signal", "claim_liveness_signal",
+                       "ws.run_with_liveness_signal", "run_with_liveness_signal"):
+            assert banned not in called, (
+                f"{module} 的隔離驗證呼叫了 {banned}——它會被監督者誤認成正式批次。")
     print("  PASS\n")
 
 
@@ -10056,7 +10061,7 @@ def test_no_variant_serves_single_images_on_its_own():
     # 正面對照：掃描器在共用層要看得到它們，否則下面對變體的斷言是空轉的。
     assert owned <= shared_defs, sorted(owned - shared_defs)
     assert serve_events <= shared_emits, sorted(serve_events - shared_emits)
-    for name in ("webrunner_novelai.py", "webrunner_je_only.py"):
+    for name in ("webrunner_je_only.py",):
         defs, emits = scan(name)
         assert not defs & owned, f"{name} 自己定義了 {sorted(defs & owned)}"
         assert not emits & serve_events, (
@@ -10072,8 +10077,8 @@ def test_no_variant_serves_single_images_on_its_own():
 def test_parse_run_mode_without_the_flag_is_a_batch():
     """沒有旗標 ＝ 批次。這是預設，也是絕大多數 spawn 的樣子。"""
     print("test_parse_run_mode_without_the_flag_is_a_batch")
-    for argv in ([], ["webrunner_novelai.py"],
-                 ["webrunner_novelai.py", "--variant", "je"]):
+    for argv in ([], ["webrunner_je_only.py"],
+                 ["webrunner_je_only.py", "--variant", "je"]):
         assert ws.parse_run_mode(argv) == ws.RUN_MODE_BATCH, argv
     print("  PASS\n")
 
@@ -10227,7 +10232,7 @@ def test_the_declared_server_mode_serves_and_never_enters_the_batch_loop():
             h, mode=ws.RUN_MODE_SINGLE_IMAGE_SERVER, serve_once=True)
         left_prompt = h.read_lines("todo_prompt.md")
         left_char1 = h.read_lines("todo_character1.md")
-    assert rc == 0, rc
+    assert rc == ws.RC_SERVED_ONESHOT, rc
     assert names == [], f"單圖伺服器跑了批次角色：{names}"
     assert polls and all(b is False for b in polls), (
         "每一次 serve 都必須是 idle one-shot（in_band=False），"
@@ -10261,7 +10266,7 @@ def test_the_declared_server_mode_serves_even_when_no_request_has_landed_yet():
         h.gen_calls.clear()
         _, _, batch_names = _server_mode_harness_polls(
             h, mode=ws.RUN_MODE_BATCH, serve_once=False)
-    assert rc == 0, rc
+    assert rc == ws.RC_SERVED_ONESHOT, rc
     assert names == [], (
         "請求檔還沒落地就掉進批次迴圈了——閘門多 `and` 了一個 `exists()`："
         f"{names}")
@@ -10419,7 +10424,7 @@ def test_both_variants_declare_the_run_mode_and_thread_it_through():
     長跑用的，所以漏掉哪一邊都要等到那條路真的被走到才會發現。
     """
     print("test_both_variants_declare_the_run_mode_and_thread_it_through")
-    for name in ("webrunner_novelai.py", "webrunner_je_only.py"):
+    for name in ("webrunner_je_only.py",):
         _, fn = _variant_main(name)
         srcs = {ast.unparse(n) for n in ast.walk(fn)}
         assert "mode = ws.parse_run_mode(sys.argv)" in srcs, name
@@ -10455,11 +10460,13 @@ def test_neither_variant_keeps_its_own_copy_of_the_request_file_constant():
         return {t.id for n in tree.body if isinstance(n, ast.Assign)
                 for t in n.targets if isinstance(t, ast.Name)}
 
-    for name in ("webrunner_novelai.py", "webrunner_je_only.py"):
+    for name in ("webrunner_je_only.py",):
         tree, _ = _variant_main(name)
         names = module_assigns(tree)
-        # 正面對照：擷取器真的看得到這個模組的常數（空集合會讓下面那句恆真）。
-        assert "LOGIN_URL" in names and len(names) >= 20, (
+        # 正面對照：擷取器真的看得到這個模組的常數（空集合會讓下面那句恆真）。下限只擋
+        # 「抽取器崩到幾乎是零」：原本寫 20 而 selenium 變體剛好 20（餘裕 0），2026-10-01
+        # 函式庫位置的三行手寫解析換成一行共用呼叫，它掉到 19 就紅了。實測 selenium 19、je 21。
+        assert "LOGIN_URL" in names and len(names) >= 10, (
             f"{name}: 擷取器只看到 {len(names)} 個模組層常數，壞了")
         assert "SINGLE_IMAGE_REQUEST_FILE" not in names, (
             f"{name} 又自己抄了一份 SINGLE_IMAGE_REQUEST_FILE——"

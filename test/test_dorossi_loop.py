@@ -1205,15 +1205,16 @@ def test_one_round_wires_the_first_backend_with_its_budget_and_tuning(monkeypatc
 
 
 def test_one_round_gives_the_other_backend_only_what_it_understands(monkeypatch):
-    """The other backend takes its own session id and the model; it has no effort or budget
-    flags, and passing them would make it refuse to run."""
+    """另一個後端接收自己的工作階段 id、模型與力度，不接收訂閱預算旗標。"""
     calls, live, state = _round_env(monkeypatch)
     snap = {"backend": "codex", "codex_session_id": "c-9", "cc_session_id": "s-1",
             "effort": "high", "model": "m2"}
     _one_round(snap, live, state)
     [(name, _prompt, stored, kwargs)] = calls
     assert (name, stored, kwargs["model"]) == ("codex", "c-9", "m2")
-    assert "effort" not in kwargs and "max_budget_usd" not in kwargs and "usage_baseline" not in kwargs
+    assert kwargs["effort"] == "high"
+    assert "max_budget_usd" not in kwargs and "usage_baseline" not in kwargs
+
 
 
 def test_a_stale_session_is_retried_once_as_a_new_one(monkeypatch):

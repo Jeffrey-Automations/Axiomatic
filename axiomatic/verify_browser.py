@@ -18,7 +18,7 @@ chromedriver / Selenium 啟動有關的程式碼改動是否健康。本腳本�
 * **driver 解析務必走 Selenium Manager（不可寫死路徑）。** 建
   `ChromeService` 時不給 `executable_path`、不塞任何 driver 路徑，讓
   Selenium ≥ 4.6 自動用 Selenium Manager 解析 chromedriver——這正是
-  `webrunner_novelai.build_stealth_driver` 現在的做法。唯有走同一條解析
+  `webrunner_je_only.build_stealth_driver` 現在的做法。唯有走同一條解析
   路徑，這支的驗證才對 production 有意義。
 
 * **清理只能殺「自己這次起的」chrome / chromedriver，禁止 nuclear
@@ -52,31 +52,33 @@ CLI（固定契約，已對齊另一邊；只**新增**參數、不更動既有�
   (無參數) / --mode smoke   輕量煙霧驗證（預設；暫時 profile、headless、不需憑證）
   --headed                  （僅 smoke）顯示視窗（預設 headless=new）
   --url <URL>               （僅 smoke）要載入的頁面（預設 about:blank；不內建網址）
-  --variant {selenium,je}   （僅 smoke）要驗哪一個變體的啟動路徑。預設 selenium，
-                            行為與這個旗標出現之前逐字相同。je 見下面那段；
-                            `--full --variant je` 是參數錯誤（exit 2），因為 full
-                            目前只接 selenium 變體。
+  --variant {je}   要驗哪一個變體。預設 je，行為與這個旗標出現之前
+                            逐字相同。smoke 的 je 見下面那段；`--full --variant je`
+                            （2026-10-01 起合法）以子行程跑 je 變體的驗證模式。
   --full / --mode full      持鎖、隔離的「登入＋導航＋確認產圖介面/關鍵 DOM 可達」
-                            端到端驗證；以**子行程**呼叫背景程式（selenium 變體）
-                            的 opt-in 驗證模式（env `NAI_VERIFY_MODE=setup`），本腳本
-                            **不** import 任何 webrunner。需要已登入的 profile。
+                            端到端驗證；以**子行程**呼叫背景程式（`--variant` 選的那個
+                            變體）的 opt-in 驗證模式（env `NAI_VERIFY_MODE=setup`），本
+                            腳本**不** import 任何 webrunner。需要已登入的 profile。
   --generate                （僅 full）加分項：在隔離環境真的產 1 張圖到隔離目錄
                             再清掉（會實際送出一次生成）。預設關閉。
   --help                    正常 parse
 
-`--full` 的隔離由 webrunner 端的驗證模式保證（opt-in、預設關閉）：快照
-`.chrome_profile/` 到隔離目錄、跑完不寫回；不寫 `webrunner.pid`；不碰
-`todo_*.md` / `prompt.md` / `undesired.md`；輸出進隔離目錄並清掉；不 nuclear-sweep
-（只外科回收自己的 driver 行程樹）。注意 full 目前只接 selenium 變體
-（`webrunner_novelai.py`）；je 變體只有 smoke。
+`--full` 的隔離由 webrunner 端的驗證模式保證（opt-in、預設關閉；本體在
+`_webrunner_shared.run_setup_verification`，由唯一入口使用）：快照 `.chrome_profile/`
+到隔離目錄、跑完不寫回；不寫 `webrunner.pid`；不碰 `todo_*.md` / `prompt.md` /
+`undesired.md`；輸出進隔離目錄並清掉；不 nuclear-sweep（只外科回收自己的 driver
+行程樹）。本腳本另外把子行程的函式庫記錄檔（`WEBRUNNER_LOG_PATH`）指進隔離目錄
+（`_isolate_library_log`），不讓驗證寫進、或輪替掉正式的 `webrunner.log`。
+預設與 `--variant je` 均使用唯一入口 `webrunner_je_only.py`。
 
-`--variant je` 的 smoke 走 je 變體真正的啟動路徑：`je_web_runner` 的
-`set_driver("chrome", options=…, experimental_options=…, service=ChromeService(log_output=…))`，
-連同它裡面那一次 driver 管理器的 `install()`。它在**子行程**裡跑，工作目錄是丟棄式暫存
-目錄（`je_web_runner` 匯入時就在工作目錄開記錄檔、`install()` 的快取也跟著工作目錄走，
-在 repo 根目錄跑會寫進正式的 `webrunner.log` 與 `.wdm`）。槽與讓位仍由本行程負責；
-子行程看不到槽握在祖先行程手上就拒絕開瀏覽器。FAIL 的原因會分清「driver 管理器
-安裝失敗」與「瀏覽器起不來」。細節見 `run_smoke_je` 上面那段。
+`--variant je` 的 smoke 走 je 變體真正的啟動路徑：先查正式變體開機要的兩個
+`je_web_runner` 介面（缺了就像正式變體一樣不開機），再
+`set_driver("chrome", options=…, experimental_options=…, service=ChromeService(log_output=…),
+install_driver=False)`。它在**子行程**裡跑，工作目錄是丟棄式暫存目錄（套件庫版的
+`je_web_runner` 匯入時就在工作目錄開記錄檔，在 repo 根目錄跑會寫進正式的 `webrunner.log`；
+原始碼樹版改看 `WEBRUNNER_LOG_PATH`，同樣指進那個目錄）。槽與讓位仍
+由本行程負責；子行程看不到槽握在祖先行程手上就拒絕開瀏覽器。FAIL 的原因會分清「函式庫
+缺正式變體要的介面」與「瀏覽器起不來」。細節見 `run_smoke_je` 上面那段。
 
 結束印機器可讀單行結果，三種結論互斥：
   `VERIFY-BROWSER: OK`（exit 0）                開了瀏覽器、驗過了、沒問題
@@ -107,12 +109,16 @@ from pathlib import Path
 # 待呼叫的 webrunner 驗證入口都在這個基準下）。本腳本「不」import 任何 webrunner，
 # `--full` 一律以子行程方式呼叫，避免 webrunner import 副作用。
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-# webrunner 的 selenium 變體即驗證子行程的目標（檔名是模組名、非品牌名，可寫死）。
-WEBRUNNER_SCRIPT = Path(__file__).resolve().parent / "webrunner_novelai.py"
+# `--full` 與 smoke 均使用唯一瀏覽器入口；檔名是模組名，可明確指定。
+# ⚠️ `test_verify_browser` 從原始碼抽**每一個** `WEBRUNNER_*SCRIPT` 常數，指到的每個變體
+# 都要有模組層的 `_SUPPRESS_ORPHAN_SWEEP`、並通過那一組隔離保證的檢查——新增一個目標時
+# 那邊會自動把它收進來。
+WEBRUNNER_SCRIPT = Path(__file__).resolve().parent / "webrunner_je_only.py"
+WEBRUNNER_JE_SCRIPT = Path(__file__).resolve().parent / "webrunner_je_only.py"
 # 背景產圖期間由 **spawn 端**寫這個 pid 檔——bot，以及 `start_webrunner.py`
 # （2026-08-23 起）。**2026-09-11 起多了第三個寫入端**：沒有父行程發布訊號時，
 # webrunner 自己會認領（`_webrunner_shared.claim_liveness_signal`）——那是為了讓
-# 裸跑 `py -3 axiomatic/webrunner_novelai.py` 也有互斥訊號，否則本腳本會判定
+# 裸跑 `py -3 axiomatic/webrunner_je_only.py` 也有互斥訊號，否則本腳本會判定
 # 「沒有正式作業」而開出自己的瀏覽器，然後在下一個角色邊界被全機掃描殺掉。
 # 我們依 _chrome_slot 的順序契約讀它判斷「是否有正式作業在跑」。本腳本永遠不寫它。
 WEBRUNNER_PID_FILE = PROJECT_ROOT / "webrunner.pid"
@@ -143,7 +149,7 @@ def _harden_console() -> None:
 
     Windows 上 `print()` 到**管線**（被重新導向、被工具擷取、被啟動器 spawn）走的
     是地區編碼（本機 cp950），編不出來就是 `UnicodeEncodeError`——**行程死掉**，
-    不是印成亂碼。對這支腳本來說那個
+    不是印成亂碼（證據見 `architecture.md` §8.53）。對這支腳本來說那個
     後果特別貴：它的硬性契約是**一定**要印一行 `VERIFY-BROWSER:` 結論，而死在一行
     進度訊息上，呼叫端讀到的是「沒有結論 ＋ 非零結束碼」——**一個假的 FAIL**。
     瀏覽器好好的，壞的是這支工具自己，而它正是專案規定用來判斷瀏覽器有沒有被改壞
@@ -208,7 +214,7 @@ def _emit_skip(reason: str) -> int:
     解析不到」「正式作業在跑」。
 
     為什麼值得分開：`verify_browser.py` 是本專案**規定**用來實證瀏覽器／driver
-    改動的入口，而正式批次幾乎總是在跑
+    改動的入口（見模組開頭與 `.claude/agents/*.md`），而正式批次幾乎總是在跑
     ——也就是說「讓位」其實是最常見的結果。把它印成 FAIL 只有兩種下場，兩種都
     很糟：看到的人以為自己的改動把瀏覽器弄壞了，去追一個不存在的問題；或者學會
     「這支的 FAIL 不用理」，於是真的壞掉那次也一起被忽略。
@@ -701,8 +707,8 @@ def _extract_setup_fail(output: str) -> str:
 # DevTools`），第二次從登入到 Generate 按鈕全綠。`chromedriver.prev.log` 顯示點開
 # 模型選單的 `PerformActions` 成功、約 1.5 秒後挑選項的 `ExecuteScript` 就已經連不
 # 上 DevTools——**是瀏覽器行程不見了，不是腳本錯誤**；而且不是全機掃殺（跟這次無關、
-# 14:02 就在的 15 個 `chrome.exe` 兩次都活得好好的）。本檔記著
-# 瀏覽器死亡多半來自我們自己的測試工具或顯示驅動層。
+# 14:02 就在的 15 個 `chrome.exe` 兩次都活得好好的）。本檔與 `Progress.md` 都記著
+# 這台機器上的瀏覽器死亡多半來自我們自己的測試工具或顯示驅動層。
 #
 # **代價不是「多花一次時間」，是假的紅燈。** 驗證守則叫人「改了瀏覽器／driver 就
 # 跑這支」，所以一個環境性的 FAIL 會被讀成「我的改動把瀏覽器弄壞了」，而最可能的
@@ -755,7 +761,35 @@ def _is_browser_gone(reason: str) -> bool:
     return any(marker in low for marker in _BROWSER_GONE_MARKERS)
 
 
-def _full_attempt(generate: bool, attempt: int) -> tuple[bool, str]:
+def _verify_script(variant: str) -> Path:
+    """`--full` 要以子行程跑的那個變體腳本。
+
+    當場讀模組常數、不在匯入時建一張表：測試把 `WEBRUNNER_SCRIPT` 換成一個不存在的
+    路徑時，這裡要真的拿到那個路徑。
+    """
+    return WEBRUNNER_JE_SCRIPT
+
+
+def _isolate_library_log(env: dict, workdir: str) -> str:
+    """把子行程的函式庫記錄檔（`WEBRUNNER_LOG_PATH`）指到丟棄式工作目錄裡，回傳那個路徑。
+
+    **覆寫，不是沒設才設**：驗證不得碰正式的記錄檔，而擁有者的殼若剛好把那個變數設成
+    正式的 `webrunner.log`，讓步就等於寫進去（還可能把它改名成 `.1`——新版函式庫在開檔
+    時把超過 10 MB 的檔移走，而驗證只在批次停著、沒有人握著那個檔時跑）。正式變體開頭的
+    `_webrunner_location.point_library_log_at_ours` 是沒設才設，所以這裡給的值會勝出。
+    舊版函式庫（套件庫的 0.0.88）不看這個變數，je 子行程靠丟棄式工作目錄擋；full 的子行程
+    工作目錄在 repo 根目錄，舊版照舊寫那裡的 `WEBRunner.log`。變數名從共用規則模組讀
+    （純標準函式庫的被動模組，本檔「不 import 任何 webrunner」的承諾不受影響）。
+    """
+    import _webrunner_location  # repo-local 被動共用模組
+
+    path = os.path.join(workdir, "WEBRunner.log")
+    env[_webrunner_location.LIBRARY_LOG_ENV] = path
+    return path
+
+
+def _full_attempt(generate: bool, attempt: int,
+                  variant: str = "je") -> tuple[bool, str]:
     """跑一趟隔離的端到端驗證。回 `(成功, 失敗原因)`。
 
     刻意**不**在這裡 `_emit_ok` / `_emit_fail`：結果行由 `run_full` 統一印一次，
@@ -783,10 +817,14 @@ def _full_attempt(generate: bool, attempt: int) -> tuple[bool, str]:
         env["NAI_VERIFY_GENERATE"] = "1"
     else:
         env.pop("NAI_VERIFY_GENERATE", None)
+    # 子行程是正式變體，它開頭會把函式庫的記錄檔「沒設才設」成正式的 `webrunner.log`
+    # ——而驗證只在批次停著時跑，正是沒有人握著那個檔、函式庫開檔時會把它改名成 `.1`
+    # 的時候。所以在這裡先指好（見 `_isolate_library_log`）。
+    _isolate_library_log(env, workdir)
 
-    cmd = [sys.executable, "-u", str(WEBRUNNER_SCRIPT)]
+    cmd = [sys.executable, "-u", str(_verify_script(variant))]
     _progress(f"[full 嘗試 {attempt}] 以子行程啟動隔離驗證模式"
-              f"（generate={generate}）…")
+              f"（variant={variant}，generate={generate}）…")
     _progress("（會嘗試以快照登入態登入並導航到產圖頁，可能需要數十秒～數分鐘）")
     _progress(f"[full 嘗試 {attempt}] 隔離工作目錄：{workdir}")
 
@@ -839,7 +877,7 @@ def _full_attempt(generate: bool, attempt: int) -> tuple[bool, str]:
         _rm_workdir(workdir)
 
 
-def run_full(generate: bool) -> int:
+def run_full(generate: bool, variant: str = "je") -> int:
     """持鎖、隔離的「登入＋導航＋確認產圖介面/關鍵 DOM 可達」端到端驗證。
 
     以**子行程**帶隔離環境呼叫 webrunner 的 opt-in 驗證模式
@@ -853,8 +891,11 @@ def run_full(generate: bool) -> int:
 
     失敗徵狀若是「瀏覽器中途不見了」會**重試一次**（見 `_is_browser_gone` 上面那段）；
     其他失敗一次定生死。重試成功時會明確印出來，不會安靜地變綠。
+
+    `variant` 選子行程跑哪一個變體（`_verify_script`）；兩個變體的驗證模式是同一份
+    本體（`_webrunner_shared.run_setup_verification`），結果行與 rc 的意思相同。
     """
-    if not WEBRUNNER_SCRIPT.exists():
+    if not _verify_script(variant).exists():
         return _emit_fail("找不到背景驗證入口檔")
     try:
         import selenium  # noqa: F401  pylint: disable=unused-import
@@ -864,7 +905,7 @@ def run_full(generate: bool) -> int:
     deadline = time.monotonic() + FULL_TOTAL_DEADLINE_SEC
     last_reason = ""
     for attempt in range(1, FULL_MAX_ATTEMPTS + 1):
-        ok, reason = _full_attempt(generate, attempt)
+        ok, reason = _full_attempt(generate, attempt, variant)
         if ok:
             if attempt > 1:
                 # **不要安靜地變綠。** 前一趟真的死了一次瀏覽器，那是這台機器的
@@ -897,19 +938,27 @@ def run_full(generate: bool) -> int:
 # je 變體的 smoke（`--variant je`）：子行程裡走 `je_web_runner` 的 `set_driver`
 # --------------------------------------------------------------------------
 # 為什麼需要它（2026-09-20）：兩個變體的 driver 其實都由 Selenium Manager 解析——je 那
-# 一側 `set_driver` 裡的 `ChromeDriverManager(...).install()` 回傳值被丟掉，真正用的是
-# 呼叫端那個沒帶 `executable_path` 的 `ChromeService`。所以上面那條 smoke 過了，driver 解析就過了。**je 變體獨有、在此之前沒有任何
-# 入口驗得到的是另外兩件事**：`je_web_runner` 自己的 `set_driver`／選項組裝，以及那
-# 一次 `install()`——一個會丟例外、一丟就讓整個 `set_driver` 失敗的網路相依。而 je 是
-# `/run` 的預設變體，bot 的退路又會在 je 起不來時安靜改跑 selenium，所以「je 壞了」
-# 在正式環境裡通常看不見。
+# 一側呼叫端傳的是一個沒帶 `executable_path` 的 `ChromeService`（`architecture.md`
+# 那段更正）。所以上面那條 smoke 過了，driver 解析就過了。**je 變體獨有、在此之前沒有任何
+# 入口驗得到的是**：`je_web_runner` 自己的 `set_driver`／選項組裝，以及正式變體開機時對
+# 函式庫的要求（`webrunner_je_only._require_wrapper_contract`：包裝層的失敗要能改成丟例外、
+# `set_driver` 要收 `install_driver`）。而 je 是 `/run` 的預設變體，bot 的退路又會在 je 起不來
+# 時安靜改跑 selenium，所以「je 壞了」在正式環境裡通常看不見。
+#
+# 刻意**不**驗 `set_driver` 裡那一次 webdriver-manager 的 `install()`：正式變體帶
+# `install_driver=False` 把那一步關掉了（§8.222 G10），smoke 要走的是正式那條路，不是正式
+# 已經不走的那條——驗它只會在下載來源連不上時印一個與正式環境無關的 FAIL。
 #
 # **為什麼一定是子行程、工作目錄一定在丟棄式暫存目錄：**
-#   * `je_web_runner` **匯入時**就開一個 `RotatingFileHandler`，檔名是相對路徑
+#   * 套件庫的發佈版（0.0.88）**匯入時**就開一個 `RotatingFileHandler`，檔名是相對路徑
 #     `WEBRunner.log`、附加模式。工作目錄在 repo 根目錄時，在大小寫不分的磁碟上那個檔
 #     **就是**正式批次正在寫的 `webrunner.log`。（做這一段時自己就踩了一次：在 repo
 #     的上一層跑一行 `import je_web_runner` 探路，當場在那裡留下一個空的記錄檔。）
-#   * `install()` 的快取跟著 `Path.cwd()` 走；正式環境落在 repo 根目錄的 `.wdm`。
+#     WebRunner 原始碼樹 2026-10-01 起改讀環境變數 `WEBRUNNER_LOG_PATH`、不看工作目錄，
+#     而子行程裡的共用解析器會把它沒設才設成正式的 `webrunner.log`——所以父行程另外把它
+#     指進丟棄式工作目錄（`_isolate_library_log`），兩代都落在會被刪掉的地方。
+#   * `set_driver` 仍會依 `Path.cwd()` 建一個 driver 管理器的快取物件（帶
+#     `install_driver=False` 時不下載，但工作目錄留在 repo 外面就不必去證明它什麼都不寫）。
 #   * 同一個行程裡「先換工作目錄、匯入、再換回來」做不乾淨：handler 會一直握著暫存
 #     目錄裡那個檔（Windows 上整個目錄刪不掉），匯入還會把 root logger 設成 DEBUG，
 #     兩者都留在呼叫端的行程裡。子行程一結束就全部放掉，父行程再整個刪掉。
@@ -917,8 +966,8 @@ def run_full(generate: bool) -> int:
 #     `sys.path[0]` 是本檔所在的 `axiomatic/`，也就是 repo 裡面。所以子行程的環境
 #     一律拿掉它。
 #
-# 代價：丟棄式快取裡沒有舊的 driver，所以每一趟都會真的下載一次。這比正式環境**嚴格**
-# （正式環境的快取有效一天），方向是對的——下載會失敗的話，正式環境最晚隔天也會失敗。
+# driver 由 Selenium Manager 解析，它的快取在使用者家目錄、不跟工作目錄走，所以丟棄式工作
+# 目錄不會讓每一趟都重新下載。
 
 _THIS_FILE = Path(__file__).resolve()
 # 父行程叫子行程時帶的內部旗標。**不在 argparse 裡**（`--help` 看不到），由 `main` 在
@@ -927,15 +976,16 @@ _THIS_FILE = Path(__file__).resolve()
 JE_CHILD_FLAG = "--internal-je-child"
 # 子行程唯一的結論行前綴。刻意**不是** `VERIFY-BROWSER:`——那一行只能由父行程印一次。
 JE_CHILD_PREFIX = "VERIFY-JE-CHILD:"
-# 單趟子行程的看門狗：一趟要真的下載一次 driver 再開 Chrome，所以比 smoke 的單步逾時
-# 寬，但仍然有界。整體上限（含重試）理由同 `TOTAL_DEADLINE_SEC`。
+# 單趟子行程的看門狗：一趟要匯入函式庫、讓 Selenium Manager 解析 driver（解析紀錄到期時
+# 會連網重抓版本清單）再開 Chrome，所以比 smoke 的單步逾時寬，但仍然有界。整體上限（含
+# 重試）理由同 `TOTAL_DEADLINE_SEC`。
 JE_ATTEMPT_DEADLINE_SEC = 180.0
 JE_TOTAL_DEADLINE_SEC = 420.0
-# 子行程從哪裡載入 `je_web_runner`：與 `webrunner_je_only` 開頭那段**同一條規則**
-# （`WEBRUNNER_PATH` 環境變數，否則 repo 旁邊的 `WebRunner/` 開發簽出，都沒有就是已安裝
-# 的套件）。本檔不 import 任何 webrunner，只能照抄；兩份由 `test_verify_browser` 對帳
-# ——正式變體換了來源而這裡沒跟上的話，驗到的就是另一份程式碼。
-_JE_SIBLING_WEBRUNNER = Path(__file__).resolve().parent.parent.parent / "WebRunner"
+# 子行程從哪裡載入 `je_web_runner`：與正式變體**同一支**解析器
+# （`_webrunner_location.resolve_webrunner_path`：環境變數 `WEBRUNNER_PATH` → `bot_config.json`
+# 的 `webrunner_path` → repo 旁邊的同層資料夾 → 已安裝的套件）。2026-10-01 之前這裡是照抄的
+# 一份、由測試對帳；改成設定決定之後抄本會少一層，所以改成共用那一支——它是純標準函式庫、
+# 不 import 專案裡任何東西的被動模組，本檔「不 import 任何 webrunner」的承諾不受影響。
 
 # 與 `webrunner_je_only.start_driver` 的 `cli_args` 同一組旗標，差別只有三處：
 #   * 正式變體那兩個「開在螢幕外」的旗標（`--window-position` / `--window-size`）換成
@@ -963,11 +1013,12 @@ _JE_SMOKE_FLAGS = (
     "--no-default-browser-check",
 )
 
-# 子行程回報的失敗階段 → 結論行上的說明。`install` 與 `launch` 分開是這一段的重點：
-# 前者去查網路／driver 管理器，後者去查瀏覽器本體與 chromedriver 記錄。
+# 子行程回報的失敗階段 → 結論行上的說明。`contract` 與 `launch` 分開是這一段的重點：
+# 前者去更新 WebRunner（正式 je 變體在這份函式庫上同樣不會開機），後者去查瀏覽器本體與
+# chromedriver 記錄。
 _JE_STAGE_LABELS = {
-    "install": "driver 管理器安裝失敗（set_driver 裡的 install()）",
-    "launch": "瀏覽器起不來（set_driver 在 install() 之後的選項組裝或啟動瀏覽器失敗）",
+    "contract": "函式庫缺正式 je 變體開機要的介面（正式變體同樣不會開機）",
+    "launch": "瀏覽器起不來（set_driver 的選項組裝或啟動瀏覽器失敗）",
     "page": "瀏覽器起來了，但載入或讀取頁面失敗",
     "import": "載不進 je 變體的相依",
     "refused": "子行程拒絕執行",
@@ -975,12 +1026,11 @@ _JE_STAGE_LABELS = {
     "child": "子行程沒有留下可辨識的結論",
 }
 # 子行程自己會印的階段（其餘兩個由父行程判定）。
-_JE_CHILD_STAGES = frozenset({"install", "launch", "page", "import", "refused"})
-# 會重試的階段。`install` 也在內：正式的 `start_driver` 把整個 `set_driver`（含
-# `install()`）重試三次，所以驗證這邊重試同樣次數才是「正式環境會不會起不來」的答案。
-# `import`／`refused`／`timeout`／`child` 重跑也不會變，重試只會讓一個穩定的問題看起來
-# 像「有時候會過」。
-_JE_RETRY_STAGES = frozenset({"install", "launch", "page"})
+_JE_CHILD_STAGES = frozenset({"contract", "launch", "page", "import", "refused"})
+# 會重試的階段。正式的 `start_driver` 把整個 `set_driver` 重試三次，所以驗證這邊重試
+# 同樣次數才是「正式環境會不會起不來」的答案。`contract`／`import`／`refused`／`timeout`／
+# `child` 重跑也不會變，重試只會讓一個穩定的問題看起來像「有時候會過」。
+_JE_RETRY_STAGES = frozenset({"launch", "page"})
 
 
 def _je_experimental_options() -> dict:
@@ -1029,31 +1079,27 @@ def _je_workdir(base: str | None = None) -> str | None:
     return tempfile.mkdtemp(prefix="verify_browser_je_", dir=base)
 
 
-def _je_failure_stage(err: BaseException) -> str:
-    """`set_driver` 丟出來的例外是 driver 管理器那一步（`install`）還是之後（`launch`）。
+def _je_contract_gaps(library, wrapper) -> list[str]:
+    """正式 je 變體開機要的兩個介面，這份函式庫缺哪幾個（全都在就回空清單）。
 
-    `set_driver` 把兩者包成同一個 `WebRunnerException`（`raise … from error`），訊息也
-    一樣以 `set_driver failed:` 開頭，所以只能看**原始例外經過了哪些程式碼**：沿著
-    `__cause__`／`__context__` 把整條鏈的 traceback 走一遍，任何一個 frame 的檔案路徑有
-    一段**剛好是** `webdriver_manager` 就是安裝那一步（網路錯誤的 frame 在 requests／
-    urllib3 裡，但它是從 driver 管理器的下載函式一路呼叫下去的，那幾格一定在鏈上）。
-    比對的是路徑的**一段**，不是子字串——`my_webdriver_manager_notes` 不算。
+    判準與 `webrunner_je_only._require_wrapper_contract` 相同（本檔不 import 任何 webrunner，
+    所以照抄判準；兩邊由 `test_verify_browser` 對著同一組替身各跑一次）：
+    `library.executor.set_raise_wrapper_errors` 要可呼叫，`wrapper.set_driver` 要收
+    `install_driver`。
     """
-    seen: set[int] = set()
-    stack: list[BaseException | None] = [err]
-    while stack:
-        exc = stack.pop()
-        if exc is None or id(exc) in seen:
-            continue
-        seen.add(id(exc))
-        tb = exc.__traceback__
-        while tb is not None:
-            parts = {p.lower() for p in Path(tb.tb_frame.f_code.co_filename).parts}
-            if "webdriver_manager" in parts:
-                return "install"
-            tb = tb.tb_next
-        stack.extend((exc.__cause__, exc.__context__))
-    return "launch"
+    import inspect
+
+    gaps = []
+    setter = getattr(getattr(library, "executor", None), "set_raise_wrapper_errors", None)
+    if not callable(setter):
+        gaps.append("executor.set_raise_wrapper_errors")
+    try:
+        parameters = inspect.signature(wrapper.set_driver).parameters
+    except (AttributeError, TypeError, ValueError):
+        parameters = {}
+    if "install_driver" not in parameters:
+        gaps.append("set_driver(install_driver=...)")
+    return gaps
 
 
 def _slot_held_by_an_ancestor() -> bool:
@@ -1132,17 +1178,26 @@ def _je_child_main(argv: list[str]) -> int:
         return _fail("refused", "Chrome 槽不在祖先行程手上；這個入口只給 --variant je "
                                 "的父行程用")
 
-    env_path = os.environ.get("WEBRUNNER_PATH")
-    webrunner_path = str(Path(env_path)) if env_path else str(_JE_SIBLING_WEBRUNNER)
-    if webrunner_path not in sys.path:
-        sys.path.insert(0, webrunner_path)
+    # 與正式變體同一支解析器、同一支套用（警告也是同一句）——見模組層 `JE_TOTAL_DEADLINE_SEC`
+    # 底下那段說明。它不 import 函式庫，所以放在上面兩道拒絕之後也一樣安全。
+    import _webrunner_location  # repo-local 被動共用模組
+    library = _webrunner_location.put_webrunner_path_first(
+        _webrunner_location.resolve_webrunner_path())
     try:
         from selenium.webdriver.chrome.service import Service as ChromeService
+        import je_web_runner
         from je_web_runner import webdriver_wrapper_instance as wr
     except Exception as err:  # pylint: disable=broad-except
         return _fail("import", repr(err))
     origin = getattr(sys.modules.get("je_web_runner"), "__file__", None) or "?"
-    _progress(f"[je] je_web_runner 來源：{origin}")
+    _progress(f"[je] je_web_runner 來源：{library.describe()}；載入 {origin}")
+    missing = _je_contract_gaps(je_web_runner, wr)
+    if missing:
+        return _fail("contract", "缺 " + "、".join(missing)
+                     + "；正式 je 變體在這份函式庫上會拒絕開機")
+    # 與正式變體同一步：包裝層的失敗改成丟例外。這裡讀頁面本來就不走包裝層（見 docstring），
+    # 但 `set_driver`／`quit` 走——讓它們在兩邊用同一種語意失敗。
+    je_web_runner.executor.set_raise_wrapper_errors(True)
 
     profile_dir = tempfile.mkdtemp(prefix="verify_browser_je_profile_", dir=cwd)
     log_path = os.path.join(cwd, "chromedriver.log")
@@ -1154,12 +1209,12 @@ def _je_child_main(argv: list[str]) -> int:
         try:
             service = ChromeService(log_output=log_path,
                                     service_args=["--log-level=INFO"])
-            _progress("[je] 呼叫 set_driver（driver 管理器 install() ＋ 啟動 Chrome）…")
+            _progress("[je] 呼叫 set_driver（install_driver=False，與正式變體相同）…")
             wr.set_driver("chrome", options=_je_cli_args(profile_dir, headless),
                           experimental_options=_je_experimental_options(),
-                          service=service)
+                          service=service, install_driver=False)
         except Exception as err:  # pylint: disable=broad-except
-            stage, reason = _je_failure_stage(err), repr(err.__cause__ or err)
+            stage, reason = "launch", repr(err.__cause__ or err)
         else:
             driver = wr.current_webdriver
             try:
@@ -1226,6 +1281,8 @@ def _je_attempt(url: str, headless: bool, attempt: int) -> tuple[bool, str, str]
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env.pop("WDM_LOCAL", None)
+    # 新版函式庫看的是這個變數、不看工作目錄（子行程裡的共用解析器是沒設才設）。
+    _isolate_library_log(env, workdir)
     try:
         proc = subprocess.Popen(
             [sys.executable, "-u", str(_THIS_FILE), JE_CHILD_FLAG, url,
@@ -1341,10 +1398,10 @@ def _build_parser() -> argparse.ArgumentParser:
              "站台網址）。",
     )
     parser.add_argument(
-        "--variant", choices=["selenium", "je"], default="selenium",
-        help="（僅 smoke）要驗哪一個變體的啟動路徑：selenium（預設）直接用 "
-             "Selenium Manager 起 Chrome；je 走 je_web_runner 的 set_driver"
-             "（含 driver 管理器的 install()），在丟棄式工作目錄的子行程裡跑。",
+        "--variant", choices=["je"], default="je",
+        help="要驗哪一個變體：selenium（預設）或 je。smoke 時 je 走 je_web_runner 的 "
+             "set_driver（與正式 je 變體一樣先查函式庫的介面），在丟棄式工作目錄的"
+             "子行程裡跑；full 時以子行程跑該變體的隔離驗證模式。",
     )
     return parser
 
@@ -1365,12 +1422,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv or [])
 
     mode = "full" if (args.full or args.mode == "full") else "smoke"
-    if mode == "full" and args.variant == "je":
-        # 參數錯誤，不是驗證結論：走 argparse 自己的 exit 2，**不**印
-        # `VERIFY-BROWSER:`。印成 FAIL 會被讀成「瀏覽器壞了」，印成 SKIP 會讓自走迴圈
-        # 晚點再重試一個永遠不可能成功的指令（見 `_emit_skip`）。
-        parser.error("--full 目前只接 selenium 變體；je 變體只有 smoke。"
-                     "請拿掉 --full，或拿掉 --variant je。")
     if args.generate and mode != "full":
         # 同上是參數錯誤。原本會被**安靜忽略**：跑一次 smoke、印 `OK`，而下指令的人以為
         # 「真的產一張圖」那一步也驗過了——這支工具最不該給的就是看起來成功、其實沒驗
@@ -1392,8 +1443,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if mode == "full":
             _progress("瀏覽器驗證開始（full 模式：隔離端到端可達性）")
-            _progress(f"參數：generate={args.generate}")
-            return _run_with_slot("full", lambda: run_full(args.generate))
+            _progress(f"參數：variant={args.variant}　generate={args.generate}")
+            return _run_with_slot(
+                "full", lambda: run_full(args.generate, args.variant))
 
         if args.variant == "je":
             # 槽與讓位留在本行程：子行程只在槽握在祖先手上時才開瀏覽器。

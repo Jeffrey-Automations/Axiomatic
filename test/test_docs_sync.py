@@ -867,7 +867,7 @@ def test_every_bot_config_key_is_documented_and_every_documented_key_exists():
     裡是 26 個）——那份文件把整組 `dorossi_*` 推給「見 README／COMMANDS.md」，而那兩份也
     沒寫。少寫是安靜的：設定照樣能用，只是沒有人知道它在、預設是多少。反方向（文件寫了、
     程式已經沒有）同樣安靜，所以兩個方向都查；兩邊各有一道下限，抽取壞掉時才不會空轉通過。
-    巢狀鍵用點號寫法（`webrunner_supervisor.fallback_window_sec`）對帳，同樣兩向。
+    巢狀鍵用點號寫法（`webrunner_supervisor.respawn_backoff_min_sec`）對帳，同樣兩向。
     """
     top, nested, defaults = _expected_config_keys()
     doc = (REPO_ROOT / "docs" / "config.md").read_text(encoding="utf-8")
@@ -892,7 +892,7 @@ def test_the_config_reconciliation_sees_a_stale_key():
     _top, _nested, defaults = _expected_config_keys()
     section = _bot_config_section(
         "## bot_config.json\n\n| `platforms.telegram.no_such_key` | 1 | x |\n"
-        "| `webrunner_supervisor.fallback_window_sec` | 300 | x |\n\n## next\n")
+        "| `webrunner_supervisor.respawn_backoff_min_sec` | 300 | x |\n\n## next\n")
     dotted = set(re.findall(r"^\| `([a-z_]+(?:\.[a-z_]+)+)` \|", section, re.M))
     assert {k for k in dotted if not _config_key_exists(k, defaults)} == {
         "platforms.telegram.no_such_key"}
@@ -929,7 +929,6 @@ def test_the_host_control_table_matches_the_owner_gates():
 # 使用文件裡反引號包起來、但**不是**這個 bot 的指令的斜線字樣。每一筆都寫理由；兩向對帳，
 # 不再出現的那一筆會被報成過期——一個永遠對不上任何東西的豁免會安靜失效。
 _NON_COMMAND_SLASH_WORDS = {
-    "login": "出圖服務網站的登入頁路徑，不是指令",
     "newbot": "對話平台官方建 bot 的指令，寫在開通步驟裡",
 }
 

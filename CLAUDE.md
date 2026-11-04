@@ -17,7 +17,7 @@ construction, so it is a rule:
 
 | Area | Files that move together |
 |---|---|
-| Batch generation | `webrunner_novelai.py`, `webrunner_je_only.py` (two driver variants over one shared core, `_webrunner_shared.py`) |
+| Batch generation | `webrunner_je_only.py` (the single driver over `_webrunner_shared.py`) |
 | Bot ↔ webrunner previews | `discord_bot.py`'s run-plan snapshot vs `_queue_consume`'s dynamic decisions |
 | Slash surface | the command tree, `_help_strings.py` (three languages), `README.md`, `COMMANDS.md`, `docs/commands_*.md`, `commands/*.md` |
 | The README set | `README.md` (English, the primary) and its three translations `README.zh-TW.md`, `README.zh-CN.md`, `README.ja.md` — same content, same structure, one language switcher linking all four |
@@ -69,7 +69,7 @@ Do not pile notes at the end of a file; put them where the reader will be.
 Every change MUST satisfy these before commit:
 
 1. **Smoke-test imports**: from the repo root,
-   `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_novelai, webrunner_je_only; print('OK')"`
+   `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_je_only; print('OK')"`
    prints `OK` with no traceback.
 2. **Slash is the only advertised surface.** Every new slash command (group
    sub-commands included) MUST appear in all five user-doc corpora: the three
@@ -170,7 +170,7 @@ or vice versa — cross-process state stays on disk so a restart is harmless.
 `_bot_config`, `_bot_prompts`, `_queue_consume`, `_webrunner_shared`,
 `_run_progress`, `_supervisor`, `_chrome_slot`, `_process_control`,
 `presence_probe`, `_code_fingerprint`, `_warn_dedup`, `_power_request`,
-`_connectivity`) — separate stdlib-only / driver-agnostic modules both sides may
+`_connectivity`, `_process_job`, `_webrunner_location`) — separate stdlib-only / driver-agnostic modules both sides may
 import. That is not a bot↔webrunner import. The last two were added 2026-09-22:
 `_power_request` is the one reference-counted power-request implementation (the
 bot holds it while supervising a batch; the batch's `StayAwake` delegates to
@@ -253,7 +253,7 @@ reason*. Forcing that step is the entire point.
 
 Note what is deliberately **not** checked: the Permitted-third-channel list
 above is a **permission** list, not an as-built one, so "listed but not
-currently shared" is the normal state (12 of its 14 names are not shared right
+currently shared" is the normal state (14 of its 16 names are not shared right
 now). Comparing it by equality would pressure someone into rewriting it as
 as-built, which would **delete** permission information. Only the undeclared
 direction is worth a gate. **Those two numbers used to read "16 of its 18" and

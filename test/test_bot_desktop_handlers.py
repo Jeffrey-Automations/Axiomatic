@@ -937,3 +937,35 @@ def test_the_recording_double_covers_every_name_but_the_parsers():
         assert getattr(fake, name) is not getattr(real_gui, name), name
     fake.some_future_desktop_call(1, key=2)
     assert fake.calls == [("some_future_desktop_call", (1,), {"key": 2}, "thread")]
+
+
+@pytest.mark.parametrize("seconds,target,threshold", [(30, "0.8", 0.8), (1, "", 0.9)])
+def test_slash_gone_image_passes_the_template_and_both_numbers(
+        monkeypatch, gui, replies, tmp_path, seconds, target, threshold):
+    attachment = _Attachment(b"fake-template")
+    interaction = object()
+    seen = []
+
+    async def with_file(actual, file, handler, payload, **kwargs):
+        assert actual is interaction and file is attachment
+        assert handler is b.cmd_wait_gone
+        seen.append(kwargs)
+        await handler(_message(attachments=[file]), payload)
+
+    monkeypatch.setattr(b, "_slash_run_with_file", with_file)
+    _run(b.slash_locate_gone.callback(interaction, "image", target, seconds, attachment))
+    args, kwargs = gui.only("wait_image_gone")
+    assert args[1:] == (float(seconds),)
+    assert kwargs == {"threshold": threshold}
+    assert seen == [{"detach_ack": "⏳ 等待中…"}]
+
+
+
+@pytest.mark.parametrize("kind", ["text", "window", "image"])
+def test_slash_gone_without_required_content_keeps_the_usage_reply(monkeypatch, gui, replies, kind):
+    async def run(interaction, handler, payload, **kwargs):
+        await handler(_message(), payload)
+    monkeypatch.setattr(b, "_slash_run", run)
+    _run(b.slash_locate_gone.callback(object(), kind))
+    assert gui.calls == []
+    assert any("用法：" in text for text in replies.texts())

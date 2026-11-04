@@ -42,7 +42,7 @@ bot（``discord_bot.py``）與獨立的瀏覽器驗證器（``verify_browser.py`
     ``webrunner.pid``——沒有人認領（檔案不存在，或裡面那個 pid 已經死了）就寫自己的
     pid 進去，收尾時只刪「還記著自己那一筆」的檔
     （``_webrunner_shared.claim_liveness_signal`` / ``release_liveness_signal``）。
-    這是為了**裸跑**：直接 ``py -3 axiomatic/webrunner_novelai.py`` 沒有父行程，
+    這是為了**裸跑**：直接 ``py -3 axiomatic/webrunner_je_only.py`` 沒有父行程，
     上面那兩個訊號一個都不會有，於是驗證端會開出自己的瀏覽器、``start_webrunner.py``
     也會再起第二個批次。上面那條「pid 一定要在 release 之前寫」不受影響——父行程
     先寫到的話，webrunner 這一層就是 no-op。

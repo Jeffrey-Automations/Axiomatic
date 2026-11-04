@@ -571,7 +571,7 @@ def test_queue_counts_each_list_and_the_longest_sets_the_pairs(queue_files, monk
     queue_files.write("TODO_UNDESIRED_FILE", "n1\nn2\n")
     embed, fields = _queue_embed(monkeypatch, _message())
     assert fields == {"主提示詞佇列": "`3`", "角色1 佇列": "`1`", "角色2 佇列": "`4`",
-                      "負面提示詞佇列": "`2`", "pairs (max)": "**4**"}
+                      "負面提示詞佇列": "`2`", "組數（最大）": "**4**"}
     assert embed.color.value == 0x57F287 and embed.footer.text is None
 
 
@@ -580,7 +580,7 @@ def test_queue_counts_the_negative_prompt_queue_as_work(queue_files, monkeypatch
     時批次照樣會跑，不能顯示成空佇列。"""
     queue_files.write("TODO_UNDESIRED_FILE", "n1\nn2\nn3\n")
     embed, fields = _queue_embed(monkeypatch, _message())
-    assert fields["pairs (max)"] == "**3**"
+    assert fields["組數（最大）"] == "**3**"
     assert embed.color.value == 0x57F287 and embed.footer.text is None
 
 
@@ -588,24 +588,11 @@ def test_queue_stops_counting_at_the_end_marker(queue_files, monkeypatch):
     queue_files.write("TODO_PROMPT_FILE", "a\nb\n END \nc\n")
     queue_files.write("TODO_FILE_1", "\n".join(f"c{i}" for i in range(6)) + "\n")
     _embed, fields = _queue_embed(monkeypatch, _message())
-    assert fields["pairs (until `end`)"] == "**2** / 6"
-    assert fields["⏹ end marker"] == "主提示詞佇列第 #3 筆 — run stops there"
-    assert "pairs (max)" not in fields
+    assert fields["有效組數（至 `end`）"] == "**2** / 6"
+    assert fields["⏹ 停止標記"] == "主提示詞佇列第 #3 筆，到這裡停止"
+    assert "組數（最大）" not in fields
 
 
-@pytest.mark.parametrize("prompt", [None, "end\na\n"])
-def test_queue_with_nothing_to_run_is_red_and_says_so(queue_files, monkeypatch, prompt):
-    """四個都空，或第一筆就是 `end`：實際一組都不會跑。"""
-    if prompt is not None:
-        queue_files.write("TODO_PROMPT_FILE", prompt)
-        queue_files.write("TODO_FILE_1", "x\n")
-    embed, fields = _queue_embed(monkeypatch, _message())
-    assert embed.color.value == 0xED4245
-    assert embed.footer.text == "queue empty — 背景程式會用 fallback / no-op"
-    if prompt is None:
-        assert fields["pairs (max)"] == "**0**"
-    else:
-        assert fields["pairs (until `end`)"] == "**0** / 2"
 
 
 def test_queue_names_the_real_files_only_to_the_owner(queue_files, monkeypatch):
@@ -614,3 +601,18 @@ def test_queue_names_the_real_files_only_to_the_owner(queue_files, monkeypatch):
             "todo_undesired.md"} <= set(fields)
     _embed, fields = _queue_embed(monkeypatch, _message())
     assert not any(name.endswith(".md") for name in fields)
+
+
+@pytest.mark.parametrize("prompt", [None, "end\na\n"])
+def test_queue_with_nothing_to_run_is_idle_and_says_so(queue_files, monkeypatch, prompt):
+    """四個都空，或第一筆就是 `end`：實際一組都不會跑。"""
+    if prompt is not None:
+        queue_files.write("TODO_PROMPT_FILE", prompt)
+        queue_files.write("TODO_FILE_1", "x\n")
+    embed, fields = _queue_embed(monkeypatch, _message())
+    assert embed.color.value == 0x99AAB5
+    assert embed.footer.text == "佇列為空，背景程式會使用預設值或略過"
+    if prompt is None:
+        assert fields["組數（最大）"] == "**0**"
+    else:
+        assert fields["有效組數（至 `end`）"] == "**0** / 2"

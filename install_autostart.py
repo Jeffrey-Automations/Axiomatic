@@ -194,24 +194,27 @@ def _task_xml(script: str, user: str, extra: list[str] | None = None) -> str:
 """
 
 
+def _console_output_encoding() -> str:
+    """主控台工具跟隨輸出代碼頁；沒有主控台時才退回系統 OEM 編碼。"""
+    if os.name != "nt":
+        return "utf-8"
+    codepage = ctypes.windll.kernel32.GetConsoleOutputCP()
+    return f"cp{codepage}" if codepage else "oem"
+
+
 def _schtasks(*args: str) -> subprocess.CompletedProcess:
-    """`encoding="oem"`，**不是** `"utf-8"`。
+    """以主控台輸出代碼頁解碼，避免欄位名與上午／下午變成亂碼。
 
-    CLAUDE.md 的「文字 I/O 一定要指名編碼」這條，在 Windows 主控台工具上還有第二
-    層：指名了還得指對。`schtasks` 是主控台程式，輸出走的是 **OEM 代碼頁**
-    （繁體中文 Windows 上是 cp950），不是 UTF-8。餵 `encoding="utf-8",
-    errors="replace"` 不會丟例外——它會**安靜地**把每個中文欄位名變成替換字元，
-    於是 `--status` 的欄位比對一條都對不上，印出一片空白，看起來像「工作沒註冊」。
-
-    `"oem"` 是 Python 在 Windows 上對 `GetOEMCP()` 的別名，所以它跟著機器的地區
-    設定走，不必寫死 cp950。`errors="replace"` 保留：這是外部行程的輸出。
+    系統 OEM 代碼頁與目前的主控台輸出代碼頁可能不同；例如主控台切到 65001，
+    OEM 仍是 950。固定用任一種編碼都會讓另一種環境的狀態解析失敗。
     """
     return subprocess.run(  # nosec B603 B607 — 固定命令、參數不來自外部輸入
         ["schtasks", *args],
         capture_output=True, text=True,
-        encoding="oem" if os.name == "nt" else "utf-8", errors="replace",
+        encoding=_console_output_encoding(), errors="replace",
         check=False,
     )
+
 
 
 def _current_user() -> str:
@@ -220,13 +223,22 @@ def _current_user() -> str:
     return f"{domain}\\{user}" if domain else user
 
 
-def install(which: list[str]) -> int:
+def install(which: list[str], *, presence_only: bool = False) -> int:
+    if presence_only and which != ["bot"]:
+        raise ValueError("只偵測狀態模式只能註冊 bot")
     user = _current_user()
     if not user:
         print("找不到目前的使用者名稱（USERNAME 沒設定）；無法註冊。",
               file=sys.stderr)
         return 1
-    tasks = planned_tasks(which)
+    if presence_only:
+        if "discord" not in _platform_runtime.enabled_platforms(load_bot_config()):
+            print("請先啟用 discord 平台並設定憑證。", file=sys.stderr)
+            return 1
+        task_name, script, extra = bot_task("discord")
+        tasks = [(task_name, script, extra + ["--presence-only"])]
+    else:
+        tasks = planned_tasks(which)
     if not tasks:
         # 一個都算不出來的時候要出聲。「註冊完成、但一筆工作都沒有」跟「註冊成功」
         # 印起來一模一樣，而症狀要到下一次重開機才出現。
@@ -260,6 +272,26 @@ def install(which: list[str]) -> int:
             print(f"註冊 {task_name} 失敗：{done.stdout.strip()} "
                   f"{done.stderr.strip()}", file=sys.stderr)
             rc = 1
+    if presence_only and rc == 0:
+        rc = _disable_other_autostart()
+    return rc
+
+def _disable_other_autostart() -> int:
+    result = _schtasks("/Query", "/FO", "LIST")
+    if result.returncode != 0:
+        print("無法確認既有排程，僅狀態模式註冊未完成。", file=sys.stderr)
+        return 1
+    prefix = TASK_FOLDER + "\\"
+    keep = bot_task("discord")[0]
+    names = {line.partition(":")[2].strip() for line in result.stdout.splitlines()}
+    rc = 0
+    for task_name in sorted(name for name in names if name.startswith(prefix) and name != keep):
+        done = _schtasks("/Change", "/TN", task_name, "/DISABLE")
+        if done.returncode:
+            print(f"停用排程失敗：{task_name}", file=sys.stderr)
+            rc = 1
+        else:
+            print(f"已停用自動啟動：{task_name}；目前執行中的程式不受影響。")
     return rc
 
 
@@ -433,7 +465,7 @@ def status(which: list[str]) -> int:
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="登入時自動啟動每個開著的平台與批次監督者"
                     "（Windows 工作排程器）。")
@@ -444,21 +476,25 @@ def main() -> int:
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--bot-only", action="store_true")
     scope.add_argument("--batch-only", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--presence-only", action="store_true",
+                        help="只註冊狀態偵測與更新，停用其餘自動啟動工作")
+    args = parser.parse_args(argv or [])
+    if args.presence_only and (not args.install or args.batch_only):
+        parser.error("--presence-only 只能搭配 --install，不能搭配 --batch-only")
 
     if os.name != "nt":
         print("這支腳本只支援 Windows 工作排程器。", file=sys.stderr)
         return 1
 
-    which = (["bot"] if args.bot_only
+    which = (["bot"] if args.bot_only or args.presence_only
              else ["batch"] if args.batch_only
              else ["bot", "batch"])
     if args.install:
-        return install(which)
+        return install(which, presence_only=True) if args.presence_only else install(which)
     if args.remove:
         return remove(which)
     return status(which)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

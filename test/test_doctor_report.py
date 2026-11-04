@@ -48,7 +48,11 @@ import pytest
 import discord_bot as b
 from test_bot_helpers import _quiet_doctor, _run_reply
 
+from test_bot_helpers import _QUIET_LIBRARY, _QUIET_LIBRARY_LINE
+
 _OK_LINE = "- OK no obvious blocker found."
+_BASELINE = (_QUIET_LIBRARY_LINE, _OK_LINE,
+    _QUIET_LIBRARY_LINE.replace("載入。", f"載入（`{_QUIET_LIBRARY.path}`）。"))
 _HEADER = "**doctor**"
 
 # 這份報告的詞彙表。多一個標籤就要在這裡加，而且下面那條不變式會問它算不算阻礙。
@@ -177,6 +181,16 @@ _STALE_ROWS = [("bot", 4242, 100.0, 100.0 + 7200.0, "discord_bot.py"),
 # 最後一欄刻意是一個**欄位**，不是從場景名稱推出來的。第一版寫成
 # `case_id.endswith("owner")`，而 `"stale components, non-owner"` 也以 `owner`
 # 結尾——於是那一筆用擁有者的身分跑，量到的是它想排除的那一半。
+from pathlib import Path
+import _webrunner_location as wl
+
+_LIBRARY_FROM_CONFIG = wl.WebRunnerPathChoice(
+    wl.WEBRUNNER_SOURCE_CONFIG, Path("D:/secret/WebRunner"))
+_LIBRARY_SKIPPED = wl.WebRunnerPathChoice(
+    wl.WEBRUNNER_SOURCE_SIBLING, Path("D:/secret/sibling"),
+    ((wl.WEBRUNNER_SOURCE_CONFIG, Path("D:/secret/missing")),))
+_LIBRARY_INSTALLED = wl.WebRunnerPathChoice(wl.WEBRUNNER_SOURCE_INSTALLED, None)
+
 _CASES = [
     ("pause marker", _pause_marker, "- WARN pause marker exists", False),
     ("disk unreadable", _bot("_free_disk_gb", lambda: None),
@@ -193,7 +207,7 @@ _CASES = [
      "- WARN single-image request file exists", False),
     ("orphans found",
      _bot("_find_all_webrunner_pids",
-          lambda *a, **k: ([(4242, "webrunner_novelai.py")], True)),
+          lambda *a, **k: ([(4242, "webrunner_je_only.py")], True)),
      "- WARN … untracked background process(es)", False),
     ("orphan scan incomplete",
      _bot("_find_all_webrunner_pids", lambda *a, **k: ([], False)),
@@ -267,6 +281,17 @@ _CASES = [
      "- WARN could not check the declared dependencies", False),
     ("dependencies missing", _bot("_missing_dependencies", lambda: ["somepkg"]),
      "- WARN … declared dependenc(ies) missing", False),
+    ("library source probe raises", _bot("resolve_webrunner_path", _raiser()),
+     "- WARN could not check where the browser automation library", False),
+    ("library from the config file",
+     _bot("resolve_webrunner_path", lambda: _LIBRARY_FROM_CONFIG),
+     "- INFO 瀏覽器自動化函式庫從", False),
+    ("library location does not exist",
+     _bot("resolve_webrunner_path", lambda: _LIBRARY_SKIPPED),
+     "- WARN 有 … 個指定的瀏覽器自動化函式庫位置不存在", False),
+    ("library falls to the installed package",
+     _bot("resolve_webrunner_path", lambda: _LIBRARY_INSTALLED),
+     "- NOTE 瀏覽器自動化函式庫會用", False),
 ]
 
 # 擁有者那一半只有把提問者換成擁有者才走得到，所以它自己一筆。
@@ -352,7 +377,7 @@ def test_each_scenario_adds_exactly_the_one_line_it_claims(
     text = _report(monkeypatch, tmp_path, inject,
                    message=b.OWNER_USER_ID if as_owner else None)
     assert text.startswith(_HEADER + "\n"), text[:80]
-    body = [line for line in _findings(text) if line != _OK_LINE]
+    body = [line for line in _findings(text) if line not in _BASELINE]
     assert len(body) == 1, f"預期只多一行，實際 {len(body)} 行：{body}"
     assert re.fullmatch(_PATTERNS[_pattern_for(prefix)], body[0]), (
         f"送出的字跟原始碼裡那一句對不起來：{body[0]!r}")
@@ -365,7 +390,7 @@ def test_a_clean_machine_gets_the_conclusion_line_and_nothing_else(
     少了這一支，上面每一支都可能是在「所有情況都會多一行」的世界裡通過的。
     """
     text = _report(monkeypatch, tmp_path, lambda _mp, _tmp: None)
-    assert text.splitlines() == [_HEADER, _OK_LINE], text
+    assert text.splitlines() == [_HEADER, _QUIET_LIBRARY_LINE, _OK_LINE], text
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +462,7 @@ def test_no_probe_failure_is_reported_as_a_clean_result(
     表又跟原始碼對帳，所以新增一個探測就自動被這條蓋到。
     """
     text = _report(monkeypatch, tmp_path, inject)
-    body = [line for line in _findings(text) if line != _OK_LINE]
+    body = [line for line in _findings(text) if line not in _BASELINE]
     assert body, "探測失敗了，報告卻一個字都沒提"
     assert "could not" in body[0], (
         f"查不成應該講成「could not …」，實際是：{body[0]!r}")

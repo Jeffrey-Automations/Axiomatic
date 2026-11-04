@@ -1,5 +1,9 @@
 # Axiomatic
 
+`je_web_runner>=0.0.95` と `je-auto-control>=1.0.4` が必要です。`webrunner_path` はローカル作業ツリーを優先する場合のみ設定し、未設定ならインストール済みパッケージを使用できます。終了コード 5 は設定未完了、6 は単画像サーバー完了を表し、バッチ監督は再起動します。
+
+削除・全消去・リセットには確認が必要です。キャンセルでき、60 秒で失効し、実行前に権限を再確認します。`/queue` と `/eta` は状態カードを使います。中止は子プロセス、待機中の質問、API 呼び出しにも反映されます。バッチの実装は一つとなり、異常終了時は待機時間を増やして再起動します。
+
 [English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · **日本語**
 
 **チャットから操作する自動化ホスト。** いま自分がいるチャットプラットフォームから
@@ -98,8 +102,7 @@
 
 | ファイル | 役割 |
 |---|---|
-| `axiomatic/webrunner_novelai.py` | バッチ生成、Selenium 版（本番の既定） |
-| `axiomatic/webrunner_je_only.py` | バッチ生成、wrapper 版（予備。`/run` はまずこちらを試します） |
+| `axiomatic/webrunner_je_only.py` | ブラウザー自動化ライブラリーを使う唯一のバッチ生成器 |
 | `axiomatic/_webrunner_shared.py` | 2 つの版が共有する中核：DOM 操作、純粋関数、バッチループ。driver 非依存 |
 
 **ランチャー**（リポジトリ直下）
@@ -117,6 +120,8 @@
 <!-- section: requirements -->
 ## 必要なもの
 
+**Python 3.13+** が必要です。
+
 Windows、Python 3.11 以上、ブラウザ、そして `requirements.txt` のパッケージ。
 `requirements.txt` は**バージョンを固定しません**（新しい clone では各パッケージの
 最新が入ります）が、このプロジェクトが実際に到達しうる既知の脆弱性があるものには
@@ -124,9 +129,9 @@ Windows、Python 3.11 以上、ブラウザ、そして `requirements.txt` の�
 
 | パッケージ | 用途 |
 |---|---|
-| `selenium` | Selenium 版のブラウザ操作 |
+| `selenium` | 共通ファサード経由のブラウザー操作 |
 | `je_web_runner` | wrapper 版のブラウザ操作 |
-| `urllib3` | 両版とも `ReadTimeoutError` を直接捕捉します（selenium は再公開していません） |
+| `urllib3` | ブラウザーのコアが `ReadTimeoutError` を直接処理 |
 | `discord.py` | ネイティブのスラッシュメニューを持つプラットフォームの transport とイベントループ |
 | `aiohttp` | 外部 API 呼び出しと、他プラットフォームが使うロングポーリング transport |
 | `psutil` | プロセス生存確認とウィンドウ照合（**必須**） |
@@ -280,6 +285,17 @@ py -3 run_batch.py
 フォームから編集しても有効です。ロックが決めるのは「誰がバッチを監視するか」
 だけです。
 
+### 状態の検出と更新のみ
+
+
+```powershell
+py -3 install_autostart.py --install --presence-only
+py -3 start_discord_bot.py --platform discord --presence-only
+py -3 wake_autostart.py --presence-only
+```
+
+`--presence-only` を指定すると、ローカルの状態検出、bot のアクティビティ更新、ローカル RPC のみを実行します。コマンド、バッチ監視、スケジュール、他のプラットフォームは起動しません。Discord のみ対応します。登録時には Batch を含む他の既存 Axiomatic ログオンタスクを無効にします。実行中のプロセスは停止しません。起動コマンドは、このモードで登録済みのタスクを必要とします。`start_discord_bot.py` を直接通常実行する場合はフラグを省略し、ログオンタスクの復元には `--install` で再登録します。登録済みタスクの起動には登録時のモードを使います。
+
 ### ログオン時に自動起動（Windows）
 
 ```powershell
@@ -335,6 +351,8 @@ py -3 install_autostart.py --remove
 
 <!-- section: commands -->
 ## コマンド
+
+`/locate gone` の画像対象は `template` で見本画像を添付し、`target` で類似度のしきい値（既定 0.9）、`seconds` で待機秒数を指定します。文字とウィンドウでは `target` が必要です。バックエンドの中止、タイムアウト、ターンのキャンセル、およびホストコマンドのタイムアウト時には、識別できる子孫プロセスも停止します。`install_autostart.py --status` は UTF-8 を含むコンソール出力コードページに従ってデコードします。
 
 ネイティブのスラッシュメニューがあるプラットフォームでは、コマンドは
 **スラッシュコマンド**です。`/` を打つと補完され、引数は送信前に型と範囲が
@@ -495,6 +513,8 @@ Ctrl+C を押すと、そのループはきれいに終わります。
 
 ---
 
+モデル選択では全バックエンドの別名を検索でき、選択時にバックエンドも切り替わります。実行中のモデルと推論強度の変更は次のラウンドから適用されます。使用量には別途開いたローカル CLI セッションとサブタスクも表示されます。bot の記録とは重複するため合算しません。キャッシュを含む token 数と API 料金の推定値であり、サブスクリプションの請求額ではありません。
+
 <!-- section: worked-examples -->
 ## 実践的な使用例
 
@@ -611,7 +631,7 @@ py -3 -m pytest test/test_platform_processes.py   # 1 ファイルだけ
 
 コミット前に、少なくとも次の 4 つ。
 
-1. `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_novelai, webrunner_je_only; print('OK')"` が `OK` と表示する。
+1. `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_je_only; print('OK')"` が `OK` と表示する。
 2. 新しいスラッシュコマンドがすべてのユーザー向けドキュメントに反映され、
    `commands/*.md` は手編集ではなく
    `py -3 axiomatic/gen_command_docs.py` で再生成されている。

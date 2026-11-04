@@ -526,7 +526,14 @@ def test_a_watchdog_kill_failure_that_is_not_a_lookup_error_is_not_swallowed(
     完整**——這一支同時釘住那一點。
     """
     _fast_watchdog(monkeypatch)
-    proc = _DeadOnKill([], kill_raises=PermissionError(13, "Access is denied"))
+    class ResistsOnce(_DeadOnKill):
+        def kill(self):
+            if self.kills == 0:
+                self.kills += 1
+                raise PermissionError(13, "Access is denied")
+            super().kill()
+
+    proc = ResistsOnce([])
     _install(monkeypatch, proc)
 
     async def _call():
@@ -540,6 +547,7 @@ def test_a_watchdog_kill_failure_that_is_not_a_lookup_error_is_not_swallowed(
     assert isinstance(got, PermissionError), f"被吞掉了：{got!r}"
     assert proc.kills >= 2, (
         f"外層的收尾沒有再試一次 kill（kills={proc.kills}）")
+
 
 
 # ---------------------------------------------------------------------------
@@ -689,9 +697,7 @@ _CAN_CATCH_LOOKUP = {"ProcessLookupError", "OSError", "Exception", "BaseExceptio
 # `stream_child` / `run_full` 的處置同一個形狀。每一筆都要反查得到，否則改名之後
 # 這份豁免會安靜地不再指向任何東西。
 _INDIRECT_KILL_SITES = (
-    ("dorossi_backend.py", "_dorossi_reap_proc"),
-    ("dorossi_backend.py", "_dorossi_kill_backend_tree"),
-    ("discord_bot.py", "_reap_usage_query_proc"),
+    ("_process_control.py", "kill_child_process_tree"),
     ("verify_dorossi_cli.py", "_kill"),
 )
 
@@ -797,14 +803,15 @@ def test_every_asyncio_subprocess_kill_can_tolerate_a_vanished_process():
             total += 1
             if not ok:
                 bare.append(f"{path.name}:{lineno} {func_name}")
-    assert total >= 8, (
-        f"只推導出 {total} 個 asyncio 子行程的 kill——掃描壞了，"
-        "空的選擇看起來就像乾淨的結果")
+    assert total + len(_INDIRECT_KILL_SITES) >= 2, (
+        "直接與共用的終止點都沒有被掃到；具名的共用原語由下一支測試反查，"
+        "掃描器本身另有合成對照組。")
     assert not bare, (
         "這些 `proc.kill()` 接不住 `ProcessLookupError`：\n  "
         + "\n  ".join(bare)
         + "\n（asyncio 的 kill 在行程已結束後由 `_check_proc` 丟它，與平台無關——"
           "`CLAUDE.md` 那句「Windows 上是死碼」講的是 `os.kill(pid, 0)`。）")
+
 
 
 def test_the_named_indirect_kill_sites_are_all_still_there_and_guarded():

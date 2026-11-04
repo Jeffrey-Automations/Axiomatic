@@ -491,17 +491,17 @@ def test_resume_unusable_drops_a_reason_code_it_does_not_know():
 _LEAKY_CRITICAL = {
     "type": "critical_error",
     "message": ("SessionNotCreatedException: Chrome instance exited; "
-                "user-data-dir=D:\\Work\\Example\\.chrome_profile"),
+                "user-data-dir=C:\\Workspace\\Axiomatic\\.chrome_profile"),
     "traceback": (
         "Traceback (most recent call last):\n"
-        '  File "D:\\Work\\Example\\axiomatic\\webrunner_novelai.py", '
+        '  File "C:\\Workspace\\Axiomatic\\axiomatic\\webrunner_je_only.py", '
         "line 4242, in run_batch\n"
         "    driver.get('https://novelai.net/image')\n"
         "selenium.common.exceptions.WebDriverException: chrome not reachable\n"),
 }
 
 _BANNED_IN_CHANNEL = (
-    "D:\\Work", "D:/Work", "Example", "webrunner_novelai",
+    "C:\\Workspace", "C:/Workspace", "Axiomatic", "webrunner_je_only",
     ".chrome_profile", "novelai", "Traceback", "SessionNotCreated",
     "WebDriverException", "selenium", "chromedriver", "WEBRunner.log",
     "todo_prompt.md", "batch_config.json",
@@ -531,7 +531,7 @@ def test_a_critical_error_still_writes_the_detail_to_stderr():
     """
     _, err = deliver(_LEAKY_CRITICAL)
     assert "SessionNotCreated" in err, f"原始訊息沒進 stderr：{err!r}"
-    assert "webrunner_novelai" in err, f"traceback 沒進 stderr：{err!r}"
+    assert "webrunner_je_only" in err, f"traceback 沒進 stderr：{err!r}"
 
 
 def test_a_dom_dump_failure_keeps_the_raw_error_out_of_the_channel():
@@ -640,7 +640,7 @@ def test_no_event_type_leaks_a_host_string_from_a_machine_written_field(etype):
     這一支不預設任何欄位名稱——它把樣本裡除了角色名以外**所有**字串值換掉，所以
     日後新增一個會被印出來的欄位時它會自己跟上。
     """
-    poison = "D:\\Work\\Example\\axiomatic\\webrunner_novelai.py"
+    poison = "C:\\Workspace\\Axiomatic\\axiomatic\\webrunner_je_only.py"
     event = dict(EVENT_SAMPLES[etype])
     poisoned = []
     for key, value in list(event.items()):
@@ -651,7 +651,7 @@ def test_no_event_type_leaks_a_host_string_from_a_machine_written_field(etype):
             poisoned.append(key)
     chan, _ = deliver(event)
     text = chan.blob
-    for banned in ("D:\\Work", "Example", "webrunner_novelai"):
+    for banned in ("C:\\Workspace", "Axiomatic", "webrunner_je_only"):
         assert banned not in text, (
             f"`{etype}` 從 {poisoned} 把 {banned!r} 原樣送進頻道了：{text!r}")
 

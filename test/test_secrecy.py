@@ -1277,7 +1277,7 @@ def leaks_after_one_hop():
 
 
 def leaks_a_path():
-    raise GuiError("請看 D:\\\\Codes\\\\out.log。")
+    raise GuiError("請看 C:\\\\Workspace\\\\out.log。")
 
 
 def leaks_a_service_name():
@@ -1860,11 +1860,11 @@ def test_every_owner_gate_exit_actually_exists_in_the_bot():
 
 _MUST_REDACT = [
     # (輸入, 不得殘留在輸出裡的字串)
-    ("C:/Users/Example/AppData/Local/Temp/x", "AppData"),
-    ("C:\\Users\\Example\\AppData\\Local\\Temp\\x", "AppData"),
-    ("D:/Work/Example/axiomatic/webrunner_novelai.py", "Example"),
-    ("loading profile from D:/Work/Example/.chrome_profile", "Work"),
-    ("D:\\Work\\Example\\output\\alice (genshin impact)\\alice_0001.png",
+    ("C:/Users/example/AppData/Local/Temp/x", "AppData"),
+    ("C:\\Users\\example\\AppData\\Local\\Temp\\x", "AppData"),
+    ("C:/Workspace/Axiomatic/axiomatic/webrunner_je_only.py", "Axiomatic"),
+    ("loading profile from C:/Workspace/Axiomatic/.chrome_profile", "Workspace"),
+    ("C:\\Workspace\\Axiomatic\\output\\alice (genshin impact)\\alice_0001.png",
      "genshin impact"),
     # 專案裡**每一個**角色資料夾名都含空白，所以這是常態不是邊界
     ("saved output\\columbina (genshin impact)\\columbina (genshin impact)"

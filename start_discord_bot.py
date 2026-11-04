@@ -32,6 +32,7 @@ Usage:
 """
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import sys
@@ -117,7 +118,14 @@ def _other_launcher_pids() -> list[int]:
     return other_launcher_pids(Path(__file__).name)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="啟動 bot 監督者。")
+    parser.add_argument("--platform", default=PLATFORM)
+    parser.add_argument("--presence-only", action="store_true",
+                        help="只啟用狀態偵測與更新")
+    args = parser.parse_args(argv or [])
+    if args.presence_only and (args.platform != "discord" or PLATFORM != "discord"):
+        parser.error("--presence-only 只支援 discord 平台")
     if not BOT_SCRIPT.exists():
         print(f"missing {BOT_SCRIPT}", file=sys.stderr)
         return 1
@@ -169,6 +177,8 @@ def main() -> int:
             # 另一個平台的狀態檔，而且沒有任何地方會講。
             cmd = python_command() + ["-u", str(BOT_SCRIPT),
                                       "--platform", PLATFORM]
+            if args.presence_only:
+                cmd.append("--presence-only")
             say(log, f"supervisor[{PLATFORM}] launching: {' '.join(cmd)}")
             delay = RESTART_DELAY_MIN
             attempt = 0
@@ -237,4 +247,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

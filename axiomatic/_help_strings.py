@@ -35,6 +35,7 @@ Whether to add a generator has been **evaluated and deliberately deferred**.
 
 CHANNEL_HELP_SECTIONS: list[str] = [
     (
+        'Delete, clear and reset operations require confirmation and can be cancelled. Confirmation expires after 60 seconds and permissions are checked again. `/queue` and `/eta` use status cards. Aborting also stops child processes, queued turns and API calls.\n'
         "# Channel-only commands\n"
         "Everything here is a native slash command. Type `/` and the client will complete it for you.\n"
         "These only work in the configured channel.\n"
@@ -127,6 +128,7 @@ CHANNEL_HELP_SECTIONS: list[str] = [
         "## `/locate` — On-screen targeting\n"
         "用文字 / 圖片 / 元素名稱在畫面上定位（限擁有者）\n"
         "- `/locate gone|pixel`\n"
+        "  Image disappearance: attach `template`; optional `target` is the threshold (default 0.9).\n"
         "- `/locate image click|find|wait`\n"
         "- `/locate text click|find|wait`\n"
         "- `/locate ui click|find|gone|read|tree|wait`\n"
@@ -163,6 +165,7 @@ CHANNEL_HELP_SECTIONS: list[str] = [
 
 CHANNEL_HELP_SECTIONS_ZH_TW: list[str] = [
     (
+        '刪除、清空與重設操作會先要求確認，可取消；60 秒後失效，確認時重新檢查權限。`/queue` 與 `/eta` 使用中文欄位的狀態卡片。背景程式及其子行程會一起中止，等待中的提問與 API 回合也能立即取消。\n'
         "# 限頻道指令\n"
         "全部都是原生斜線指令——打 `/` 就會自動補全。\n"
         "只有在設定的頻道裡才能使用。\n"
@@ -255,6 +258,7 @@ CHANNEL_HELP_SECTIONS_ZH_TW: list[str] = [
         "## `/locate` — 畫面定位\n"
         "用文字 / 圖片 / 元素名稱在畫面上定位（限擁有者）\n"
         "- `/locate gone|pixel`\n"
+        "  等圖片消失：以 `template` 附樣板；`target` 可填門檻（預設 0.9）。\n"
         "- `/locate image click|find|wait`\n"
         "- `/locate text click|find|wait`\n"
         "- `/locate ui click|find|gone|read|tree|wait`\n"
@@ -291,6 +295,7 @@ CHANNEL_HELP_SECTIONS_ZH_TW: list[str] = [
 
 CHANNEL_HELP_SECTIONS_ZH_CN: list[str] = [
     (
+        '删除、清空和重置操作需要确认，可以取消；60 秒后失效，确认时重新检查权限。`/queue` 和 `/eta` 使用状态卡片。中止同时结束子进程、等待中的提问和 API 回合。\n'
         "# 限频道命令\n"
         "全部都是原生斜杠命令——输入 `/` 就会自动补全。\n"
         "只有在设置的频道里才能使用。\n"
@@ -383,6 +388,7 @@ CHANNEL_HELP_SECTIONS_ZH_CN: list[str] = [
         "## `/locate` — 画面定位\n"
         "用文字 / 图片 / 元素名称在屏幕上定位（限拥有者）\n"
         "- `/locate gone|pixel`\n"
+        "  等图片消失：用 `template` 附模板；`target` 可填阈值（默认 0.9）。\n"
         "- `/locate image click|find|wait`\n"
         "- `/locate text click|find|wait`\n"
         "- `/locate ui click|find|gone|read|tree|wait`\n"

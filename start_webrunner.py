@@ -1,6 +1,6 @@
 """Supervisor launcher for the axiomatic generation schedule.
 
-Runs ``axiomatic/webrunner_novelai.py`` (selenium variant, default) or
+Runs ``axiomatic/webrunner_je_only.py`` (selenium variant, default) or
 ``axiomatic/webrunner_je_only.py`` (je variant) in a supervised loop:
 if the webrunner exits non-zero (Chrome crash, chromedriver transport
 stall, unhandled exception), the launcher waits an exponential backoff
@@ -87,6 +87,7 @@ from axiomatic._bot_config import load_bot_config
 from axiomatic._run_progress import atomic_write_text
 from axiomatic._supervisor import (
     RC_ZERO_PROGRESS,
+    webrunner_exit_made_no_progress,
     acquire_single_instance_lock,
     other_launcher_pids,
     restart_backoff,
@@ -99,7 +100,6 @@ from axiomatic._supervisor import (
 REPO_ROOT = Path(__file__).resolve().parent
 AXIOMATIC_DIR = REPO_ROOT / "axiomatic"
 SCRIPTS = {
-    "selenium": AXIOMATIC_DIR / "webrunner_novelai.py",
     "je": AXIOMATIC_DIR / "webrunner_je_only.py",
 }
 
@@ -262,7 +262,7 @@ def main() -> int:
     parser.add_argument(
         "variant",
         nargs="?",
-        default="selenium",
+        default="je",
         choices=sorted(SCRIPTS.keys()),
         help="Which webrunner variant to launch (default: selenium).",
     )
@@ -500,7 +500,7 @@ def _supervise(cmd: list[str], variant: str, log, *, backoff_min: float,
             rapid_fails = 0
         # 零產出計數：連續幾輪「嘗試過生成卻一張都沒存」。重生一次是對的（壞掉的
         # 是那個 session），連續幾輪都這樣就代表重生解決不了。
-        if rc == RC_ZERO_PROGRESS:
+        if webrunner_exit_made_no_progress(rc):
             zero_progress += 1
             if zero_progress >= zero_progress_giveup:
                 say(

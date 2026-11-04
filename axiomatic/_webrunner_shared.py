@@ -1,6 +1,6 @@
 """Shared pure-function layer (driver-agnostic) for the two webrunner variants.
 
-`webrunner_novelai.py` (the Selenium variant) and `webrunner_je_only.py`
+`webrunner_je_only.py` (the Selenium variant) and `webrunner_je_only.py`
 (the je_web_runner variant) were originally function-for-function isomorphic,
 differing only in "how the DOM/driver gets called". This module consolidates
 the pure functions / pure I/O of both variants that "**never touch the
@@ -32,6 +32,9 @@ import collections
 import hashlib
 import json
 import math
+import logging
+import _webrunner_location
+from typing import NamedTuple
 import os
 import random
 import re
@@ -55,6 +58,7 @@ from _supervisor import (  # noqa: E402
     RC_GENERATION_BLOCKED,
     RC_SETUP_INCOMPLETE,
     RC_ZERO_PROGRESS,
+    RC_SERVED_ONESHOT,
     trim_log,
 )
 # The single source of `pair_todos` is _queue_consume (the natural home for the
@@ -1142,7 +1146,7 @@ def claim_liveness_signal() -> int | None:
     only the millisecond-scale critical section around the spawn (measured: the
     batch ran for days on end, and `chrome_slot.lock` never existed).
 
-    **A bare run (`py -3 axiomatic/webrunner_novelai.py`) has no such parent
+    **A bare run (`py -3 axiomatic/webrunner_je_only.py`) has no such parent
     process, so neither signal exists.** The consequence is not only "a
     concurrent `verify_browser` opens its own browser and is then killed at the
     next character boundary by `_kill_orphan_chrome`'s machine-wide sweep" (a
@@ -7876,7 +7880,7 @@ def run_batch(port, email, password, *, setup_fn, minimize_fn,
             print("run mode declared on argv: single-image server; "
                   "serving the one-shot queue")
             _serve_single_image_queue(port)
-            return 0  # wrap up cleanly, so the supervisor does not respawn
+            return RC_SERVED_ONESHOT  # 單圖收尾；誤套批次監督時必須重生批次
         if SINGLE_IMAGE_REQUEST_FILE.exists():
             # On the batch path a request file that is seen is **not deleted**: it is the
             # input for in-band serving, and `check_single_image_request` at the top of the
@@ -8534,3 +8538,377 @@ def run_batch(port, email, password, *, setup_fn, minimize_fn,
         # mask the real cause of failure.
         _awake.release()
     return 0
+
+LIBRARY_LOGGER_NAME = "WEBRunner"
+VERIFY_MODE_ENV = "NAI_VERIFY_MODE"
+VERIFY_PROFILE_DEST_ENV = "NAI_VERIFY_PROFILE_DEST"
+VERIFY_OUTPUT_DIR_ENV = "NAI_VERIFY_OUTPUT_DIR"
+VERIFY_GENERATE_ENV = "NAI_VERIFY_GENERATE"
+
+def verify_mode_requested() -> bool:
+    """這個行程是不是被 `verify_browser.py --full` 叫起來跑隔離驗證的。
+
+    兩個變體的 `__main__` 都先問它：是 → `_run_setup_verification()`，**而且不經過**
+    `run_with_liveness_signal`（隔離驗證不得認領 `webrunner.pid`，見那支的說明）。
+    """
+    return bool(os.environ.get(VERIFY_MODE_ENV))
+
+
+class VerifyPlan(NamedTuple):
+    """一次隔離驗證要用的三個值（全部從環境變數讀，沒設就用隔離的預設值）。"""
+
+    generate: bool        # 要不要真的產一張圖（判準是剛好等於 "1"）
+    profile: Path         # 隔離的 profile 快照目的地，**絕不是** `.chrome_profile_snap`
+    output: Path          # 隔離輸出目錄（只有 generate 時才會被建立、被刪掉）
+
+
+def verify_plan() -> VerifyPlan:
+    """從環境變數組出這一次隔離驗證的目的地；沒設的用隔離的預設值。
+
+    預設 profile 是 `.chrome_profile_verify/`，**不是** `.chrome_profile_snap/`——後者是
+    正式批次正在用的快照，指過去會跟正在跑的批次搶同一個目錄。
+    """
+    dest = os.environ.get(VERIFY_PROFILE_DEST_ENV)
+    out = os.environ.get(VERIFY_OUTPUT_DIR_ENV)
+    return VerifyPlan(
+        generate=os.environ.get(VERIFY_GENERATE_ENV) == "1",
+        profile=Path(dest) if dest else PROJECT_ROOT / ".chrome_profile_verify",
+        output=Path(out) if out else OUTPUT_ROOT / "_verify",
+    )
+
+
+def verify_capture_tree(service_pid: int | None) -> dict[int, float | None]:
+    """chromedriver(service_pid) ＋ 所有子孫 → `{pid: create_time}`。
+
+    在 `quit()` **之前**抓，被 reparent 的子行程事後才回收得到（只給隔離驗證用——
+    跟 `verify_browser.py` 一樣是外科式清理，不是全機掃描）。
+
+    **帶著建立時間，不是只帶 pid**（2026-09-09 實測，psutil 7.2.2）：PID 會被作業
+    系統回收再發給別人，而 capture 與 reap 之間隔著一整個 `quit()`——那一步正好讓
+    幾十個 chrome 子行程結束、把 PID 釋放回池子。事後拿裸 pid 去
+    `psutil.Process(pid).kill()`，殺的是**現在**那個 pid 的擁有者；這台機器上那可能是
+    一個已經跑了幾十小時的正式批次。
+
+    `(pid, create_time)` 就是行程的身分（psutil 的 `Process.__eq__` 用的正是它）。值是
+    `None` ＝**身分無法確認**，`verify_reap_tree` 會跳過而不是照殺：留下一個帶著隔離
+    profile 的 orphan 是無害的（`verify_rmtree` 本來就容忍殘留），殺錯行程不是。與
+    `verify_browser._capture_own_tree` 逐條對齊，`test_verify_browser.py` 兩邊都釘住了。
+    """
+    tree: dict[int, float | None] = {}
+    if not service_pid:
+        return tree
+    tree[service_pid] = None
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return tree
+    try:
+        parent = psutil.Process(service_pid)
+        try:
+            tree[service_pid] = parent.create_time()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        for child in parent.children(recursive=True):
+            try:
+                tree[child.pid] = child.create_time()
+            except Exception:  # pylint: disable=broad-except
+                tree.setdefault(child.pid, None)
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return tree
+
+
+def verify_reap_tree(tree: dict[int, float | None]) -> int:
+    """只殺**自己這次**的 driver 行程樹，絕不做 `/IM` 那種全機掃描。回傳殺掉的數量。
+
+    殺之前**先對身分**：`create_time()` 與 capture 當下記下的不一樣，代表這個 PID
+    已經被回收給別的行程，跳過（理由見 `verify_capture_tree`）。對不起來或讀不到一律
+    跳過——「不確定就不殺」。
+
+    沒有 psutil 時退回 `taskkill /F /T /PID`：仍然只動指定的 PID、不是 `/IM` 全殺，但
+    那條路**沒辦法對身分**（`taskkill` 只認 pid）。可以接受是因為 psutil 是必要相依
+    （`CLAUDE.md`），實務上走不到；也**不會**為了「至少殺一點」去放寬 psutil 那條路的
+    身分檢查。盡力而為。
+    """
+    if not tree:
+        return 0
+    killed = 0
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        psutil = None  # type: ignore
+    if psutil is not None:
+        for pid, born in tree.items():
+            try:
+                proc = psutil.Process(pid)
+                # `born is None`（身分沒抓到）也走這一條：任何真實的建立時間都不等於
+                # `None`，所以它自然落到「跳過」。刻意**不**另外寫一個 `if born is
+                # None: continue` ——那在這裡是死碼。`verify_browser._reap_pids` 有那
+                # 條分支，是因為它要印兩句不同的診斷（沒抓到 vs 被回收）；這裡的
+                # 驗證模式不印，多一條分支只會讓兩份抄本看起來不一樣。
+                if proc.create_time() != born:
+                    continue
+                proc.kill()
+                killed += 1
+            except Exception:  # pylint: disable=broad-except
+                continue
+        return killed
+    if os.name == "nt":
+        for pid in tree:
+            try:
+                result = subprocess.run(  # nosec B603 B607
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=10, check=False)
+                if result.returncode == 0:
+                    killed += 1
+            except Exception:  # pylint: disable=broad-except
+                continue
+    return killed
+
+
+def verify_rmtree(path: Path) -> None:
+    """盡力而為地遞迴刪掉一個隔離驗證的目錄（profile／輸出）。
+
+    Chrome 剛被殺掉時可能還握著 handle，所以重試幾次，最後用 `ignore_errors` 兜底——
+    不能無限重試，`verify_browser.py` 有總期限，卡在清理等於把一次成功的驗證拖成逾時。
+    """
+    import shutil
+    for _ in range(6):
+        if not path.exists():
+            return
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError:
+            time.sleep(0.5)
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def verify_generate_one(port, output_dir: Path) -> tuple[bool, str]:
+    """（加分項）用一個寫死的拋棄式 prompt 真的產**一張**圖到 `output_dir`。回 `(成功, 說明)`。
+
+    重用正式的產圖／下載 helper，但**不**碰 `generate_loop`／批次／pop／續跑檢查點／
+    佇列檔／正式的輸出樹。
+    """
+    batch_cfg = load_batch_config()
+    prompt = "1girl, masterpiece, best quality"
+    if not with_retry(
+            "verify_fill_main_prompt",
+            lambda: fill_main_prompt(port, prompt),
+            max_attempts=3, sleep_range=(2, 4)):
+        return False, "無法填入隔離 prompt"
+    human_pause(0.8, 1.5)
+    previous_src = get_main_image_src(port)
+    try:
+        new_src = generate_one_image(
+            port, previous_src,
+            max_retries=batch_cfg["generate_max_retries"],
+            retry_delay=batch_cfg["generate_retry_delay_sec"])
+    except GenerationBlockedError:
+        # 額度用完／購買對話框。這條路**不等**（驗證要有界的執行時間，
+        # `verify_browser.py` 有 240s 的總期限），但要回一個看得懂的原因，
+        # 而不是讓例外炸成 `VERIFY-SETUP: FAIL <repr>`。順手把對話框關掉，
+        # 免得它留在畫面上干擾同一個 session 後面的檢查。
+        dismiss_blocking_dialog(port)
+        return False, "額度不足或站方要求處理帳號，無法產圖"
+    if not new_src:
+        return False, "Generate 後影像未更新（重試耗盡）"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = output_dir / f"verify_{time.strftime('%Y%m%d_%H%M%S')}.png"
+    if not download_image_with_retry(
+            port, new_src, target,
+            max_retries=batch_cfg["download_max_retries"]):
+        return False, "影像下載失敗"
+    if not target.exists() or target.stat().st_size <= 0:
+        return False, "影像檔未生成或為空"
+    return True, f"{target.name} ({target.stat().st_size} bytes)"
+
+
+def run_setup_verification(port, plan: VerifyPlan, *,
+                           credentials: Callable[[], tuple[str, str]],
+                           boot: Callable[[], None],
+                           service_pid: Callable[[], int | None],
+                           setup: Callable[[str, str], bool],
+                           quit_driver: Callable[[], None]) -> int:
+    """隔離、非正式的 setup 可達性驗證本體。回 0（成功）或非 0，並印**恰好一行**結果。
+
+    結果行是機器可讀的 `VERIFY-SETUP: OK` / `VERIFY-SETUP: FAIL <原因>`，外加進度行
+    （呼叫端有「輸出沉默就砍」的看門狗，正常在跑的驗證不能安靜太久）。
+
+    呼叫端（兩個變體的 `_run_setup_verification`）**在呼叫之前**已經把快照目的地指到
+    `plan.profile`、把全機 Chrome 掃描關掉——這兩件事要在開 driver 之前就成立，所以不能
+    留到這裡做。這裡收到的 callback：
+
+    * `credentials()` → `(email, password)`；
+    * `boot()` 開一個 driver（變體自己的 `build_stealth_driver` / `start_driver`）；
+    * `service_pid()` 回 chromedriver 的 pid，給 `verify_capture_tree`（讀不到可以丟例外）；
+    * `setup(email, password)` 跑**正式的** `_setup_session`；
+    * `quit_driver()` 收掉 driver（只在 `boot()` 成功之後才呼叫）。
+
+    隔離保證（絕不污染正式狀態）：profile 進隔離目錄、**絕不**把它同步回
+    `.chrome_profile/`（這裡根本沒有那個 callback 可叫）；不寫 `webrunner.pid`；不讀不寫任何
+    佇列檔；圖只進隔離目錄、跑完刪掉；外科式收尾只回收自己的 driver 行程樹。
+
+    七個出口、七個不同的 rc（`verify_browser.py` 把 rc 原樣轉給人看，壓成一個的話
+    「登入態過期」與「driver 起不來」在畫面上長得一樣）：0 成功、1 例外（含 driver 起不來）、
+    2 讀不到憑證、4 登入失敗、5 找不到主 prompt 區、6 找不到 Generate 鈕、7 隔離產圖失敗。
+    """
+    def _vp(msg: str) -> None:
+        print(f"[verify-setup] {msg}", flush=True)
+
+    _vp(f"隔離模式啟動（generate={plan.generate}）")
+    _vp(f"隔離 profile 目的地：{plan.profile}")
+    if plan.generate:
+        _vp(f"隔離輸出目錄：{plan.output}")
+
+    # 讀憑證刻意在 `try` 之前：它是唯一一個還沒建立任何東西的出口（不需要清理），而
+    # 搬進 `try` 會讓它落進最外層的 `except` 回 rc=1，跟「driver 起不來」變成同一件事。
+    try:
+        email, password = credentials()
+    except Exception as err:  # pylint: disable=broad-except
+        # `!r` 刻意保留：`try` 裡只有讀憑證，碰不到 driver。收得到的只有兩種，兩種都不含
+        # 憑證值本身：`OSError`（檔案不在／權限，`str()` 會印出憑證檔的完整路徑）與
+        # `CredentialsError`（檔案在但內容不對，該類別的合約就是訊息只帶檔名、位元組位置
+        # 或缺漏的欄位名）。⚠️ 這個列舉 2026-09-21 之前漏了 `UnicodeDecodeError`——它是
+        # `ValueError` 不是 `OSError`，而它的 `repr()` 會把解不開的那個位元組值印出來。現在
+        # `read_credentials` 已經把它轉成 `CredentialsError`，所以列舉是完整的；哪天有人
+        # 把那層轉換拿掉，這一行就會跟著變成假的。
+        print(f"VERIFY-SETUP: FAIL 讀取憑證失敗：{err!r}", flush=True)
+        return 2
+
+    booted = False
+    own_tree: dict[int, float | None] = {}
+    try:
+        _vp("建立隔離 driver（快照登入 profile、Selenium Manager 解析 driver）…")
+        boot()
+        booted = True
+        try:
+            own_tree = verify_capture_tree(service_pid())
+        except Exception:  # pylint: disable=broad-except
+            own_tree = {}
+
+        _vp("執行 production setup（登入 → 導航 → 模型 → 角色 → 解析度 → 取樣器）…")
+        if not setup(email, password):
+            print("VERIFY-SETUP: FAIL 登入失敗（profile 未登入或憑證無效）", flush=True)
+            return 4
+
+        _vp("setup 完成；確認關鍵產圖控制項可達…")
+        areas = find_prompt_areas(port)
+        _vp(f"  prompt 輸入區數量：{len(areas)}")
+        if not areas:
+            print("VERIFY-SETUP: FAIL 找不到主 prompt 輸入區（產圖 DOM 不可達）",
+                  flush=True)
+            return 5
+        gen_btn = find_generate_button(port)
+        _vp(f"  Generate 按鈕：{'找到' if gen_btn else '找不到'}")
+        if gen_btn is None:
+            print("VERIFY-SETUP: FAIL 找不到 Generate 按鈕（產圖介面不可達）",
+                  flush=True)
+            return 6
+
+        if plan.generate:
+            _vp("STRETCH：以隔離 prompt 產 1 張圖到隔離目錄…")
+            ok, detail = verify_generate_one(port, plan.output)
+            if not ok:
+                print(f"VERIFY-SETUP: FAIL 隔離產圖失敗：{detail}", flush=True)
+                return 7
+            _vp(f"  隔離產圖成功：{detail}")
+
+        print("VERIFY-SETUP: OK", flush=True)
+        return 0
+    except Exception as err:  # pylint: disable=broad-except
+        # `full_error_detail`：這個 try 的第一個陳述就是 `boot()`，所以 spawn 失敗會落在
+        # 這裡——而 selenium 的 `WebDriverException` 把訊息存在 `self.msg`、`args` 是空的，
+        # `!r` 印出來就是一對空括號。這是隔離驗證的鑑識出口：跑一次、不在任何迴圈裡、
+        # 輸出由人／agent 直接讀，所以要完整訊息連同 `Stacktrace:`，不要截斷。
+        print(f"VERIFY-SETUP: FAIL {full_error_detail(err)}", flush=True)
+        return 1
+    finally:
+        # 外科式收尾：quit，然後只回收**自己這次**的 driver 行程樹（絕不全機掃描），再刪
+        # 掉隔離的 profile／輸出。**絕不**呼叫 sync-back——正式登入 profile 必須保持乾淨。
+        if booted:
+            try:
+                quit_driver()
+            except Exception:  # pylint: disable=broad-except  # nosec B110
+                pass
+        reaped = verify_reap_tree(own_tree)
+        if reaped:
+            _vp(f"清理：回收本次 driver 行程樹殘留 {reaped} 個")
+        verify_rmtree(plan.profile)
+        if plan.generate:
+            verify_rmtree(plan.output)
+
+
+def put_webrunner_tree_first() -> "_webrunner_location.WebRunnerPathChoice":
+    """兩個變體在模組開頭、`import je_web_runner` **之前**呼叫一次：決定函式庫從哪裡載入，
+    並把那個工作樹插到 `sys.path` 最前面。回傳結論，給 `main()` 的啟動紀錄用。
+
+    規則只有一份，在 `_webrunner_location.resolve_webrunner_path`（環境變數 → 設定 →
+    同層資料夾 → 已安裝的套件）；指定了卻不存在的那幾層各印一行警告到 stderr。同一步也把
+    函式庫的記錄檔變數 `WEBRUNNER_LOG_PATH` 沒設才設成 `webrunner.log`
+    （`_webrunner_location.point_library_log_at_ours`）。這裡不 import 函式庫——舊版一
+    import 就在當下的工作目錄開記錄檔、新版一 import 就讀定那個變數，載入留給變體自己。
+    """
+    return _webrunner_location.put_webrunner_path_first(
+        _webrunner_location.resolve_webrunner_path())
+
+
+def _loaded_library_version(module) -> str:
+    """已載入的 `je_web_runner` 是哪一版：先找跟模組**同一個資料夾**的套件中繼資料。
+
+    不用 `importlib.metadata.version("je_web_runner")`：它掃的是當下的 `sys.path`，同層
+    工作樹與已安裝的套件各帶一份中繼資料時，答到的不一定是實際載入的那一份
+    （`test_dependency_floors` 記過這個坑）。找不到中繼資料才退回模組的 `__version__`。
+    中繼資料可能落後於工作樹的原始碼（工作樹沒重新安裝過），所以結果標明出處。
+    """
+    import importlib.metadata  # noqa: PLC0415
+
+    origin = getattr(module, "__file__", None)
+    if origin:
+        root = Path(origin).resolve().parent.parent
+        try:
+            for dist in importlib.metadata.distributions(path=[str(root)]):
+                name = (dist.metadata["Name"] or "").replace("-", "_").lower()
+                if name == "je_web_runner":
+                    return f"{dist.version}（中繼資料）"
+        except (OSError, ValueError) as error:
+            # `!r` 刻意保留：`try` 裡只有讀中繼資料檔，碰不到 driver；`str(OSError)` 會印出
+            # 中繼資料檔的完整路徑。`ValueError` 是解不開的中繼資料（含 `UnicodeDecodeError`）。
+            print(f"  [library] 讀不到套件中繼資料：{error!r}", file=sys.stderr)
+    version = getattr(module, "__version__", None)
+    return f"{version}（__version__）" if version else "未知"
+
+
+def _library_log_destination(logger_name: str = LIBRARY_LOGGER_NAME) -> str:
+    """函式庫的 logger 掛的檔案 handler 指到哪（多個以頓號分隔）；一個都沒有就照實說。
+
+    只讀 `baseFilename`，不碰串流：新版的 handler 第一筆紀錄才開檔，這裡問不會讓它開。
+    """
+    files = [handler.baseFilename for handler in logging.getLogger(logger_name).handlers
+             if isinstance(handler, logging.FileHandler)]
+    return "、".join(files) if files else "沒有檔案 handler"
+
+
+def log_webrunner_library(choice: "_webrunner_location.WebRunnerPathChoice",
+                          module=None) -> str:
+    """啟動紀錄：函式庫從哪一層來、實際載入的是哪個檔案、哪一版。回傳那一行。
+
+    兩個變體在 `main()` 開頭各呼叫一次（緊接在程式碼指紋之後）。值得一行的理由：je 變體
+    依賴的兩個介面比 PyPI 上的發行版新，**載入的是哪一份**決定了它開不開得了機；而設定、
+    環境變數與同層資料夾三個來源都能悄悄換掉答案。`module` 預設取 `sys.modules` 裡已經
+    載入的那一份；還沒載入就照實說。永不 raise。
+
+    載入了的話，行尾再記函式庫的記錄檔落在哪（`_library_log_destination`）：新版看
+    `WEBRUNNER_LOG_PATH`（`_webrunner_location.point_library_log_at_ours` 在匯入前設好），
+    舊版寫工作目錄的 `WEBRunner.log`，兩代的答案都從 handler 本身讀，不是從變數猜。
+    """
+    module = sys.modules.get("je_web_runner") if module is None else module
+    if module is None:
+        line = f"je_web_runner 來源：{choice.describe()}；尚未載入"
+    else:
+        origin = getattr(module, "__file__", None) or "?"
+        line = (f"je_web_runner 來源：{choice.describe()}；載入 {origin}，"
+                f"版本 {_loaded_library_version(module)}；"
+                f"記錄檔 {_library_log_destination()}")
+    print(f"  [library] {line}")
+    return line

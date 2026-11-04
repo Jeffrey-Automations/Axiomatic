@@ -15,7 +15,7 @@
 
 ## 直接子指令
 
-### `/locate gone <kind> <target> [seconds]`
+### `/locate gone <kind> [target] [seconds] [template]`
 
 等某個東西從畫面上消失
 
@@ -24,8 +24,9 @@
 | 參數 | 型別 | 必填 | 說明 |
 |---|---|:--:|---|
 | `kind` | 選項：`文字` / `視窗` / `圖片` | ✅ | 要等哪一種目標消失 |
-| `target` | 文字 | ✅ | 目標內容 |
+| `target` | 文字 | — | 文字／視窗目標；圖片可填門檻（預設 0.9） |
 | `seconds` | 整數（1–600） | — | 最長等幾秒（預設 `30`） |
+| `template` | 附件 | — | 圖片目標的樣板圖片 |
 
 ### `/locate pixel <x> <y> <color> [invert] [seconds] [tolerance]`
 

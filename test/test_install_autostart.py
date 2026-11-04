@@ -274,27 +274,31 @@ def test_the_xml_escapes_a_hostile_user_name():
     assert _text(root, "t:Principals/t:Principal/t:UserId") == "DOM\\a&b<c>"
 
 
-def test_schtasks_output_is_not_decoded_as_utf8():
-    """`schtasks` 是主控台程式，輸出走 OEM 代碼頁。用 utf-8 解不會丟例外——它會
-    **安靜地**把中文欄位名變成替換字元，於是 `--status` 一個欄位都對不上、印出
-    一片空白，看起來就像「工作沒註冊」。2026-09-03 實際踩到。
+@pytest.mark.parametrize("codepage,encoding", [(950, "cp950"), (65001, "cp65001"), (0, "oem")])
+def test_schtasks_uses_the_console_output_codepage(monkeypatch, codepage, encoding):
+    from types import SimpleNamespace
+    import subprocess
 
-    用 AST 檢查而不是字串比對：上面這段註解本身就寫了 `utf-8`。
-    """
-    tree = ast.parse(Path(ia.__file__).read_text(encoding="utf-8"))
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "_schtasks")
-    call = next(n for n in ast.walk(fn)
-                if isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Attribute)
-                and n.func.attr == "run")
-    enc = next((kw.value for kw in call.keywords if kw.arg == "encoding"), None)
-    assert enc is not None, "_schtasks 沒有指名 encoding"
-    literals = {n.value for n in ast.walk(enc)
-                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    assert "oem" in literals, (
-        f"_schtasks 的 encoding 沒有 'oem'：{literals}。Windows 主控台工具的輸出"
-        "走 OEM 代碼頁，指名 utf-8 會安靜地解成亂碼。")
+    monkeypatch.setattr(ia.os, "name", "nt")
+    monkeypatch.setattr(ia.ctypes, "windll", SimpleNamespace(kernel32=SimpleNamespace(
+        GetConsoleOutputCP=lambda: codepage)), raising=False)
+    payload = "上次執行時間: 2026/10/18 下午 02:30\n上次結果: 0\n"
+    wire = payload.encode("cp950" if encoding == "oem" else encoding)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, wire.decode("cp950" if kwargs["encoding"] == "oem" else kwargs["encoding"]), "")
+
+    monkeypatch.setattr(ia.subprocess, "run", run)
+    assert ia._schtasks("/Query").stdout == payload
+    assert calls[0][0] == ["schtasks", "/Query"]
+    assert calls[0][1]["encoding"] == encoding
+    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["check"] is False
+    assert calls[0][1]["text"] is True
+    assert calls[0][1]["errors"] == "replace"
+
 
 
 @pytest.mark.parametrize("argv,expect", [
@@ -308,7 +312,7 @@ def test_the_scope_flags_select_the_right_tasks(argv, expect, monkeypatch):
     monkeypatch.setattr(ia, "install", lambda which: seen.append(which) or 0)
     monkeypatch.setattr(sys, "argv", ["install_autostart.py", *argv])
     monkeypatch.setattr(os, "name", "nt")
-    assert ia.main() == 0
+    assert ia.main(argv) == 0
     assert seen == [expect]
 
 
@@ -586,33 +590,10 @@ def test_current_user_shapes(monkeypatch, domain, user, expected):
     assert ia._current_user() == expected
 
 
-def test_the_schtasks_wrapper_uses_the_oem_code_page():
-    """**指名編碼還得指對。** `schtasks` 是主控台程式，輸出走 OEM 代碼頁
-    （這台是 cp950），不是 UTF-8。餵 `utf-8, errors="replace"` 不會拋——它會安靜地
-    把每個中文欄位名變成替換字元，於是 `status` 的比對一條都對不上、印出一片空白，
-    看起來像「工作沒註冊」。2026-09-03 實際踩到過。
-    """
-    import inspect
-    import textwrap
+def test_console_output_encoding_outside_windows(monkeypatch):
+    monkeypatch.setattr(ia.os, "name", "posix")
+    assert ia._console_output_encoding() == "utf-8"
 
-    # **用 AST，不要用子字串。** 這支的第一版寫的是
-    # `'"oem"' in inspect.getsource(...)`，而 `_schtasks` 的 docstring 本身就在
-    # 解釋「要 `encoding="oem"` 不是 `"utf-8"`」——所以把程式碼改壞之後那個斷言
-    # **照樣成立**。變異測試當場抓到它活了下來。
-    tree = ast.parse(textwrap.dedent(inspect.getsource(ia._schtasks)))
-    runs = [n for n in ast.walk(tree)
-            if isinstance(n, ast.Call)
-            and ast.unparse(n.func).endswith("subprocess.run")]
-    assert len(runs) == 1, f"預期剛好一個 subprocess.run，實際 {len(runs)}"
-    kwargs = {k.arg: ast.unparse(k.value) for k in runs[0].keywords}
-
-    assert "oem" in kwargs.get("encoding", ""), (
-        f"`schtasks` 的輸出編碼是 {kwargs.get('encoding')!r}——OEM 代碼頁被改掉了。"
-        "餵 utf-8 不會拋，只會安靜地把中文欄位名變成替換字元，於是 `status` "
-        "印出一片空白、看起來像「工作沒註冊」。")
-    assert kwargs.get("errors") == "'replace'", (
-        f"`errors` 是 {kwargs.get('errors')!r}——外部行程的輸出要容忍壞位元組。")
-    assert kwargs.get("text") == "True", "沒有 text=True 的話拿到的是位元組"
 
 
 # ===========================================================================

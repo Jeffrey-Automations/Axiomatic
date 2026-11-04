@@ -313,3 +313,9 @@ default_prompt.md
 
 # `/tp` 的使用者提示詞範本目錄
 templates/
+
+# Read-only transcript statistics index.
+dorossi_claude_usage.sqlite3*
+
+# Local verification logs, scratch checkouts and browser profiles.
+/.test-tmp/

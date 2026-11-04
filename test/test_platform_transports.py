@@ -1881,3 +1881,12 @@ def test_each_caller_states_whether_it_is_a_question_entry():
     assert "question_entry" in kwonly, kwonly
     default = handler.args.kw_defaults[kwonly.index("question_entry")]
     assert default is None, "`question_entry` 不該有預設值（見 docstring）"
+
+
+def test_question_hints_have_an_explicit_text_entry():
+    import discord_bot as bot
+    hints = bot._text_command_hints()
+    assert hints["/dorossi ask"] == "dorossi"
+    assert cp.rewrite_command_hints("用法：`/dorossi ask <提問>`", hints) == "用法：`dorossi <提問>`"
+    assert cp.rewrite_command_hints("`/dorossi ask model:x 問題`", hints) == "`dorossi model:x 問題`"
+    assert cp.rewrite_command_hints("`/dorossi askmore`", hints) == "`/dorossi askmore`"

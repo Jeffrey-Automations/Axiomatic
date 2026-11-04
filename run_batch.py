@@ -70,8 +70,8 @@ def main() -> int:
     parser.add_argument(
         "variant",
         nargs="?",
-        default="selenium",
-        choices=["je", "selenium"],
+        default="je",
+        choices=["je"],
         help="webrunner 變體（預設 selenium）",
     )
     parser.add_argument(

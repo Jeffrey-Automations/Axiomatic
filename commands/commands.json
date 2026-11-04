@@ -1856,14 +1856,20 @@
         {
           "name": "target",
           "type": "文字",
-          "required": true,
-          "description": "目標內容"
+          "required": false,
+          "description": "文字／視窗目標；圖片可填門檻（預設 0.9）"
         },
         {
           "name": "seconds",
           "type": "整數（1–600）",
           "required": false,
           "description": "最長等幾秒（預設 `30`）"
+        },
+        {
+          "name": "template",
+          "type": "附件",
+          "required": false,
+          "description": "圖片目標的樣板圖片"
         }
       ]
     },

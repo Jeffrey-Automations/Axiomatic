@@ -12,7 +12,7 @@
    失同步。`main()` 只負責 I/O（讀寫磁碟、reconcile、generate、log），決策一律
    呼叫這裡。
 
-被 `webrunner_novelai.py` / `webrunner_je_only.py` 匯入；屬於 CLAUDE.md 允許的
+被 `webrunner_je_only.py` / `webrunner_je_only.py` 匯入；屬於 CLAUDE.md 允許的
 被動共用模組（不是 bot↔webrunner 直接 import）。
 
 術語：

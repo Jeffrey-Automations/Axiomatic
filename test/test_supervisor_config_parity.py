@@ -1,6 +1,6 @@
 """兩個 webrunner 監督者共用 `bot_config.json` 的同一段設定——那句話要對得上。
 
-`start_webrunner.py` 與 `discord_bot._watch_for_fallback` 是同一套重啟策略的兩份
+`start_webrunner.py` 與 `discord_bot._watch_webrunner` 是同一套重啟策略的兩份
 實作，而它們「保持同步」的機制只有一個：**兩邊都從 `bot_config.json` →
 `webrunner_supervisor` 讀同一組鍵**。兩個檔案各自寫了一句話宣告這件事：
 
@@ -63,6 +63,7 @@ def _claimed_count(text: str, *, where: str) -> int:
     return value
 
 
+
 def _bot_constant_keys() -> list[str]:
     """bot 那組常數實際讀了哪些 `webrunner_supervisor` 的鍵（依原始碼順序）。
 
@@ -80,6 +81,7 @@ def _bot_constant_keys() -> list[str]:
     return keys
 
 
+
 def _supervisor_key(node: ast.AST) -> str | None:
     """`X["webrunner_supervisor"]["<鍵>"]` → `<鍵>`，其餘回 None。"""
     if not isinstance(node, ast.Subscript):
@@ -93,6 +95,7 @@ def _supervisor_key(node: ast.AST) -> str | None:
             and inner.slice.value == SECTION):
         return None
     return node.slice.value
+
 
 
 def _bot_documented_run() -> list[str]:
@@ -110,6 +113,7 @@ def _bot_documented_run() -> list[str]:
     return run
 
 
+
 def _launcher_keys() -> list[str]:
     """啟動器實際從 `sup[...]` 讀了哪些鍵（依原始碼順序、去重）。"""
     tree = ast.parse(LAUNCHER_SOURCE.read_text(encoding="utf-8"),
@@ -123,6 +127,7 @@ def _launcher_keys() -> list[str]:
                 and node.slice.value not in seen):
             seen.append(node.slice.value)
     return seen
+
 
 
 def _launcher_documented_keys() -> set[str]:
@@ -140,6 +145,7 @@ def _launcher_documented_keys() -> set[str]:
         found |= {word for word in re.findall(r"[A-Za-z0-9_]+", span)
                   if word in defaults}
     return found
+
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +170,7 @@ def test_the_bot_comment_counts_the_constants_it_introduces():
         f"{run}。改數字，或把那一行搬出這一串。")
 
 
+
 def test_the_launcher_docstring_counts_the_parameters_it_reads():
     """`start_webrunner.py` 的「All N parameters come from …」要等於它真的讀幾個。"""
     keys = _launcher_keys()
@@ -173,6 +180,7 @@ def test_the_launcher_docstring_counts_the_parameters_it_reads():
     assert claimed == len(keys), (
         f"`start_webrunner.py` 的 docstring 說 All {claimed} parameters，"
         f"`main()` 實際讀了 {len(keys)} 個：{keys}。")
+
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +203,7 @@ def test_every_key_either_side_reads_really_exists():
             f"目前有的是 {sorted(defaults)}。")
 
 
+
 def test_no_supervisor_key_is_dead_config():
     """預設表裡的每一個鍵都要有人讀。
 
@@ -206,6 +215,7 @@ def test_no_supervisor_key_is_dead_config():
     unread = sorted(defaults - read)
     assert not unread, (
         f"`{SECTION}` 有沒人讀的鍵：{unread}。把它接起來，或從預設表拿掉。")
+
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +238,7 @@ def test_the_launcher_documents_exactly_the_parameters_it_reads():
     assert not extra, (
         f"`start_webrunner.py` 的 docstring 說明了這些參數，但 `main()` 沒有讀："
         f"{extra}")
+
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +273,7 @@ def test_neither_side_supplies_its_own_default():
         "`_bot_config`，否則兩個監督者會在設定缺鍵時各跑各的。")
 
 
+
 # ---------------------------------------------------------------------------
 # 對照組——樹是乾淨的，所以上面每一段「回報問題」的程式碼在真實資料上都不會執行
 # ---------------------------------------------------------------------------
@@ -280,11 +292,13 @@ def test_the_claim_parser_reads_words_and_digits(text, expected):
     assert _claimed_count(text, where="控制組") == expected
 
 
+
 def test_the_claim_parser_refuses_an_ambiguous_source():
     """兩句「All … come from」＝錨點壞了，不可以默默挑第一句。"""
     with pytest.raises(AssertionError, match="預期剛好一句"):
         _claimed_count("All four come from a\nAll five come from b",
                        where="控制組")
+
 
 
 def test_the_subscript_matcher_only_accepts_this_section():

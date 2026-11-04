@@ -49,6 +49,7 @@ def _isolate(monkeypatch, tmp_path):
     v.isolate_bot_state(tmp_path / "state")
 
 
+
 def _emit(verdict, checks, reason=""):
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
@@ -56,11 +57,13 @@ def _emit(verdict, checks, reason=""):
     return code, buffer.getvalue()
 
 
+
 # ---------------------------------------------------------------------------
 # 假串流
 # ---------------------------------------------------------------------------
 def _j(event: dict) -> str:
     return json.dumps(event, ensure_ascii=False)
+
 
 
 def _init(version="2.1.276", *, tools=(), memory=True, key_source="none",
@@ -71,6 +74,7 @@ def _init(version="2.1.276", *, tools=(), memory=True, key_source="none",
     if memory:
         ev["memory_paths"] = {"auto": "C:/x/memory/"}
     return _j(ev)
+
 
 
 def _text(text: str) -> list:
@@ -88,6 +92,7 @@ def _text(text: str) -> list:
     ]
 
 
+
 def _rate(status="allowed", reset=1789792200) -> str:
     info = {"status": status, "rateLimitType": "five_hour"}
     if reset is not None:
@@ -95,15 +100,18 @@ def _rate(status="allowed", reset=1789792200) -> str:
     return _j({"type": "rate_limit_event", "rate_limit_info": info})
 
 
+
 def _tool_use(tool_id: str) -> str:
     return _j({"type": "assistant", "message": {"content": [
         {"type": "tool_use", "id": tool_id, "name": "Glob", "input": {}}]}})
+
 
 
 def _bg(ids) -> str:
     return _j({"type": "system", "subtype": "background_tasks_changed",
                "session_id": "s1",
                "tasks": [{"task_id": i, "task_type": "local_bash"} for i in ids]})
+
 
 
 def _result(answer="PONG", *, sid="s1", cost=0.01, usage=(10, 5000, 1000, 40),
@@ -130,8 +138,10 @@ def _result(answer="PONG", *, sid="s1", cost=0.01, usage=(10, 5000, 1000, 40),
     return _j(ev)
 
 
+
 def _chat_stream(version="2.1.276", answer="PONG", **result_kw) -> list:
     return [_init(version), _rate(), *_text(answer), _result(answer, **result_kw)]
+
 
 
 def _call(lines, *, label="t", prompt="p", session_id=None, baseline=None, rc=0,
@@ -142,6 +152,7 @@ def _call(lines, *, label="t", prompt="p", session_id=None, baseline=None, rc=0,
     call.state.kill_reason = kill_reason
     call.finish(rc, err, 180.0)
     return call
+
 
 
 # 2026-09-19 實測的形狀（本機 2.1.276 與隔離的 2.1.277）改寫成一組三次純聊天＋一次工具
@@ -165,6 +176,7 @@ def _cumulative(rows):
         total = tuple(a + b for a, b in zip(total, model))
         out.append((round(total_cost, 6), usage, total))
     return out
+
 
 
 def _session(version: str, *, cumulative_raw: bool, chain=True, tool_iterations="set",
@@ -191,6 +203,7 @@ def _session(version: str, *, cumulative_raw: bool, chain=True, tool_iterations=
     return calls[:-1], calls[-1]
 
 
+
 # ---------------------------------------------------------------------------
 # 結論行與結束碼
 # ---------------------------------------------------------------------------
@@ -207,9 +220,11 @@ def test_the_three_verdicts_are_mutually_exclusive():
     assert words == ["OK", "FAIL", "SKIP"]
 
 
+
 def test_skip_is_non_zero_and_not_the_argparse_code():
     """沒驗到不能回報成功；2 是 argparse 自己的碼，而那條路一行結論都不印。"""
     assert v.EXIT_SKIP not in (0, 2, v.EXIT_FAIL)
+
 
 
 def test_the_result_line_names_the_check_count_and_stays_one_line():
@@ -223,11 +238,13 @@ def test_the_result_line_names_the_check_count_and_stays_one_line():
     assert ok.strip() == "VERIFY-DOROSSI-CLI: OK (4 checks)"
 
 
+
 def test_summarize_lists_the_failed_check_numbers():
     ok = v.CheckResult(1, "a", True, "fine")
     bad = v.CheckResult(4, "b", False, "broken")
     assert v.summarize([ok, ok]) == ("OK", "")
     assert v.summarize([ok, bad]) == ("FAIL", "failed: 4")
+
 
 
 def test_a_missing_cli_is_a_skip_and_starts_nothing(monkeypatch, capsys):
@@ -242,10 +259,12 @@ def test_a_missing_cli_is_a_skip_and_starts_nothing(monkeypatch, capsys):
     assert last.startswith("VERIFY-DOROSSI-CLI: SKIP (0 checks)"), last
 
 
+
 def test_a_nonexistent_exe_is_a_usage_error(tmp_path):
     with pytest.raises(SystemExit) as got:
         v.main(["--exe", str(tmp_path / "no-such-cli.exe")])
     assert got.value.code == 2
+
 
 
 def test_main_without_arguments_does_not_read_the_test_runner_argv(monkeypatch):
@@ -253,6 +272,7 @@ def test_main_without_arguments_does_not_read_the_test_runner_argv(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["pytest", "--definitely-not-a-flag"])
     monkeypatch.setattr(v.shutil, "which", lambda _name: None)
     assert v.main() == v.EXIT_SKIP
+
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +283,7 @@ def test_a_healthy_pure_chat_stream_passes():
     assert result.ok, result.lines()
 
 
+
 def test_the_tool_list_canary_fires_when_pure_chat_exposes_tools():
     """CLI 哪天又把工具放進純聊天——這是那一天唯一會亮的燈。"""
     lines = [_init(tools=["ListAgents", "SendMessage"]), _rate(), *_text("PONG"),
@@ -270,6 +291,7 @@ def test_the_tool_list_canary_fires_when_pure_chat_exposes_tools():
     result = v.check_pure_chat(_call(lines))
     assert not result.ok
     assert "2 個工具" in result.summary and "ListAgents" in result.summary
+
 
 
 @pytest.mark.parametrize("lines, words", [
@@ -293,10 +315,12 @@ def test_each_pure_chat_condition_fails_on_its_own(lines, words):
     assert words in result.summary, result.lines()
 
 
+
 def test_an_allowed_warning_status_is_still_a_known_status():
     """近似案例：`allowed_warning` 在已知詞彙裡，不能被當成認不得。"""
     lines = [_init(), _rate(status="allowed_warning"), *_text("PONG"), _result()]
     assert v.check_pure_chat(_call(lines)).ok
+
 
 
 def test_a_failed_call_fails_the_pure_chat_check_with_the_bots_verdict():
@@ -308,12 +332,14 @@ def test_a_failed_call_fails_the_pure_chat_check_with_the_bots_verdict():
     assert call.info is None, "判定沒通過就不該走計帳（bot 的順序也是這樣）"
 
 
+
 def test_a_timed_out_call_fails_even_when_it_answered():
     """被自己的牆鐘砍掉時，bot 的判定會收下答案（看門狗出口）——但對驗證工具來說，
     串流沒有自己結束就是一個發現，不能報 OK。"""
     call = _call(_chat_stream(), kill_reason="hard", rc=1)
     assert call.verdict == "ok"
     assert not v.check_pure_chat(call).ok
+
 
 
 # ---------------------------------------------------------------------------
@@ -326,11 +352,13 @@ def test_per_call_totals_pass_as_call():
     assert [c.info["acct"] for c in chat + [tool]] == ["call"] * 4
 
 
+
 def test_cumulative_totals_pass_as_delta_when_the_baseline_is_carried():
     chat, tool = _session("2.1.277", cumulative_raw=True)
     result = v.check_accounting(chat, tool)
     assert result.ok, result.lines()
     assert [c.info["acct"] for c in chat + [tool]] == ["call", "delta", "delta", "delta"]
+
 
 
 def test_cumulative_totals_read_as_per_call_are_caught():
@@ -341,6 +369,7 @@ def test_cumulative_totals_read_as_per_call_are_caught():
     assert "累計" in result.summary, result.summary
 
 
+
 def test_per_call_totals_read_as_cumulative_are_caught():
     """反方向：版本說累計、數字其實是每次叫用 → 差值是負的 → reset，標籤對不上。"""
     chat, tool = _session("2.1.277", cumulative_raw=False)
@@ -349,13 +378,18 @@ def test_per_call_totals_read_as_cumulative_are_caught():
     assert "reset" in result.summary, result.summary
 
 
-def test_a_broken_baseline_chain_is_caught():
+
+def test_a_broken_baseline_chain_is_caught(monkeypatch):
     """累計語意但基準沒往下傳 → bot 記 `base`、金額 0。驗證工具要紅，不然它就不是在
-    驗 bot 的接線。"""
+    驗 bot 的接線。
+
+    基準有兩個來源（2026-09-25 起）：槽裡那一份（`chain`）與後端自己的基準檔。兩個都斷
+    才會記成 `base`，所以這裡把存基準檔那一步也換成什麼都不做。"""
     chat, tool = _session("2.1.277", cumulative_raw=True, chain=False)
     result = v.check_accounting(chat, tool)
     assert not result.ok
     assert "base" in result.summary, result.summary
+
 
 
 def test_growing_per_call_tokens_are_caught_even_inside_the_usage_slack():
@@ -378,6 +412,7 @@ def test_growing_per_call_tokens_are_caught_even_inside_the_usage_slack():
     assert "長大" in " ".join([result.summary, *result.details])
 
 
+
 def test_a_resumed_call_that_costs_nothing_is_caught():
     """標籤對、token 對，只有金額是 0——那一道要自己擋得住（累計基準遺失時 bot 就記 0，
     但那種情況標籤也會錯，會把這一道遮住，所以另外用「每次叫用、回報 0」單獨踩它）。"""
@@ -390,6 +425,7 @@ def test_a_resumed_call_that_costs_nothing_is_caught():
     assert "金額不是正數" in result.summary, result.lines()
 
 
+
 def test_an_infinite_cost_is_not_a_positive_amount():
     """`inf > 0` 為真：只比大小的話，一個壞掉的無限大金額會被當成正數放行。bot 的換算
     本身會把非有限值擋成 0，所以這裡直接改 `info` 去問檢查自己那一層。"""
@@ -400,12 +436,14 @@ def test_an_infinite_cost_is_not_a_positive_amount():
     assert "金額不是正數" in result.summary, result.lines()
 
 
+
 def test_the_tool_round_needs_the_last_iteration():
     """`iterations` 讀不到 → bot 的壓縮觸發退回加總 → 每一輪都會壓縮（§8.71）。"""
     chat, tool = _session("2.1.276", cumulative_raw=False, tool_iterations=None)
     result = v.check_accounting(chat, tool)
     assert not result.ok
     assert "iterations" in result.summary, result.summary
+
 
 
 def test_a_last_iteration_that_equals_the_sum_is_caught():
@@ -418,11 +456,13 @@ def test_a_last_iteration_that_equals_the_sum_is_caught():
     assert "加總" in result.summary, result.summary
 
 
+
 def test_a_tool_round_without_any_tool_call_cannot_compare():
     chat, tool = _session("2.1.276", cumulative_raw=False, tool_uses=0)
     result = v.check_accounting(chat, tool)
     assert not result.ok
     assert "工具都沒呼叫" in result.summary, result.summary
+
 
 
 def test_accounting_without_a_first_session_fails_cleanly():
@@ -431,9 +471,11 @@ def test_accounting_without_a_first_session_fails_cleanly():
     assert not result.ok and "resume" in result.summary
 
 
+
 def test_a_missing_tool_round_is_not_a_pass():
     chat, _tool = _session("2.1.276", cumulative_raw=False)
     assert not v.check_accounting(chat, None).ok
+
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +493,7 @@ def _bg_stream(*, with_bg=True, answer_ok=True, tools=("Bash",)) -> list:
     return lines
 
 
+
 def test_a_background_task_seen_mid_stream_passes():
     call = _call(_bg_stream())
     result = v.check_background(call)
@@ -458,10 +501,12 @@ def test_a_background_task_seen_mid_stream_passes():
     assert call.max_background == 1 and not call.state.background_tasks
 
 
+
 def test_no_background_signal_fails():
     result = v.check_background(_call(_bg_stream(with_bg=False)))
     assert not result.ok
     assert "background_tasks" in result.summary
+
 
 
 def test_a_background_stream_without_a_successful_result_fails():
@@ -474,16 +519,19 @@ def test_a_background_stream_without_a_successful_result_fails():
     assert "成功的 result" in result.summary, result.lines()
 
 
+
 def test_a_background_stream_that_had_to_be_killed_fails():
     result = v.check_background(_call(_bg_stream(), kill_reason="hard", rc=1))
     assert not result.ok
     assert "砍掉" in result.summary
 
 
+
 def test_a_missing_bash_tool_is_named():
     result = v.check_background(_call(_bg_stream(tools=())))
     assert not result.ok
     assert any("Bash" in text for text in [result.summary, *result.details])
+
 
 
 # ---------------------------------------------------------------------------
@@ -505,10 +553,12 @@ def test_the_measured_normal_session_is_not_bare():
     assert v.bare_mode_findings(_MEASURED_NORMAL_INIT, {"is_error": False}) == []
 
 
+
 def test_the_measured_bare_session_is_named_as_bare():
     findings = v.bare_mode_findings(_MEASURED_BARE_INIT, _MEASURED_BARE_RESULT)
     assert len(findings) == 2, findings
     assert "memory_paths" in findings[0] and "登入" in findings[1]
+
 
 
 @pytest.mark.parametrize("init, result, words", [
@@ -525,12 +575,14 @@ def test_each_bare_signal_fires_on_its_own(init, result, words):
     assert words in findings[0]
 
 
+
 @pytest.mark.parametrize("result", [
     {"is_error": True, "result": "Overloaded"},                  # 錯誤，但不是登入類
     {"is_error": False, "result": "please run /login to fix it"},  # 成功答案剛好提到
 ])
 def test_near_misses_are_not_bare(result):
     assert v.bare_mode_findings(_MEASURED_NORMAL_INIT, result) == []
+
 
 
 def test_the_api_key_finding_prints_no_odd_value():
@@ -540,6 +592,7 @@ def test_the_api_key_finding_prints_no_odd_value():
     assert len(findings) == 1
     assert "sk-secret" not in findings[0] and "\n" not in findings[0]
     assert "形狀不明" in findings[0]
+
 
 
 @pytest.mark.parametrize("source", sorted(db._DOROSSI_CC_DROPPED_ENV)
@@ -554,12 +607,14 @@ def test_a_source_the_bot_strips_is_said_to_come_from_the_clis_own_settings(sour
     assert len(findings) == 1 and "來自 CLI 自己的設定" in findings[0], findings
 
 
+
 def test_a_source_the_bot_does_not_strip_gets_no_such_claim():
     """近似案例：`apiKeyHelper` 是 CLI 設定檔裡的東西，不是 bot 拿掉的變數——照樣是警報，
     但不能說成「bot 不交給子行程」。"""
     plain = v.bare_mode_findings(dict(_MEASURED_NORMAL_INIT, apiKeySource="apiKeyHelper"),
                                  {"is_error": False})
     assert "apiKeyHelper" in plain[0] and "來自 CLI 自己的設定" not in plain[0]
+
 
 
 # 2026-09-19 實測的兩句「沒有可用的登入」（見 `dorossi_backend._dorossi_cc_auth_failure`
@@ -585,9 +640,11 @@ def test_the_tool_and_the_bot_agree_on_the_measured_sign_in_failures():
         assert (tool, bot) == (expected, expected), (result_ev["result"], tool, bot)
 
 
+
 def test_the_parity_corpus_actually_bites():
     """正面對照：語料兩種答案都要有，否則「兩邊一致」可能只是兩邊都什麼都沒認出來。"""
     assert {expected for _ev, expected in _AUTH_PARITY_CORPUS} == {True, False}
+
 
 
 def test_the_bare_check_reads_the_first_calls_init():
@@ -597,6 +654,7 @@ def test_the_bare_check_reads_the_first_calls_init():
     assert not result.ok
     assert result.summary.startswith("這個工作階段像是 --bare 模式")
     assert v.check_bare_mode(_call(_chat_stream())).ok
+
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +681,7 @@ def _all_rendered_lines() -> list:
     return lines
 
 
+
 def test_every_report_line_is_encodable_on_this_console():
     """外來的值（CLI 的錯誤文字、工具名）一律經過 `_console_safe`；本檔自己的字面值由
     `test_text_encoding` 靜態管。這支量的是**組起來之後**的整行。"""
@@ -633,10 +692,12 @@ def test_every_report_line_is_encodable_on_this_console():
         assert "\n" not in line
 
 
+
 def test_console_safe_turns_foreign_text_into_one_ascii_line():
     out = v._console_safe("a\u00b7b\n\u2603 " + "y" * 400)
     out.encode("ascii")
     assert "\n" not in out and len(out) < 200
+
 
 
 def test_every_string_literal_in_the_tool_is_cp950_encodable():
@@ -651,6 +712,7 @@ def test_every_string_literal_in_the_tool_is_cp950_encodable():
     assert not bad, f"這幾行的字串 cp950 編不出來：{bad}"
 
 
+
 # ---------------------------------------------------------------------------
 # argv：驗證工具送的就是 bot 會送的那一份
 # ---------------------------------------------------------------------------
@@ -658,6 +720,7 @@ class _ArgvCaptured(Exception):
     def __init__(self, args):
         super().__init__("captured")
         self.args_seen = list(args)
+
 
 
 def _bot_argv(monkeypatch, tools, **kwargs) -> list:
@@ -677,11 +740,13 @@ def _bot_argv(monkeypatch, tools, **kwargs) -> list:
     raise AssertionError("假的 create_subprocess_exec 沒被呼叫到")
 
 
+
 @pytest.mark.parametrize("session_id", [None, "sess-abc"])
 def test_the_pure_chat_argv_is_the_bots_own(monkeypatch, session_id):
     exe = r"C:\fake\claude.exe"
     bot = _bot_argv(monkeypatch, "off", session_id=session_id, model=v._model())
     assert v.pure_chat_argv(exe, session_id) == bot
+
 
 
 @pytest.mark.parametrize("session_id", [None, "sess-abc"])
@@ -692,6 +757,7 @@ def test_the_tool_round_argv_is_the_full_mode_argv_plus_a_narrowed_allowlist(
     mine = v.tool_round_argv(exe, session_id, "Glob")
     assert mine[:len(bot)] == bot
     assert mine[len(bot):] == ["--tools", "Glob", "--allowedTools", "Glob"]
+
 
 
 @pytest.mark.parametrize("tools", ["off", "full", "", None])
@@ -712,6 +778,7 @@ def test_the_builder_is_what_the_bot_executes(monkeypatch, tools, session_id, ex
     assert built == bot
 
 
+
 def test_the_builder_reads_the_tool_mode_at_call_time(monkeypatch):
     """`tools_mode` 省略 ＝ 呼叫當下讀模組全域（跟抽出來之前一樣）；明給就以明給的為準。"""
     monkeypatch.setattr(db, "DOROSSI_CC_TOOLS", "full")
@@ -724,6 +791,7 @@ def test_the_builder_reads_the_tool_mode_at_call_time(monkeypatch):
     assert "bypassPermissions" in db._dorossi_cc_argv("x", tools_mode="full")
 
 
+
 def _function(tree: ast.AST, name: str):
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
@@ -731,9 +799,11 @@ def _function(tree: ast.AST, name: str):
     raise AssertionError(f"找不到 {name}")
 
 
+
 def _string_constants(node) -> set:
     return {n.value for n in ast.walk(node)
             if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+
 
 
 def test_the_bot_invocation_builds_its_argv_only_through_the_builder():
@@ -757,11 +827,13 @@ def test_the_bot_invocation_builds_its_argv_only_through_the_builder():
     assert targets, "`_dorossi_via_claude_code` 沒有用 `_dorossi_cc_argv` 組 argv"
     starred = set()
     for node in ast.walk(invoke):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "create_subprocess_exec"):
+        if (isinstance(node, ast.Call) and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "create_subprocess_exec")
+                or (isinstance(node.func, ast.Name) and node.func.id == "_spawn_backend"))):
             starred |= {a.value.id for a in node.args
                         if isinstance(a, ast.Starred) and isinstance(a.value, ast.Name)}
     assert targets & starred, "exec 收到的不是 builder 組出來的那一份 argv"
+
 
 
 def test_the_tool_never_writes_its_own_argv_or_parser():
@@ -779,6 +851,7 @@ def test_the_tool_never_writes_its_own_argv_or_parser():
         f"驗證工具自己讀了 bot 在讀的欄位：{sorted(bot_fields & mine)}——交給 bot 的函式")
 
 
+
 def test_the_tool_goes_through_the_bots_own_functions():
     tree = ast.parse(VERIFY_SOURCE.read_text(encoding="utf-8"))
     used = {n.attr for n in ast.walk(tree)
@@ -789,6 +862,7 @@ def test_the_tool_goes_through_the_bots_own_functions():
                 "_dorossi_last_call_context", "_dorossi_cc_argv", "_dorossi_cc_child_env",
                 "_dorossi_reap_proc", "_dorossi_drain_stderr", "_read_stream_all"}
     assert required <= used, sorted(required - used)
+
 
 
 # ---------------------------------------------------------------------------
@@ -802,18 +876,19 @@ def test_the_child_env_is_the_bots_minus_the_interactive_session(monkeypatch):
     以它為底，所以也看不到。"""
     for key, value in (("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "s"),
                        ("CLAUDE_EFFORT", "max"), ("AI_AGENT", "x"),
-                       ("ANTHROPIC_API_KEY", "k"), ("AXIOMATIC_KEEP", "p"),
+                       ("ANTHROPIC_API_KEY", "k"), ("JEFFREY_KEEP", "p"),
                        (db._DOROSSI_CC_BG_WAIT_CEILING_ENV, "0")):
         monkeypatch.setenv(key, value)
     env = v.child_env(120.0)
     assert env[db._DOROSSI_CC_BG_WAIT_CEILING_ENV] == "120000", (
         "父行程帶的值（0＝無上限）不能贏過這一輪的上限")
-    assert env["AXIOMATIC_KEEP"] == "p" and "ANTHROPIC_API_KEY" not in env
+    assert env["JEFFREY_KEEP"] == "p" and "ANTHROPIC_API_KEY" not in env
     leftover = sorted(k for k in env
                       if k.upper().startswith("CLAUDE") or k.upper() == "AI_AGENT")
     assert leftover == [db._DOROSSI_CC_BG_WAIT_CEILING_ENV], leftover
     assert "DISABLE_AUTOUPDATER" not in env
     assert v.child_env(120.0, pinned_exe=True)["DISABLE_AUTOUPDATER"] == "1"
+
 
 
 def test_the_child_env_starts_from_the_bots_env_builder(monkeypatch):
@@ -830,11 +905,13 @@ def test_the_child_env_starts_from_the_bots_env_builder(monkeypatch):
     assert env == {"FROM_BOT": "1", db._DOROSSI_CC_BG_WAIT_CEILING_ENV: "5"}
 
 
+
 def test_the_ledger_is_redirected_and_a_finished_call_writes_there(tmp_path):
     assert Path(db.DOROSSI_USAGE_FILE).parent == tmp_path / "state"
     _call(_chat_stream())
     rows = db._dorossi_read_usage(10)
     assert len(rows) == 1 and rows[0]["cost_usd"] == pytest.approx(0.01)
+
 
 
 def test_accounting_refuses_a_ledger_inside_the_repo(monkeypatch):
@@ -852,6 +929,7 @@ def test_accounting_refuses_a_ledger_inside_the_repo(monkeypatch):
     with pytest.raises(RuntimeError):
         call.finish(0, "", 180.0)
     assert not target.parent.exists()
+
 
 
 @pytest.fixture
@@ -875,6 +953,7 @@ def _no_repo_writes(monkeypatch):
     monkeypatch.setattr(Path, "write_text", _write)
 
 
+
 def test_isolation_refuses_a_state_dir_inside_the_repo(tmp_path, _no_repo_writes):
     """先驗再動：目標在 repo 底下時連目錄都不建、模組全域也不改。"""
     before = db.DOROSSI_USAGE_FILE
@@ -885,6 +964,7 @@ def test_isolation_refuses_a_state_dir_inside_the_repo(tmp_path, _no_repo_writes
     assert db.DOROSSI_USAGE_FILE == before
 
 
+
 def test_the_scratch_dir_is_outside_the_repo_and_holds_the_glob_files(tmp_path,
                                                                         _no_repo_writes):
     path = v.scratch_dir(tmp_path)
@@ -892,6 +972,7 @@ def test_the_scratch_dir_is_outside_the_repo_and_holds_the_glob_files(tmp_path,
     with pytest.raises(RuntimeError):
         v.scratch_dir(Path(db.PROJECT_ROOT))
     assert not (Path(db.PROJECT_ROOT) / v._SCRATCH_NAME).exists()
+
 
 
 # ---------------------------------------------------------------------------
@@ -913,6 +994,7 @@ class _Stream:
         return b""
 
 
+
 class _Stdin:
     def __init__(self):
         self.data = b""
@@ -925,6 +1007,7 @@ class _Stdin:
 
     def close(self):
         pass
+
 
 
 class _Proc:
@@ -945,8 +1028,10 @@ class _Proc:
         return self.returncode
 
 
+
 def _run(coro):
     return asyncio.run(asyncio.wait_for(coro, timeout=TEST_DEADLINE))
+
 
 
 def test_the_read_loop_feeds_the_bot_and_sends_the_prompt(monkeypatch, tmp_path):
@@ -965,6 +1050,7 @@ def test_the_read_loop_feeds_the_bot_and_sends_the_prompt(monkeypatch, tmp_path)
     assert call.verdict == "ok" and call.state.answer == "PONG" and call.info is not None
 
 
+
 def test_the_read_loop_is_bounded(monkeypatch, tmp_path):
     """stdout 永遠不結束 → 牆鐘到了就砍，回來的呼叫標成被砍掉（不是掛住）。"""
     proc = _Proc([_init()], hang=True)
@@ -975,6 +1061,7 @@ def test_the_read_loop_is_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(v.asyncio, "create_subprocess_exec", _fake_exec)
     call = _run(v._run_call(v._Call("t", "p"), ["x"], tmp_path, {}, timeout_sec=0.3))
     assert call.timed_out and proc.kills >= 1
+
 
 
 class _FakeCli:
@@ -1026,6 +1113,7 @@ class _FakeCli:
                       _result("OK", sid=sid, cost=cost, usage=usage, model=model)])
 
 
+
 def _main_with(monkeypatch, tmp_path, cli: _FakeCli, argv=()):
     monkeypatch.setattr(v.shutil, "which", lambda _n: r"C:\fake\claude.exe")
     monkeypatch.setattr(v.tempfile, "gettempdir", lambda: str(tmp_path))
@@ -1034,6 +1122,7 @@ def _main_with(monkeypatch, tmp_path, cli: _FakeCli, argv=()):
     with contextlib.redirect_stdout(buffer):
         code = v.main(list(argv))
     return code, buffer.getvalue()
+
 
 
 @pytest.mark.parametrize("version, cumulative", [("2.1.276", False), ("2.1.277", True)])
@@ -1059,11 +1148,13 @@ def test_main_passes_on_both_totals_semantics(monkeypatch, tmp_path, version, cu
         line.encode("cp950")
 
 
+
 def test_main_fails_and_names_the_check_when_pure_chat_lists_tools(monkeypatch, tmp_path):
     cli = _FakeCli("2.1.276", cumulative=False, pure_tools=["ListAgents"])
     code, out = _main_with(monkeypatch, tmp_path, cli)
     assert code == v.EXIT_FAIL
     assert out.strip().splitlines()[-1] == "VERIFY-DOROSSI-CLI: FAIL (4 checks) failed: 1"
+
 
 
 def test_a_pinned_exe_turns_the_autoupdater_off(monkeypatch, tmp_path):
@@ -1074,6 +1165,7 @@ def test_a_pinned_exe_turns_the_autoupdater_off(monkeypatch, tmp_path):
     assert code == v.EXIT_OK
     assert all(k["env"].get("DISABLE_AUTOUPDATER") == "1" for _a, k in cli.calls)
     assert all(a[0] == str(exe) for a, _k in cli.calls)
+
 
 
 def test_an_unexpected_error_still_prints_a_verdict(monkeypatch, tmp_path):

@@ -243,7 +243,7 @@
 
 用文字 / 圖片 / 元素名稱在畫面上定位（限擁有者）
 
-- `/locate gone <kind> <target> [seconds]` — 等某個東西從畫面上消失
+- `/locate gone <kind> [target] [seconds] [template]` — 等某個東西從畫面上消失；圖片用 `template` 附樣板，`target` 為選填門檻（預設 0.9）；文字／視窗須填目標
 - `/locate pixel <x> <y> <color> [invert] [seconds] [tolerance]` — 等某一點變成（或不再是）指定顏色
 
 **`/locate image`** — 用樣板圖片定位（不需辨識引擎）

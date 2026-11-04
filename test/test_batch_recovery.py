@@ -2,7 +2,7 @@
 
 每一條原本的失敗形態都是**安靜的**——批次停在那裡、沒有人監督、也沒有任何訊息：
 
-1. **bot 重啟後**，`on_ready` 只收養 pid，`_watch_for_fallback` 看到
+1. **bot 重啟後**，`on_ready` 只收養 pid，`_watch_webrunner` 看到
    `_webrunner_proc is None` 就返回：那一輪批次從此沒有人監督。
 2. **`/run`（含 `/run at` 到點）**先送說明訊息、後掛監督者：聊天平台連不上的那一刻
    送訊息丟例外，監督者永遠不會被建起來。
@@ -58,6 +58,7 @@ class _Channel:
         self.sent.append(content)
 
 
+
 class _FakeBackend:
     def __init__(self):
         self.acquires: list[str] = []
@@ -71,6 +72,7 @@ class _FakeBackend:
         self.releases += 1
 
 
+
 def _fake_power(monkeypatch):
     """換一個乾淨的計數器（假後端），並打開 bot 的開關。回傳假後端。"""
     backend = _FakeBackend()
@@ -79,17 +81,19 @@ def _fake_power(monkeypatch):
     return backend
 
 
+
 def _run_and_settle(env):
     """跑完監督者；它若把「等網路」交給了新的 task，也等那個 task 跑完。"""
     async def _body():
-        b._webrunner_fallback_task = asyncio.current_task()
-        await b._watch_for_fallback(env.channel)
-        handed = b._webrunner_fallback_task
+        b._webrunner_supervisor_task = asyncio.current_task()
+        await b._watch_webrunner(env.channel)
+        handed = b._webrunner_supervisor_task
         if handed is not None and handed is not asyncio.current_task():
             await handed
         return handed
 
     return asyncio.run(_body())
+
 
 
 def _probe_script(monkeypatch, answers, *, on_probe=None):
@@ -107,16 +111,18 @@ def _probe_script(monkeypatch, answers, *, on_probe=None):
     return calls
 
 
+
 def _fake_runs(monkeypatch):
     runs: list = []
 
     async def _run_fake(channel):
         runs.append(types.SimpleNamespace(
-            channel=channel, task=b._webrunner_fallback_task,
+            channel=channel, task=b._webrunner_supervisor_task,
             marker=b.NETWORK_RESUME_FILE.exists()))
 
     monkeypatch.setattr(b, "_do_webrunner_run", _run_fake)
     return runs
+
 
 
 @pytest.fixture
@@ -126,6 +132,7 @@ def marker(monkeypatch, tmp_path):
     monkeypatch.setattr(b, "_webrunner_liveness", lambda: (
         b._webrunner_proc is not None and b._webrunner_proc.poll() is None, True))
     return path
+
 
 
 # ===========================================================================
@@ -152,11 +159,13 @@ def test_any_reachable_address_means_online_and_the_socket_is_closed():
     assert closed == ["x"]
 
 
+
 def test_only_when_every_address_fails_is_it_offline():
     def _connect(address, timeout):
         raise OSError("down")
 
     assert _connectivity.is_online([("a", 1), ("b", 2)], connect=_connect) is False
+
 
 
 def test_nothing_to_probe_or_a_non_network_error_leans_online():
@@ -169,12 +178,14 @@ def test_nothing_to_probe_or_a_non_network_error_leans_online():
     assert _connectivity.is_online([("a", 1)], connect=_broken) is True
 
 
+
 def test_the_default_probes_are_literal_ip_addresses():
     """不經過 DNS：斷網時 DNS 查詢本身可能要卡好幾秒才失敗。"""
     assert len(_connectivity.PROBE_ADDRESSES) >= 2
     for host, port in _connectivity.PROBE_ADDRESSES:
         ipaddress.ip_address(host)
         assert 0 < port < 65536
+
 
 
 def test_the_synchronous_wait_has_no_cap_and_returns_when_online():
@@ -189,12 +200,14 @@ def test_the_synchronous_wait_has_no_cap_and_returns_when_online():
     assert len(waits) == 50
 
 
+
 def test_ctrl_c_ends_the_synchronous_wait():
     def _interrupt(_seconds):
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
         _connectivity.wait_until_online(probe=lambda: False, sleep=_interrupt)
+
 
 
 # ===========================================================================
@@ -216,6 +229,7 @@ def test_bot_power_hold_follows_the_config_switch(monkeypatch):
     assert backend.acquires == ["axiomatic bot: batch supervision"]
 
 
+
 def test_the_supervisor_holds_power_while_watching_and_lets_go_after(
         sup_env, monkeypatch):
     backend = _fake_power(monkeypatch)
@@ -234,17 +248,18 @@ def test_the_supervisor_holds_power_while_watching_and_lets_go_after(
     assert pr.status()["count"] == 0 and backend.releases == 1
 
 
+
 def test_cancelling_the_supervisor_releases_the_power_request(monkeypatch):
     """`/stop` 與 `/run` 都是用 cancel 結束監督者的；那一刻要把電源要求放掉。"""
     backend = _fake_power(monkeypatch)
     monkeypatch.setattr(b, "_webrunner_stop_requested", False)
     monkeypatch.setattr(b, "_webrunner_variant", "selenium")
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_proc",
                         types.SimpleNamespace(poll=lambda: None, returncode=None))
 
     async def _body():
-        task = asyncio.create_task(b._watch_for_fallback(_Channel()))
+        task = asyncio.create_task(b._watch_webrunner(_Channel()))
         for _ in range(5):
             await asyncio.sleep(0)
         assert pr.status()["count"] == 1
@@ -254,6 +269,7 @@ def test_cancelling_the_supervisor_releases_the_power_request(monkeypatch):
 
     asyncio.run(_body())
     assert pr.status()["count"] == 0 and backend.releases == 1
+
 
 
 # ===========================================================================
@@ -278,7 +294,7 @@ def test_a_failure_while_offline_parks_the_batch_and_resumes_when_online(
     assert len(runs) == 1, "網路回來之後沒有接續"
     assert runs[0].channel is sup_env.channel
     assert runs[0].task is None, (
-        "交棒給 `/run` 那條路之前沒有把自己從 `_webrunner_fallback_task` 摘下來——"
+        "交棒給 `/run` 那條路之前沒有把自己從 `_webrunner_supervisor_task` 摘下來——"
         "它會取消並等待自己")
     assert runs[0].marker is False, "開始接續時落地檔還在"
     assert not marker.exists()
@@ -293,6 +309,7 @@ def test_a_failure_while_offline_parks_the_batch_and_resumes_when_online(
     assert "網路中斷" in said and "網路已恢復" in said, said
     assert "放棄" not in said
     assert sum(sup_env.sleeps) >= 2 * b.NETWORK_RESUME_POLL_SEC - 1
+
 
 
 def test_the_marker_records_when_and_where(sup_env, monkeypatch, marker):
@@ -310,6 +327,7 @@ def test_the_marker_records_when_and_where(sup_env, monkeypatch, marker):
     assert before - 1 <= data["since"] <= time.time() + 1
 
 
+
 def test_offline_failures_never_reach_the_give_up_gate(sup_env, monkeypatch, marker):
     """兩次在線的秒崩之後、第三次是斷網：放棄閘（門檻 3）不能響。"""
     _probe_script(monkeypatch, [False, False, True])
@@ -321,6 +339,7 @@ def test_offline_failures_never_reach_the_give_up_gate(sup_env, monkeypatch, mar
     assert len(runs) == 1
 
 
+
 def test_control_the_same_failures_online_do_give_up(sup_env, monkeypatch, marker):
     """正面對照：少了它，一個「永遠不放棄」的實作也會讓上一支全綠。"""
     _probe_script(monkeypatch, [False, False, False])
@@ -330,6 +349,7 @@ def test_control_the_same_failures_online_do_give_up(sup_env, monkeypatch, marke
     _run_and_settle(sup_env)
     assert "放棄重啟" in _said(sup_env)
     assert runs == [] and not marker.exists()
+
 
 
 def test_a_je_crash_while_offline_does_not_switch_to_the_backup_mode(
@@ -344,6 +364,7 @@ def test_a_je_crash_while_offline_does_not_switch_to_the_backup_mode(
     assert len(runs) == 1
 
 
+
 def test_a_blocked_generation_stops_even_while_offline(sup_env, monkeypatch, marker):
     """需要人處理排在斷網之前：那是批次在頁面上**看到**的，網路當時是通的。"""
     calls = _probe_script(monkeypatch, [True])
@@ -352,6 +373,7 @@ def test_a_blocked_generation_stops_even_while_offline(sup_env, monkeypatch, mar
     _run_and_settle(sup_env)
     assert calls == [], "需要人處理的結束碼還去探網路"
     assert runs == [] and not marker.exists()
+
 
 
 def test_stop_ends_the_wait_and_nothing_restarts(sup_env, monkeypatch, marker):
@@ -369,6 +391,7 @@ def test_stop_ends_the_wait_and_nothing_restarts(sup_env, monkeypatch, marker):
     assert marker.exists(), "監督者自己不刪落地檔——那是 `/stop` 的事（下一支）"
 
 
+
 def test_a_stop_already_requested_ends_the_wait_without_probing(monkeypatch):
     """`/stop` 可能落在探測進行中（探測丟在執行緒裡）；下一圈一開始就要看到它，
     不能再探一次、再睡一整個間隔。"""
@@ -376,6 +399,7 @@ def test_a_stop_already_requested_ends_the_wait_without_probing(monkeypatch):
     monkeypatch.setattr(b, "_webrunner_stop_requested", True)
     assert asyncio.run(b._wait_until_online()) is False
     assert calls == []
+
 
 
 def test_the_stop_command_deletes_the_marker_and_says_so(monkeypatch, marker):
@@ -400,7 +424,7 @@ def test_the_stop_command_deletes_the_marker_and_says_so(monkeypatch, marker):
     monkeypatch.setattr(b, "_clear_pid", lambda: None)
     monkeypatch.setattr(b, "SINGLE_IMAGE_REQUEST_FILE",
                         marker.parent / "req.json")
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_oneshot_reaper_task", None)
     monkeypatch.setattr(b, "_webrunner_proc", None)
     monkeypatch.setattr(b, "_webrunner_pid", None)
@@ -410,9 +434,10 @@ def test_the_stop_command_deletes_the_marker_and_says_so(monkeypatch, marker):
     assert any("網路恢復後自動接續" in (text or "") for text in replies), replies
 
 
+
 def _restore_env(monkeypatch, channel):
     monkeypatch.setattr(b, "_network_resume_restored", False)
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_stop_requested", False)
     monkeypatch.setattr(b, "_webrunner_proc", None)
     monkeypatch.setattr(b, "_webrunner_pid", None)
@@ -428,15 +453,17 @@ def _restore_env(monkeypatch, channel):
     return resolved
 
 
+
 def _restore_and_settle():
     async def _body():
         await b._restore_network_resume_once()
-        task = b._webrunner_fallback_task
+        task = b._webrunner_supervisor_task
         if task is not None:
             await asyncio.wait_for(task, timeout=10)
         return task
 
     return asyncio.run(_body())
+
 
 
 def test_after_a_restart_the_parked_batch_resumes_when_online(monkeypatch, marker):
@@ -452,6 +479,7 @@ def test_after_a_restart_the_parked_batch_resumes_when_online(monkeypatch, marke
     assert len(runs) == 1 and runs[0].channel is channel
     assert not marker.exists()
     assert any("網路已恢復" in text for text in channel.sent), channel.sent
+
 
 
 def test_a_queue_file_that_is_not_utf8_is_explained_after_the_network_returns(
@@ -479,6 +507,7 @@ def test_a_queue_file_that_is_not_utf8_is_explained_after_the_network_returns(
     assert "todo_character1.md" not in said and str(tmp_path) not in said
 
 
+
 def test_a_damaged_marker_still_resumes_rather_than_dropping_the_run(
         monkeypatch, marker):
     """讀不懂內容不是停止指令——只有明確的停止能結束這個等待。"""
@@ -490,6 +519,7 @@ def test_a_damaged_marker_still_resumes_rather_than_dropping_the_run(
     _restore_and_settle()
     assert resolved == [b.CHANNEL_ID]
     assert len(runs) == 1
+
 
 
 _NOW = 1_800_000_000.0
@@ -518,6 +548,7 @@ def test_a_marker_field_out_of_range_falls_back_to_now_and_the_configured_channe
     assert got == (*(expected or (_NOW, b.CHANNEL_ID)), {})
 
 
+
 @pytest.mark.parametrize("channel_id", [0, -5])
 def test_a_marker_with_an_origin_keeps_it_even_without_a_positive_channel(marker, channel_id):
     """沒有設定頻道的部署（設定頻道是 0）寫下的落地檔頻道就是 0。帶著來源時那只是退路：
@@ -530,11 +561,13 @@ def test_a_marker_with_an_origin_keeps_it_even_without_a_positive_channel(marker
         _NOW - 100, channel_id, {"platform": "stubplat", "platform_chat_id": "777"})
 
 
+
 def test_a_marker_that_is_not_an_object_falls_back_instead_of_raising(marker):
     """`[1, 2]` 過得了 `json.loads`，但它不是物件——漏接的話這支丟例外，而不是照
     「讀不懂就用預設接續」那條規則走。"""
     marker.write_text("[1, 2]", encoding="utf-8")
     assert b._read_network_resume(_NOW) == (_NOW, b.CHANNEL_ID, {})
+
 
 
 def test_a_batch_parked_from_another_platform_reports_back_there_after_a_restart(
@@ -587,6 +620,7 @@ def test_a_batch_parked_from_another_platform_reports_back_there_after_a_restart
     assert resolved == [b.CHANNEL_ID] and len(runs) == 1 and runs[0].channel is primary
 
 
+
 def test_parking_a_batch_from_another_platform_records_its_conversation(monkeypatch, marker):
     """停下來的那一刻就要把來源寫進落地檔。`_clear_pid` 換成記錄用的替身——真的那一支會
     刪掉**正式批次**的存活訊號；停止旗標設起來，讓它在排定接續之前就返回。"""
@@ -613,7 +647,7 @@ def test_parking_a_batch_from_another_platform_records_its_conversation(monkeypa
     monkeypatch.setattr(b, "_clear_pid", lambda: cleared.append(1))
     monkeypatch.setattr(b, "_supervisor_notify", _notify)
     monkeypatch.setattr(b, "_webrunner_stop_requested", True)
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     for name in ("_webrunner_proc", "_webrunner_pid", "_webrunner_variant"):
         monkeypatch.setattr(b, name, None)
     conv = cp.ChatConversation(_Platform(), "777", uid=-5, is_direct=True,
@@ -621,7 +655,8 @@ def test_parking_a_batch_from_another_platform_records_its_conversation(monkeypa
     asyncio.run(b._park_batch_for_network(conv))
     stored = json.loads(marker.read_text(encoding="utf-8"))
     assert (stored["platform"], stored["platform_chat_id"]) == ("stubplat", "777"), stored
-    assert cleared == [1] and b._webrunner_fallback_task is None
+    assert cleared == [1] and b._webrunner_supervisor_task is None
+
 
 
 def test_a_marker_is_discarded_when_a_run_is_already_alive(monkeypatch, marker):
@@ -634,6 +669,7 @@ def test_a_marker_is_discarded_when_a_run_is_already_alive(monkeypatch, marker):
     task = _restore_and_settle()
     assert task is None and runs == []
     assert not marker.exists()
+
 
 
 @pytest.mark.parametrize("own_oneshot, expect_resume", [(False, False), (True, True)])
@@ -657,6 +693,7 @@ def test_a_run_that_started_during_the_wait_is_left_alone(
     assert not marker.exists()
 
 
+
 def test_the_restore_happens_once_per_process(monkeypatch, marker):
     channel = _Channel()
     _restore_env(monkeypatch, channel)
@@ -669,6 +706,7 @@ def test_the_restore_happens_once_per_process(monkeypatch, marker):
     assert runs == [] and marker.exists()
 
 
+
 def test_a_new_run_supersedes_the_wait_and_deletes_the_marker(monkeypatch, marker):
     """`/run` 取代了等待；留著落地檔的話，bot 下次重啟會把它接回來。"""
     env = _run_env(monkeypatch, marker)
@@ -677,6 +715,7 @@ def test_a_new_run_supersedes_the_wait_and_deletes_the_marker(monkeypatch, marke
     asyncio.run(b._do_webrunner_run(_Channel(order=env.order)))
     assert not marker.exists()
     assert env.spawns == ["je"]
+
 
 
 # ===========================================================================
@@ -695,7 +734,7 @@ def _run_env(monkeypatch, marker_path):
     async def _terminate(_proc, _pid):
         return []
 
-    def _spawn(variant, *, single_image_server=False):
+    def _spawn(variant="je", *, single_image_server=False):
         env.spawns.append(variant)
         b._webrunner_proc = types.SimpleNamespace(poll=lambda: None, pid=77,
                                                   returncode=None)
@@ -718,16 +757,17 @@ def _run_env(monkeypatch, marker_path):
     monkeypatch.setattr(b, "_terminate_all_webrunner_instances", _terminate)
     monkeypatch.setattr(b, "_clear_pid", lambda: None)
     monkeypatch.setattr(b, "_spawn_webrunner", _spawn)
-    monkeypatch.setattr(b, "_watch_for_fallback", _watch)
+    monkeypatch.setattr(b, "_watch_webrunner", _watch)
     monkeypatch.setattr(b, "_generate_pump", _pump)
     monkeypatch.setattr(b, "_get_batch_label", lambda: "")
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_oneshot_reaper_task", None)
     monkeypatch.setattr(b, "_webrunner_stop_requested", False)
     monkeypatch.setattr(b, "_webrunner_proc", None)
     monkeypatch.setattr(b, "_webrunner_pid", None)
     monkeypatch.setattr(b, "_webrunner_oneshot", False)
     return env
+
 
 
 def test_run_attaches_supervision_before_saying_anything(monkeypatch, marker):
@@ -739,6 +779,7 @@ def test_run_attaches_supervision_before_saying_anything(monkeypatch, marker):
     assert env.pumps == 1
 
 
+
 def test_a_failed_notice_leaves_the_batch_supervised(monkeypatch, marker):
     """聊天平台連不上的那一刻按下 `/run at`：批次要照樣有人監督，例外不得往上冒。"""
     env = _run_env(monkeypatch, marker)
@@ -746,12 +787,13 @@ def test_a_failed_notice_leaves_the_batch_supervised(monkeypatch, marker):
 
     async def _body():
         await b._do_webrunner_run(channel)          # 不得丟例外
-        return b._webrunner_fallback_task
+        return b._webrunner_supervisor_task
 
     task = asyncio.run(_body())
     assert env.order == ["watch", "send"], env.order
     assert task is not None and env.watched, "送訊息失敗之後沒有監督者"
     assert env.pumps == 1, "送訊息失敗之後 `/gen image` 佇列沒有被推一次"
+
 
 
 def test_a_scheduled_run_whose_notice_fails_is_not_reported_as_failed(
@@ -784,6 +826,7 @@ def test_a_scheduled_run_whose_notice_fails_is_not_reported_as_failed(
     assert not any("沒有順利開始" in text for text in channel.sent), channel.sent
 
 
+
 # ===========================================================================
 # 五、`/run at`：睡過頭就不要晚好幾小時才突然啟動
 # ===========================================================================
@@ -805,6 +848,7 @@ def _sleepy_clock(monkeypatch, jump_sec):
     monkeypatch.setattr(b, "time", fake_time)
     monkeypatch.setattr(b, "asyncio", _AsyncioProxy())
     return now
+
 
 
 def _drive_schedule(monkeypatch, tmp_path, *, due_in, jump_sec):
@@ -833,6 +877,7 @@ def _drive_schedule(monkeypatch, tmp_path, *, due_in, jump_sec):
     return channel, started, schedule_file
 
 
+
 def test_a_run_the_host_slept_through_is_reported_not_started(monkeypatch, tmp_path):
     channel, started, schedule_file = _drive_schedule(
         monkeypatch, tmp_path, due_in=60, jump_sec=5 * 3600)
@@ -841,12 +886,14 @@ def test_a_run_the_host_slept_through_is_reported_not_started(monkeypatch, tmp_p
     assert not schedule_file.exists()
 
 
+
 def test_a_normal_wait_still_starts_the_run(monkeypatch, tmp_path):
     """正面對照：沒有睡過頭（每次 sleep 只過了它要求的秒數）就照常啟動。"""
     channel, started, _ = _drive_schedule(
         monkeypatch, tmp_path, due_in=95, jump_sec=0)
     assert started == [channel]
     assert not any("錯過" in text for text in channel.sent)
+
 
 
 @pytest.mark.parametrize("late_by, expect_start", [
@@ -859,6 +906,7 @@ def test_the_in_process_wait_uses_the_same_cap_as_the_restore(
     _channel, started, _ = _drive_schedule(
         monkeypatch, tmp_path, due_in=30, jump_sec=jump)
     assert bool(started) is expect_start, (late_by, started)
+
 
 
 # ===========================================================================
@@ -896,10 +944,10 @@ def _reattach_env(monkeypatch, *, launchers=([], True), inspected=("je", 1000.0)
     monkeypatch.setattr(b, "_open_adopted_webrunner",
                         lambda _pid, *, started_mono=None: adopted)
     monkeypatch.setattr(b, "_resolve_origin_channel", _resolve)
-    monkeypatch.setattr(b, "_watch_for_fallback", _watch)
+    monkeypatch.setattr(b, "_watch_webrunner", _watch)
     monkeypatch.setattr(b, "_spawn_webrunner", _spawn)
     monkeypatch.setattr(b, "_batch_reattach_done", False)
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     monkeypatch.setattr(b, "_webrunner_stop_requested", False)
     monkeypatch.setattr(b, "_webrunner_proc", None)
     monkeypatch.setattr(b, "_webrunner_pid", pid)
@@ -908,15 +956,17 @@ def _reattach_env(monkeypatch, *, launchers=([], True), inspected=("je", 1000.0)
     return env
 
 
+
 def _reattach(pid=4242):
     async def _body():
         await b._reattach_adopted_batch_once(pid)
-        task = b._webrunner_fallback_task
+        task = b._webrunner_supervisor_task
         if task is not None:
             await task
         return task
 
     return asyncio.run(_body())
+
 
 
 def test_an_adopted_batch_gets_its_supervision_back(monkeypatch):
@@ -932,6 +982,7 @@ def test_an_adopted_batch_gets_its_supervision_back(monkeypatch):
     assert any("接回" in text for text in env.channel.sent)
 
 
+
 @pytest.mark.parametrize("launchers", [([7], True), ([], False)])
 def test_no_reattach_while_a_standalone_supervisor_may_be_watching(
         monkeypatch, launchers):
@@ -939,6 +990,7 @@ def test_no_reattach_while_a_standalone_supervisor_may_be_watching(
     env = _reattach_env(monkeypatch, launchers=launchers)
     assert _reattach() is None
     assert env.watched == [] and b._webrunner_proc is None
+
 
 
 @pytest.mark.parametrize("inspected", [(None, 1000.0), (None, None)])
@@ -949,10 +1001,12 @@ def test_no_reattach_when_the_process_is_not_a_batch(monkeypatch, inspected):
     assert env.watched == []
 
 
+
 def test_no_reattach_when_the_process_cannot_be_held(monkeypatch):
     env = _reattach_env(monkeypatch, adopted=None)
     assert _reattach() is None
     assert env.watched == [] and b._webrunner_proc is None
+
 
 
 def test_a_stop_that_lands_during_the_reattach_wins(monkeypatch):
@@ -967,13 +1021,15 @@ def test_a_stop_that_lands_during_the_reattach_wins(monkeypatch):
     assert env.watched == [] and env.closed == [1], "握住的 handle 沒有放掉"
 
 
+
 def test_the_reattach_happens_once_per_process(monkeypatch):
     env = _reattach_env(monkeypatch)
     _reattach()
     monkeypatch.setattr(b, "_webrunner_proc", None)
-    monkeypatch.setattr(b, "_webrunner_fallback_task", None)
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", None)
     _reattach()
     assert len(env.watched) == 1
+
 
 
 def test_an_adopted_je_batch_is_not_switched_to_the_backup_mode(sup_env):
@@ -982,12 +1038,13 @@ def test_an_adopted_je_batch_is_not_switched_to_the_backup_mode(sup_env):
     sup_env.script = []
 
     async def _body():
-        b._webrunner_fallback_task = asyncio.current_task()
-        await b._watch_for_fallback(sup_env.channel, adopted=True)
+        b._webrunner_supervisor_task = asyncio.current_task()
+        await b._watch_webrunner(sup_env.channel, adopted=True)
 
     asyncio.run(_body())
     assert sup_env.spawns == ["je"], sup_env.spawns
     assert "備援" not in _said(sup_env)
+
 
 
 def test_an_adopted_batch_is_timed_from_when_it_really_started(sup_env):
@@ -1000,10 +1057,12 @@ def test_an_adopted_batch_is_timed_from_when_it_really_started(sup_env):
     assert "執行 3610s" in said, said
 
 
+
 def test_control_a_process_without_a_start_time_is_timed_from_now(sup_env):
     _start(sup_env, rc=1, alive=10.0)
     _run(sup_env)
     assert "rapid-fail 1/" in _said(sup_env)
+
 
 
 class _FakePsutilProcess:
@@ -1022,9 +1081,10 @@ class _FakePsutilProcess:
         return 1234.5
 
 
+
 @pytest.mark.parametrize("cmdline, expected", [
     (["python.exe", "-u", r"D:\x\axiomatic\webrunner_je_only.py"], "je"),
-    (["python.exe", "-u", "D:/x/axiomatic/webrunner_novelai.py"], "selenium"),
+    (["python.exe", "-u", "D:/x/axiomatic/webrunner_je_only.py"], "je"),
     (["python.exe", "-u", "D:/x/axiomatic/webrunner_je_only.py",
       b.SINGLE_IMAGE_SERVER_FLAG], None),
     (["python.exe", "-m", "black", "D:/x/axiomatic/webrunner_je_only.py"], None),
@@ -1041,6 +1101,7 @@ def test_the_adopted_process_is_recognised_by_what_it_runs(
     assert created == 1234.5
 
 
+
 def test_an_unreadable_process_is_not_treated_as_a_batch(monkeypatch):
     _FakePsutilProcess.raise_error = PermissionError("denied")
     monkeypatch.setitem(sys.modules, "psutil",
@@ -1051,11 +1112,13 @@ def test_an_unreadable_process_is_not_treated_as_a_batch(monkeypatch):
         _FakePsutilProcess.raise_error = None
 
 
+
 def _sleeper(seconds: float, code: int) -> subprocess.Popen:
     return subprocess.Popen(
         [sys.executable, "-c",
          f"import sys, time; time.sleep({seconds}); sys.exit({code})"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 
 
 @pytest.mark.skipif(os.name != "nt", reason="握住 handle 問結束碼是 Windows 的做法")
@@ -1076,6 +1139,7 @@ def test_an_adopted_process_reports_its_real_exit_code():
         child.wait(30)
 
 
+
 @pytest.mark.skipif(os.name != "nt", reason="握住 handle 問結束碼是 Windows 的做法")
 def test_the_handle_stays_open_after_the_process_ends():
     """結束之後也不關 handle：另一條執行緒可能正等在同一個 handle 上，而關掉的
@@ -1094,9 +1158,11 @@ def test_the_handle_stays_open_after_the_process_ends():
         child.wait(30)
 
 
+
 def test_an_abandoned_adoption_never_reads_as_alive():
     adopted = b._AdoptedWebrunner(4242, None, None)
     assert adopted.poll() == b._ADOPTED_RC_UNKNOWN
+
 
 
 @pytest.mark.skipif(os.name != "nt", reason="握住 handle 問結束碼是 Windows 的做法")
@@ -1111,6 +1177,7 @@ def test_an_adopted_process_can_be_terminated():
         child.wait(30)
 
 
+
 @pytest.mark.skipif(os.name != "nt", reason="握住 handle 問結束碼是 Windows 的做法")
 def test_a_process_that_is_already_gone_is_not_adopted():
     child = _sleeper(0.0, 0)
@@ -1118,6 +1185,7 @@ def test_a_process_that_is_already_gone_is_not_adopted():
     pid = child.pid
     del child
     assert b._open_adopted_webrunner(pid) is None
+
 
 
 @pytest.mark.skipif(os.name != "nt", reason="握住 handle 問結束碼是 Windows 的做法")
@@ -1134,6 +1202,7 @@ def test_a_process_that_has_exited_but_is_still_held_is_not_adopted():
         child.wait(30)
 
 
+
 # ===========================================================================
 # 七、獨立監督者（`start_webrunner.py`）：斷網不算進放棄閘
 # ===========================================================================
@@ -1145,6 +1214,7 @@ def _load_launcher():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
 
 
 sw = _load_launcher()
@@ -1192,12 +1262,14 @@ def _launcher_env(monkeypatch, *, rcs, network, wait_raises=None):
     return env
 
 
+
 def _supervise(**overrides):
     params = dict(backoff_min=5.0, backoff_max=300.0, healthy_sec=60.0,
                   rapid_threshold_sec=30.0, rapid_giveup=2,
                   zero_progress_giveup=2)
     params.update(overrides)
     return sw._supervise(["python", "webrunner.py"], "selenium", None, **params)
+
 
 
 def test_launcher_offline_failures_do_not_count_toward_giving_up(monkeypatch):
@@ -1209,11 +1281,13 @@ def test_launcher_offline_failures_do_not_count_toward_giving_up(monkeypatch):
     assert env.sleeps == [], "斷網時不走退避——網路回來就立刻重生"
 
 
+
 def test_launcher_control_online_failures_still_give_up(monkeypatch):
     env = _launcher_env(monkeypatch, rcs=[1, 1, 1, 0], network=[True, True, True])
     assert _supervise() == 1
     assert env.spawns == 2 and env.waits == 0
     assert any("giving up" in text for text in env.said)
+
 
 
 def test_launcher_offline_zero_progress_does_not_count(monkeypatch):
@@ -1224,12 +1298,14 @@ def test_launcher_offline_zero_progress_does_not_count(monkeypatch):
     assert not any("zero images" in text for text in env.said)
 
 
+
 def test_launcher_counters_restart_after_a_network_wait(monkeypatch):
     """斷網前那幾次「剛好探到通」的失敗不能留到網路回來之後，一次正常失敗就放棄。"""
     env = _launcher_env(monkeypatch, rcs=[1, 1, 1, 0],
                         network=[True, False, True])
     assert _supervise() == 0, env.said
     assert env.waits == 1
+
 
 
 def test_launcher_ctrl_c_during_the_network_wait_stops_cleanly(monkeypatch):
@@ -1239,13 +1315,102 @@ def test_launcher_ctrl_c_during_the_network_wait_stops_cleanly(monkeypatch):
     assert any("Ctrl+C" in text for text in env.said)
 
 
+
 def test_launcher_blocked_generation_stops_without_probing(monkeypatch):
     env = _launcher_env(monkeypatch, rcs=[RC_BLOCKED], network=[False])
     assert _supervise() == 1
     assert env.probes == 0 and env.waits == 0
 
 
+
 def test_launcher_clean_exit_never_probes(monkeypatch):
     env = _launcher_env(monkeypatch, rcs=[0], network=[False])
     assert _supervise() == 0
     assert env.probes == 0
+
+
+
+def test_a_stop_during_the_parking_notice_hands_off_no_waiter(monkeypatch, marker):
+    """停車的通知要等聊天平台回應，`/stop` 可能落在那段時間。之後不得再交出一個等網路的
+    task 去佔 `_webrunner_supervisor_task` 的位子——`/stop` 取消的是**之前**那一個。
+
+    直接呼叫停車本身，看的是它有沒有換掉那個位子：等待的 task 自己一開始也會看停止旗標、
+    跑起來馬上就結束，所以只看「最後有沒有接續」的話，拿掉這道檢查照樣全綠。"""
+    async def _notify(_channel, _text, **_kwargs):
+        b._webrunner_stop_requested = True
+
+    monkeypatch.setattr(b, "_supervisor_notify", _notify)
+    monkeypatch.setattr(b, "_clear_pid", lambda: None)
+    monkeypatch.setattr(b, "_webrunner_stop_requested", False)
+    sentinel = object()
+    monkeypatch.setattr(b, "_webrunner_supervisor_task", sentinel)
+
+    async def _body():
+        await b._park_batch_for_network(_Channel())
+        return b._webrunner_supervisor_task
+
+    assert asyncio.run(_body()) is sentinel
+
+
+
+def test_the_restore_leaves_a_supervision_task_that_is_already_running(
+        monkeypatch, marker):
+    """開機接回的時候，監督的位子上已經有一個還沒結束的工作（例如 `on_ready` 之前就進來的
+    `/run`）：不得換掉它——換掉的話，原本那個工作就沒有人能用 `/stop` 取消了，兩條路會
+    同時去起批次。落地檔留著，由那個工作自己的收尾處理。"""
+    channel = _Channel()
+    resolved = _restore_env(monkeypatch, channel)
+    runs = _fake_runs(monkeypatch)
+    marker.write_text(json.dumps({"since": time.time(), "channel_id": 1}),
+                      encoding="utf-8")
+
+    async def _body():
+        running = asyncio.get_running_loop().create_task(asyncio.sleep(30))
+        b._webrunner_supervisor_task = running
+        try:
+            await b._restore_network_resume_once()
+            return b._webrunner_supervisor_task is running
+        finally:
+            running.cancel()
+
+    assert asyncio.run(_body()) is True
+    assert resolved == [] and runs == []
+    assert marker.exists()
+
+
+
+def test_a_run_that_cannot_get_the_chrome_slot_touches_nothing(monkeypatch, marker):
+    """驗證瀏覽器握著 Chrome 槽、等不到：這次 `/run` 放棄、說「忙線中」，**什麼都不動**——
+    不清掃、不 spawn、不取消正在等網路的那個工作、不刪它的落地檔。那個 `/run` 根本沒開始，
+    所以它也沒有取代任何東西。"""
+    env = _run_env(monkeypatch, marker)
+    swept: list = []
+
+    async def _busy(label, timeout):
+        return False
+
+    async def _sweep(*_a, **_k):
+        swept.append(1)
+        return []
+
+    monkeypatch.setattr(b, "_acquire_chrome_slot", _busy)
+    monkeypatch.setattr(b, "_terminate_all_webrunner_instances", _sweep)
+    marker.write_text(json.dumps({"since": time.time(), "channel_id": 1}),
+                      encoding="utf-8")
+    channel = _Channel()
+
+    async def _body():
+        waiting = asyncio.get_running_loop().create_task(asyncio.sleep(30))
+        b._webrunner_supervisor_task = waiting
+        try:
+            await b._do_webrunner_run(channel)
+            return waiting.cancelled() or waiting.done(), b._webrunner_supervisor_task is waiting
+        finally:
+            waiting.cancel()
+
+    stopped, kept = asyncio.run(_body())
+    assert env.spawns == [] and swept == []
+    assert not stopped and kept, "被擋下的 `/run` 取消了正在等網路的工作"
+    assert marker.exists()
+    assert b._webrunner_stop_requested is False
+    assert channel.sent == ["目前忙線中，請稍後再試。"], channel.sent

@@ -45,6 +45,7 @@ def _project_sources() -> list[Path]:
     return found
 
 
+
 def _trees() -> list[tuple[Path, ast.Module]]:
     out = []
     for path in _project_sources():
@@ -54,6 +55,7 @@ def _trees() -> list[tuple[Path, ast.Module]]:
         except (SyntaxError, UnicodeDecodeError, OSError):
             continue
     return out
+
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +79,7 @@ def _awaits_wait_on_a_parameter(fn: ast.AST) -> bool:
     return False
 
 
+
 def _sync_killers(trees) -> set[str]:
     """**非** async 的函式，body 裡對某個參數呼叫 `.kill()`。
 
@@ -97,7 +100,17 @@ def _sync_killers(trees) -> set[str]:
                         and node.func.value.id in params):
                     found.add(fn.name)
                     break
+    # 同步清理葉子可透過匯入別名呼叫；從真正的定義推出，不另放具名豁免。
+    changed = True
+    while changed:
+        before = set(found)
+        for _path, tree in trees:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    found.update(alias.asname or alias.name for alias in node.names if alias.name in found)
+        changed = found != before
     return found
+
 
 
 def _direct_reapers(trees) -> dict[str, ast.AsyncFunctionDef]:
@@ -113,6 +126,7 @@ def _direct_reapers(trees) -> dict[str, ast.AsyncFunctionDef]:
             if isinstance(fn, ast.AsyncFunctionDef) and _awaits_wait_on_a_parameter(fn):
                 direct[fn.name] = fn
     return direct
+
 
 
 def _reapers(trees) -> dict[str, ast.AsyncFunctionDef]:
@@ -146,6 +160,7 @@ def _reapers(trees) -> dict[str, ast.AsyncFunctionDef]:
     return hopped
 
 
+
 def _spawned_process_names(fn: ast.AST) -> set[str]:
     """這支函式裡被綁到 `asyncio.create_subprocess_*` 的名字。"""
     names: set[str] = set()
@@ -156,12 +171,14 @@ def _spawned_process_names(fn: ast.AST) -> set[str]:
         if isinstance(value, ast.Await):
             value = value.value
         if not (isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Attribute)
-                and value.func.attr.startswith("create_subprocess")):
+                and ((isinstance(value.func, ast.Attribute)
+                      and value.func.attr.startswith("create_subprocess"))
+                     or (isinstance(value.func, ast.Name) and value.func.id == "_spawn_backend"))):
             continue
         if isinstance(node.targets[0], ast.Name):
             names.add(node.targets[0].id)
     return names
+
 
 
 def _call_name(call: ast.Call) -> str:
@@ -169,6 +186,7 @@ def _call_name(call: ast.Call) -> str:
     if isinstance(func, ast.Attribute):
         return func.attr
     return getattr(func, "id", "")
+
 
 
 def _kills_before_first_await(body: list[ast.stmt], procs: set[str],
@@ -202,6 +220,7 @@ def _kills_before_first_await(body: list[ast.stmt], procs: set[str],
     return min(kill_lines) < first_await
 
 
+
 def _catches_base_exception(handler: ast.ExceptHandler) -> bool:
     """只有接得住 `BaseException` 的 handler 才涵蓋取消路徑。
 
@@ -217,6 +236,7 @@ def _catches_base_exception(handler: ast.ExceptHandler) -> bool:
     else:
         names = [getattr(target, "id", "")]
     return any(n in ("BaseException", "CancelledError") for n in names)
+
 
 
 def _cleanup_sites(trees, reapers, killers):
@@ -249,6 +269,7 @@ def _cleanup_sites(trees, reapers, killers):
     return sites
 
 
+
 def _compliant_shape(fn, procs, reapers, killers) -> str | None:
     """四種被接受的寫法，回哪一種（都不符合回 None）。"""
     for node in ast.walk(fn):
@@ -272,6 +293,7 @@ def _compliant_shape(fn, procs, reapers, killers) -> str | None:
             if _kills_before_first_await(reaper.body, params, killers):
                 return "收屍函式自己先砍"
     return None
+
 
 
 # （本檔不再需要具名清單：推導看不見的那個形狀與「轉交型收屍函式」結構上是同一個，
@@ -300,6 +322,7 @@ def test_every_cleanup_path_kills_before_it_awaits():
           "之前就一定跑得完。")
 
 
+
 def test_the_derivation_finds_the_reapers_and_the_sync_killers():
     """兩份推導出來的集合都不得是空的——空集合會讓上面那支無聲放寬。
 
@@ -313,6 +336,7 @@ def test_the_derivation_finds_the_reapers_and_the_sync_killers():
         f"推導不出主要的收屍函式，只找到 {sorted(reapers)}")
     assert len(reapers) >= 2, f"收屍函式只推導出 {sorted(reapers)}"
     assert killers, "一支同步砍行程的 helper 都沒推導出來"
+
 
 
 def test_all_four_accepted_shapes_are_actually_in_use():
@@ -332,11 +356,13 @@ def test_all_four_accepted_shapes_are_actually_in_use():
         f"樹上目前只用到這幾種寫法：{sorted(shapes)}")
 
 
+
 def _delegating_reapers(trees) -> dict[str, ast.AsyncFunctionDef]:
     """轉交型收屍函式：自己不等，把行程交給直接收屍的那一支。"""
     direct = _direct_reapers(trees)
     return {name: fn for name, fn in _reapers(trees).items()
             if name not in direct}
+
 
 
 def test_a_delegating_reaper_kills_before_it_delegates():
@@ -364,6 +390,7 @@ def test_a_delegating_reaper_kills_before_it_delegates():
         "呼叫它們的地方多半是收尾／取消路徑，而那裡不保證還有機會跑完任何 await。")
 
 
+
 def test_the_delegating_reaper_check_actually_fires():
     """對照組：一支轉交出去、但自己沒先砍的收屍函式要被抓到。"""
     source = '''
@@ -380,6 +407,7 @@ async def _hands_it_over(proc):
     fn = delegating["_hands_it_over"]
     assert not _kills_before_first_await(
         fn.body, {a.arg for a in fn.args.args}, _sync_killers(trees))
+
 
 
 def test_the_delegating_reaper_check_passes_a_correct_one():
@@ -399,6 +427,7 @@ async def _kills_first(proc):
     fn = _delegating_reapers(trees)["_kills_first"]
     assert _kills_before_first_await(
         fn.body, {a.arg for a in fn.args.args}, _sync_killers(trees))
+
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +532,7 @@ def test_the_detection_works_on_a_synthetic_corpus(label, source, expected):
     shape = sites[0][3]
     assert (shape is not None) is expected, (
         f"「{label}」判成 {shape!r}，預期 {'合規' if expected else '違規'}")
+
 
 
 def test_a_cancellation_only_handler_is_not_a_substitute_for_the_order():

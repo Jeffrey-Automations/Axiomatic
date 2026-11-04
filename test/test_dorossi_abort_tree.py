@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(
 
 import discord_bot as b  # noqa: E402
 import dorossi_backend as db  # noqa: E402
+import _gui_control as gui  # noqa: E402
 
 ME = os.getpid()
 
@@ -170,7 +171,8 @@ def test_abort_stops_everything_the_backend_started_and_nothing_else(trees, stat
     asyncio.run(asyncio.wait_for(scenario(), 150))
 
 
-def test_a_wide_tree_goes_down_whole(trees):
+@pytest.mark.parametrize("kill", [db._dorossi_kill_backend_tree, gui._kill_tree])
+def test_a_wide_tree_goes_down_whole(trees, kill):
     """每一層兩個、共三層（七個行程以上）：一次快照就列得完，全部不在。"""
     argv, out = trees.argv(depth=2, width=2)
     backend = _quiet_popen(argv)
@@ -178,7 +180,7 @@ def test_a_wide_tree_goes_down_whole(trees):
     family = _family(backend.pid)
     assert len(family) >= 7, family
 
-    db._dorossi_kill_backend_tree(backend)
+    kill(backend)
 
     assert _still_running(family) == []
 
@@ -516,3 +518,77 @@ def test_the_library_refuses_to_kill_a_pid_that_changed_hands():
     finally:
         child.kill()
         child.wait(_GONE_DEADLINE_SEC)
+
+
+@pytest.mark.parametrize("cleanup", ["reap", "usage"])
+def test_timeout_and_usage_cleanup_stop_the_family_and_leave_neighbours(trees, cleanup):
+    async def scenario():
+        argv, out = trees.argv(depth=2)
+        backend = await asyncio.create_subprocess_exec(
+            *argv, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        other_argv, other_out = trees.argv(depth=1)
+        neighbour = _quiet_popen(other_argv)
+        try:
+            trees.wait_up(out, depth=2)
+            trees.wait_up(other_out, depth=1)
+            family, others = _family(backend.pid), _family(neighbour.pid)
+            if cleanup == "reap":
+                await db._dorossi_reap_proc(backend, timeout=0.01)
+            else:
+                await b._reap_usage_query_proc(backend)
+            assert _still_running(family) == []
+            assert all(p.is_running() for p in others)
+            assert neighbour.poll() is None
+        finally:
+            neighbour.kill()
+    asyncio.run(asyncio.wait_for(scenario(), 150))
+
+
+@pytest.mark.parametrize("release_first", [False, True])
+def test_waiting_turn_abort_returns_the_slot_without_waiting_for_its_owner(monkeypatch, release_first):
+    async def scenario():
+        sem = asyncio.Semaphore(0)
+        monkeypatch.setattr(b, "_dorossi_backend_sem", sem)
+        turn = b._DorossiTurnState("u", "s")
+        entered = []
+        async def waiting():
+            with pytest.raises(b._DorossiTurnAborted):
+                async with b._dorossi_backend_slot(turn):
+                    entered.append(True)
+        task = asyncio.create_task(waiting())
+        await asyncio.sleep(0)
+        assert turn.phase == "wait" and not task.done()
+        if release_first:
+            sem.release()
+        turn.request_abort()
+        await asyncio.sleep(0)
+        assert task.done() and entered == []
+        await task
+        assert sem._value == int(release_first)
+        assert turn.pending is None
+    asyncio.run(asyncio.wait_for(scenario(), 5))
+
+
+def test_a_tool_free_backend_is_cancelled_on_the_next_loop_iteration():
+    async def scenario():
+        turn = b._DorossiTurnState("u", "s")
+        started = asyncio.Event()
+        cancelled = []
+        async def backend():
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.append(True)
+        async def call():
+            with pytest.raises(b._DorossiTurnAborted):
+                await b._dorossi_turn_backend(turn, None, backend)
+        task = asyncio.create_task(call())
+        await started.wait()
+        turn.request_abort()
+        await asyncio.sleep(0)
+        assert task.done() and cancelled == [True]
+        await task
+        assert turn.pending is None
+    asyncio.run(asyncio.wait_for(scenario(), 5))

@@ -56,12 +56,11 @@ selenium 的「Chrome instance exited」本身沒有原因）。
 如果不是你改的，最常見的原因是編輯器存檔時動到行尾空白；把該行改回原樣，或直接
 讓它重跑（前一個編號資料夾裡的圖不會被刪）。
 
-## 登入失敗 / 一直 fallback 到 selenium
+## 登入失敗 / 啟動後反覆重啟
 
-`/run` 先試 je 變體，5 分鐘內非零退出（通常是 `/login` 被反機器人擋）會自動
-切到 selenium 變體並公告。若兩個變體都在啟動階段就快速失敗，監督器的
-rapid-fail giveup 會在連續 5 次（`rapid_fail_giveup_count`）短命崩潰後貼警告
-並停止重生，避免無限迴圈。
+`/run` 使用單一瀏覽器入口。先確認已安裝符合 `requirements.txt` 下限的函式庫，再查看啟動紀錄與隔離驗證結果。
+監督器會退避重試；連續短命失敗達 `rapid_fail_giveup_count`，或連續零產出達上限時，會貼出警告並停止重生，避免無限迴圈。
+站方阻擋或設定未完成時，應先修正問題再重新啟動。
 
 ## `/run` 說「nothing would run」
 

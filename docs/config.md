@@ -67,6 +67,10 @@ ID、帳號 ID、主機路徑與本機應用程式清單）。repo 帶的是 `*.
 
 ## bot_config.json
 
+| 設定鍵 | 預設值 | 說明 |
+|---|---|---|
+| `webrunner_path` | `""` | 選配的瀏覽器函式庫工作樹；環境變數優先，之後依序使用此設定、同層工作樹與已安裝套件。相對路徑以專案根目錄為準。 |
+
 bot runtime 設定，**啟動時讀一次**，改了要 `/sys restart` 才生效（這些值在事件
 迴圈啟動前就 wire 進 dispatcher / presence 任務 / 頻道過濾器）。例外是 `/config reload`
 （限擁有者）會當場重讀的那幾個：`user_roles`、`alert_user_id`、`min_free_disk_gb`、
@@ -138,7 +142,6 @@ bot runtime 設定，**啟動時讀一次**，改了要 `/sys restart` 才生效
 | `dorossi_model_check.enabled` | `true` | 關掉的話模型清單就固定在程式內建的那幾筆 |
 | `dorossi_model_check.interval_hours` | `24.0` | 隔多久檢查一次，必須大於 `0`。上次檢查的時刻存在模型目錄檔裡，所以重啟 bot 不會重跑 |
 | `dorossi_model_check.announce_channel_id` | `0` | 發現新模型時公告到哪個頻道；`0` ＝沿用 `daily_health_report.channel_id`（它自己 `0` 就是 `channel_id`） |
-| `webrunner_supervisor.fallback_window_sec` | `300` | `/run` 先試 wrapper 變體；它在這麼多秒內非零結束就當成啟動失敗，自動改跑 Selenium 變體。過了這個視窗之後的崩潰不再切換 |
 | `webrunner_supervisor.respawn_backoff_min_sec` | `5.0` | 崩潰後重生的退避起點（秒） |
 | `webrunner_supervisor.respawn_backoff_max_sec` | `300.0` | 退避上限（秒） |
 | `webrunner_supervisor.healthy_threshold_sec` | `60.0` | 活超過這麼久才算健康，退避重設回起點 |

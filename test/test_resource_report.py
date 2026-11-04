@@ -60,7 +60,6 @@ def machine_of(facts=None, notes=()):
     ("start_discord_bot.py", rr.ROLE_LAUNCHER),
     ("start_webrunner.py", rr.ROLE_LAUNCHER),
     ("run_batch.py", rr.ROLE_LAUNCHER),
-    ("webrunner_novelai.py", rr.ROLE_BATCH),
     ("webrunner_je_only.py", rr.ROLE_BATCH),
 ])
 def test_a_python_process_is_classified_by_the_script_it_runs(script, expected):
@@ -130,7 +129,7 @@ def test_a_batch_under_the_bot_stays_the_batch():
     """批次是 bot 生的，所以它同時也是「bot 的後代」。先判腳本名那一段，否則整棵
     瀏覽器會被算進「其他子行程」，而「背景產圖程式」那一行會消失。"""
     rows = [row(1, script="discord_bot.py"),
-            row(2, script="webrunner_novelai.py", ppid=1),
+            row(2, script="webrunner_je_only.py", ppid=1),
             row(3, "chrome.exe", ppid=2)]
     roles = rr.classify(rows)
     assert roles[2] == rr.ROLE_BATCH
@@ -158,8 +157,8 @@ def test_a_role_whose_every_field_is_unreadable_reports_nothing_not_zero():
 def test_a_virtualenv_stub_pair_counts_as_one_instance_but_two_processes():
     """轉接殼不是多一個實例（否則健康報告會永遠說多了一個孤兒），但它真的佔
     記憶體，所以行程數與記憶體都要算它。"""
-    rows = [row(10, script="webrunner_novelai.py", rss=5),
-            row(11, script="webrunner_novelai.py", ppid=10, rss=7)]
+    rows = [row(10, script="webrunner_je_only.py", rss=5),
+            row(11, script="webrunner_je_only.py", ppid=10, rss=7)]
     usage = rr.summarise(rows, rr.classify(rows))[rr.ROLE_BATCH]
     assert (usage.logical, usage.procs, usage.rss) == (1, 2, 12)
 
@@ -177,7 +176,7 @@ def test_the_browser_tree_is_never_collapsed_into_one():
 def test_the_oldest_process_in_a_role_is_the_one_reported():
     """「批次已經跑了十四小時」是擁有者真正會問的那個數字，所以取最早的那一個，
     不是最晚的、也不是平均。"""
-    rows = [row(1, script="webrunner_novelai.py", started=5000.0),
+    rows = [row(1, script="webrunner_je_only.py", started=5000.0),
             row(2, script="webrunner_je_only.py", started=1000.0)]
     usage = rr.summarise(rows, rr.classify(rows))[rr.ROLE_BATCH]
     assert usage.oldest_started == 1000.0
@@ -195,7 +194,7 @@ def test_roles_come_back_in_the_declared_order():
     """回覆是一行一個角色，順序由「本體 → 它生出來的東西」決定；`dict` 的插入
     順序就是渲染順序，所以這件事要釘住。"""
     rows = [row(3, "chrome.exe"), row(1, script="discord_bot.py"),
-            row(2, script="webrunner_novelai.py")]
+            row(2, script="webrunner_je_only.py")]
     got = list(rr.summarise(rows, rr.classify(rows)))
     assert got == [rr.ROLE_BOT, rr.ROLE_BATCH, rr.ROLE_BROWSER]
 

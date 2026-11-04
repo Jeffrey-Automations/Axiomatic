@@ -215,10 +215,10 @@ def test_the_scanner_sees_every_python_file_in_the_live_stack():
     """掃描範圍不得被 `_SKIP_DIRS` 悄悄挖空。
 
     這條守的是「有人為了讓測試變綠，把某個目錄加進排除清單」。排除清單只該有
-    非本專案原始碼的目錄。
+    reference-only 的 `legacy/` 與非本專案原始碼的目錄。
     """
     scanned = {p.name for p in _project_sources()}
-    for must in ("discord_bot.py", "webrunner_novelai.py", "webrunner_je_only.py",
+    for must in ("discord_bot.py", "webrunner_je_only.py", "webrunner_je_only.py",
                  "_webrunner_shared.py", "dashboard_server.py",
                  "start_discord_bot.py", "start_webrunner.py",
                  "verify_browser.py"):

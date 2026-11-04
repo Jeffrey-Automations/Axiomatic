@@ -1,12 +1,15 @@
 """隔離驗證那條路——`verify_browser.py --full` 真正在跑的那個子行程。
 
 `CLAUDE.md` 的驗證守則規定：動到瀏覽器／driver／Selenium 啟動路徑，就要用
-`verify_browser.py` 實證。`--full` 做的事是開一個子行程跑
-`webrunner_novelai._run_setup_verification()`——登入、導航、確認產圖介面可達，必要時
-在隔離目錄真的產一張用完即丟的圖。也就是說：**這五支函式是這個專案「我驗過了」這句話
-的全部依據**，而量起來它們幾乎一行都沒被跑過（65＋20＋27＋11＋21 ＝ 144 行敘述）。
-全樹提到 `_run_setup_verification` 的四個地方全是 AST 靜態檢查——檢查它的**形狀**，
-沒有一個真的呼叫過它。
+`verify_browser.py` 實證。`--full` 做的事是開一個子行程跑某個變體的
+`_run_setup_verification()`——登入、導航、確認產圖介面可達，必要時在隔離目錄真的產一張
+用完即丟的圖。也就是說：**這幾支函式是這個專案「我驗過了」這句話的全部依據**，而寫這
+一檔之前量起來它們幾乎一行都沒被跑過（65＋20＋27＋11＋21 ＝ 144 行敘述）。
+
+2026-10-01 起本體在 `_webrunner_shared`（`run_setup_verification` ＋ `verify_capture_tree`
+／`verify_reap_tree`／`verify_rmtree`／`verify_generate_one`），兩個變體各自只剩一層
+薄殼（§8.222 G1：為了只留 je 變體，je 也要有這條路）。所以本檔的**整條路**測試對兩個
+變體各跑一次（`vfy` 夾具帶參數）；只測共用 helper 的那幾節直接打 `ws.*`。
 
 這正是這個 repo 記過好幾次的形狀：`verify_browser.run_full` 那次的 cp950 缺陷之所以
 能躲過整輪清查，就是因為**工具讀起來是健康的**——那行 `VERIFY-BROWSER: OK` 是純
@@ -25,10 +28,11 @@ ASCII，活得好好的，壞掉的是旁邊的診斷。一個驗證工具最糟
 `_SUPPRESS_ORPHAN_SWEEP` 在開 driver **之前**沒有設起來，那次驗證會把整台機器上的
 chrome.exe 掃光，中斷一個已經跑了幾十小時的批次。同理，`CHROME_PROFILE_SNAPSHOT`
 若沒有先指到隔離目錄，驗證就會去寫正式批次用的快照目錄。所以這裡的斷言量的是
-**呼叫 `build_stealth_driver()` 的那一刻**那兩個全域變數的值，不是函式跑完之後的值
+**開 driver 的那一刻**（`build_stealth_driver()` / `start_driver()`）那兩個全域變數的
+值，不是函式跑完之後的值
 ——跑完才對是沒有用的。
 
-**三、回收要先對身分。** `_verify_reap_tree` 在 `driver.quit()` **之後**才殺
+**三、回收要先對身分。** `verify_reap_tree` 在 `driver.quit()` **之後**才殺
 ——而 quit 會讓幾十個 chrome 子行程結束、把 PID 釋放回池子。拿裸 pid 去殺，殺的是
 **現在**那個 pid 的擁有者。判準是 `(pid, create_time)`：對不上、或當初根本沒抓到
 （`None`），一律跳過。「不確定就不殺」在這裡是硬要求，因為誤殺的代價是一個正式批次。
@@ -51,8 +55,10 @@ import pytest
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "axiomatic"))
 
-import webrunner_novelai as wn  # noqa: E402
+import webrunner_je_only as je  # noqa: E402
 import _webrunner_shared as ws  # noqa: E402
+
+_VARIANTS = {"je": je}
 
 PKG_ROOT = Path(__file__).resolve().parent.parent / "axiomatic"
 
@@ -68,14 +74,34 @@ class _FakeDriver:
 
     def quit(self):
         self._env.quit_calls += 1
+        self._env.order.append("quit")
         if self._env.quit_raises:
             raise RuntimeError("quit 失敗")
 
 
-@pytest.fixture
-def vfy(monkeypatch, tmp_path):
-    """把整條路上每一個會碰到外界的東西換成替身，並記錄**呼叫當下**的全域狀態。"""
+class _FakeWrapper:
+    """je 變體的 `wr` 替身：`start_driver` 之後 `current_webdriver` 才有東西。"""
+
+    def __init__(self, env):
+        self._env = env
+        self.current_webdriver = None
+
+    def quit(self):
+        driver, self.current_webdriver = self.current_webdriver, None
+        if driver is not None:
+            driver.quit()
+
+
+@pytest.fixture(params=sorted(_VARIANTS))
+def vfy(request, monkeypatch, tmp_path):
+    """把整條路上每一個會碰到外界的東西換成替身，並記錄**呼叫當下**的全域狀態。
+
+    兩個變體各跑一次：開 driver 的方式不同（`build_stealth_driver()` 回 driver 物件 /
+    `start_driver()` 把它綁到 `wr`），其餘全部是共用本體。
+    """
+    mod = _VARIANTS[request.param]
     env = types.SimpleNamespace(
+        variant=request.param, mod=mod,
         credentials_raise=None, spawn_raises=None, setup_ok=True,
         areas=["#prompt"], gen_btn=object(), generate_result=(True, "verify.png"),
         capture_raises=False, quit_raises=False, tree={4321: 111.0},
@@ -83,7 +109,7 @@ def vfy(monkeypatch, tmp_path):
         # 記錄
         spawn_calls=0, sweep_at_spawn=None, snapshot_at_spawn=None,
         quit_calls=0, reap_args=[], rmtree=[], setup_args=[], generate_args=[],
-        capture_args=[], sync_back_calls=0,
+        capture_args=[], sync_back_calls=0, order=[], published_at_setup=[],
     )
 
     def fake_read_credentials(path):
@@ -91,24 +117,21 @@ def vfy(monkeypatch, tmp_path):
             raise env.credentials_raise
         return ("someone@example.invalid", "pw")
 
-    def fake_build():
+    def _spawn():
         env.spawn_calls += 1
         # **在這一刻**量——跑完才對是沒有用的。
-        env.sweep_at_spawn = wn._SUPPRESS_ORPHAN_SWEEP
-        env.snapshot_at_spawn = wn.CHROME_PROFILE_SNAPSHOT
+        env.sweep_at_spawn = mod._SUPPRESS_ORPHAN_SWEEP
+        env.snapshot_at_spawn = mod.CHROME_PROFILE_SNAPSHOT
         if env.spawn_raises is not None:
             raise env.spawn_raises
         return _FakeDriver(env)
 
     def fake_capture(pid):
         env.capture_args.append(pid)
+        env.order.append("capture")
         if env.capture_raises:
             raise RuntimeError("抓不到行程樹")
         return dict(env.tree)
-
-    def fake_setup(driver, email, password):
-        env.setup_args.append((email, password))
-        return env.setup_ok
 
     def fake_reap(tree):
         env.reap_args.append(dict(tree))
@@ -117,7 +140,7 @@ def vfy(monkeypatch, tmp_path):
     def fake_rmtree(path):
         env.rmtree.append(Path(path))
 
-    def fake_generate(driver, output_dir):
+    def fake_generate(port_, output_dir):
         env.generate_args.append(Path(output_dir))
         return env.generate_result
 
@@ -125,32 +148,44 @@ def vfy(monkeypatch, tmp_path):
         env.sync_back_calls += 1
         raise AssertionError("隔離驗證**絕對不可以**把 profile 同步回正式登入態")
 
-    monkeypatch.setattr(wn, "read_credentials", fake_read_credentials)
-    monkeypatch.setattr(wn, "build_stealth_driver", fake_build)
-    monkeypatch.setattr(wn, "_verify_capture_tree", fake_capture)
-    monkeypatch.setattr(wn, "_setup_session", fake_setup)
-    monkeypatch.setattr(wn, "_verify_reap_tree", fake_reap)
-    monkeypatch.setattr(wn, "_verify_rmtree", fake_rmtree)
-    monkeypatch.setattr(wn, "_verify_generate_one", fake_generate)
-    monkeypatch.setattr(wn, "_sync_chrome_profile_back", fake_sync_back,
+    wrapper = _FakeWrapper(env)
+    monkeypatch.setattr(je, "wr", wrapper)
+
+    def fake_start():
+        wrapper.current_webdriver = _spawn()
+
+    def fake_setup(email, password):
+        env.published_at_setup.append(wrapper.current_webdriver)
+        env.setup_args.append((email, password))
+        return env.setup_ok
+
+    monkeypatch.setattr(je, "start_driver", fake_start)
+    monkeypatch.setattr(je, "_setup_session", fake_setup)
+
+
+    monkeypatch.setattr(mod, "read_credentials", fake_read_credentials)
+    monkeypatch.setattr(mod, "_sync_chrome_profile_back", fake_sync_back,
                         raising=False)
-    monkeypatch.setattr(wn, "webdriver_wrapper_instance",
-                        types.SimpleNamespace(current_webdriver=None))
+    monkeypatch.setattr(ws, "verify_capture_tree", fake_capture)
+    monkeypatch.setattr(ws, "verify_reap_tree", fake_reap)
+    monkeypatch.setattr(ws, "verify_rmtree", fake_rmtree)
+    monkeypatch.setattr(ws, "verify_generate_one", fake_generate)
     monkeypatch.setattr(ws, "find_prompt_areas", lambda _p: env.areas)
     monkeypatch.setattr(ws, "find_generate_button", lambda _p: env.gen_btn)
 
     # 全域狀態：monkeypatch 會在測試結束時還原，函式自己的 `global` 指派不會外洩。
-    monkeypatch.setattr(wn, "_SUPPRESS_ORPHAN_SWEEP", False)
-    monkeypatch.setattr(wn, "CHROME_PROFILE_SNAPSHOT",
+    monkeypatch.setattr(mod, "_SUPPRESS_ORPHAN_SWEEP", False)
+    monkeypatch.setattr(mod, "CHROME_PROFILE_SNAPSHOT",
                         Path("D:/絕對不該被寫到的正式快照"))
-    monkeypatch.setattr(wn, "OUTPUT_ROOT", tmp_path / "output")
+    monkeypatch.setattr(ws, "OUTPUT_ROOT", tmp_path / "output")
 
-    for name in (wn.VERIFY_GENERATE_ENV, wn.VERIFY_PROFILE_DEST_ENV,
-                 wn.VERIFY_OUTPUT_DIR_ENV):
+    for name in (ws.VERIFY_GENERATE_ENV, ws.VERIFY_PROFILE_DEST_ENV,
+                 ws.VERIFY_OUTPUT_DIR_ENV):
         monkeypatch.delenv(name, raising=False)
     env.profile_dest = tmp_path / "隔離profile"
-    monkeypatch.setenv(wn.VERIFY_PROFILE_DEST_ENV, str(env.profile_dest))
+    monkeypatch.setenv(ws.VERIFY_PROFILE_DEST_ENV, str(env.profile_dest))
     env.tmp = tmp_path
+    env.run = mod._run_setup_verification
     return env
 
 
@@ -202,9 +237,9 @@ def test_each_exit_returns_its_own_code(vfy, capsys, monkeypatch, how, rc):
     「driver 起不來」在畫面上長得一模一樣，而這兩件事要做的處置完全不同。
     """
     if how == "generate":
-        monkeypatch.setenv(wn.VERIFY_GENERATE_ENV, "1")
+        monkeypatch.setenv(ws.VERIFY_GENERATE_ENV, "1")
     _break(vfy, how)
-    assert wn._run_setup_verification() == rc
+    assert vfy.run() == rc
 
 
 @pytest.mark.parametrize("how, rc", _EXITS, ids=[c[0] for c in _EXITS])
@@ -218,9 +253,9 @@ def test_the_result_line_and_the_exit_code_always_agree(vfy, capsys, monkeypatch
     而不是各寫各的字面斷言。
     """
     if how == "generate":
-        monkeypatch.setenv(wn.VERIFY_GENERATE_ENV, "1")
+        monkeypatch.setenv(ws.VERIFY_GENERATE_ENV, "1")
     _break(vfy, how)
-    actual = wn._run_setup_verification()
+    actual = vfy.run()
     lines = _result_lines(capsys)
     assert len(lines) == 1, f"結果行不是恰好一行：{lines}"
     said_ok = lines[0].startswith("VERIFY-SETUP: OK")
@@ -233,7 +268,7 @@ def test_a_failure_reason_is_carried_on_the_same_line(vfy, capsys):
     """原因要跟在 `FAIL` 後面同一行——`verify_browser._reason_from_child_output`
     是逐行掃、只認開頭是 `VERIFY-SETUP: FAIL` 的那一行。換行就等於沒有原因。"""
     vfy.setup_ok = False
-    wn._run_setup_verification()
+    vfy.run()
     line = _result_lines(capsys)[0]
     assert line.startswith("VERIFY-SETUP: FAIL")
     assert line[len("VERIFY-SETUP: FAIL"):].strip(), "FAIL 後面是空的"
@@ -255,7 +290,7 @@ def test_a_driver_that_will_not_start_reports_the_full_message(vfy, capsys):
             return self.msg
 
     vfy.spawn_raises = _MsgOnly("session not created: 版本對不上")
-    assert wn._run_setup_verification() == 1
+    assert vfy.run() == 1
     line = _result_lines(capsys)[0]
     assert "版本對不上" in line, f"完整訊息不見了：{line!r}"
 
@@ -271,7 +306,7 @@ def test_the_orphan_sweep_is_suppressed_before_the_driver_is_started(vfy):
     chrome.exe 掃光；旗標若沒有在**開 driver 之前**設起來，一次驗證就會中斷一個
     已經跑了幾十小時的批次。所以量的是**呼叫的那一刻**——跑完才對是沒有用的。
     """
-    wn._run_setup_verification()
+    vfy.run()
     assert vfy.spawn_calls == 1
     assert vfy.sweep_at_spawn is True, (
         "開 driver 的時候 `_SUPPRESS_ORPHAN_SWEEP` 還不是 True——這一次驗證會把"
@@ -281,22 +316,22 @@ def test_the_orphan_sweep_is_suppressed_before_the_driver_is_started(vfy):
 def test_the_profile_snapshot_points_at_the_isolated_dir_before_the_driver_starts(vfy):
     """快照目的地同樣要在開 driver **之前**就指到隔離目錄，否則驗證會去寫正式
     批次用的那一份。"""
-    wn._run_setup_verification()
+    vfy.run()
     assert vfy.snapshot_at_spawn == vfy.profile_dest
 
 
 def test_the_isolated_destination_honours_the_environment_variable(vfy, monkeypatch):
     elsewhere = vfy.tmp / "別的地方"
-    monkeypatch.setenv(wn.VERIFY_PROFILE_DEST_ENV, str(elsewhere))
-    wn._run_setup_verification()
+    monkeypatch.setenv(ws.VERIFY_PROFILE_DEST_ENV, str(elsewhere))
+    vfy.run()
     assert vfy.snapshot_at_spawn == elsewhere
 
 
 def test_without_the_environment_variable_it_still_never_uses_the_production_snapshot(
         vfy, monkeypatch):
     """預設值也必須是隔離的。`.chrome_profile_snap` 是正式批次在用的那一份。"""
-    monkeypatch.delenv(wn.VERIFY_PROFILE_DEST_ENV, raising=False)
-    wn._run_setup_verification()
+    monkeypatch.delenv(ws.VERIFY_PROFILE_DEST_ENV, raising=False)
+    vfy.run()
     assert vfy.snapshot_at_spawn is not None
     assert vfy.snapshot_at_spawn.name != ".chrome_profile_snap"
     assert "verify" in vfy.snapshot_at_spawn.name
@@ -308,7 +343,7 @@ def test_the_login_profile_is_never_synced_back(vfy):
     替身會 raise，所以真的被呼叫時這支會紅——而不是安靜地記一個數字然後在最後
     才斷言（那種寫法在「呼叫發生在某個 `except` 裡被吞掉」時會失效）。
     """
-    wn._run_setup_verification()
+    vfy.run()
     assert vfy.sync_back_calls == 0
 
 
@@ -326,9 +361,9 @@ def test_the_isolated_profile_is_removed_on_every_path_that_created_one(
     複製完才失敗，所以「沒有 driver 物件」不等於「沒有東西要刪」。
     """
     if how == "generate":
-        monkeypatch.setenv(wn.VERIFY_GENERATE_ENV, "1")
+        monkeypatch.setenv(ws.VERIFY_GENERATE_ENV, "1")
     _break(vfy, how)
-    wn._run_setup_verification()
+    vfy.run()
     assert vfy.profile_dest in vfy.rmtree, (
         f"`{how}` 這條路沒有刪掉隔離 profile：{vfy.rmtree}")
 
@@ -347,7 +382,7 @@ def test_the_credentials_path_returns_before_anything_is_created(vfy):
     `verify_browser.py` 的輸出裡變成同一件事，而這兩者要做的處置完全不同。
     """
     vfy.credentials_raise = OSError("憑證檔讀不到")
-    assert wn._run_setup_verification() == 2
+    assert vfy.run() == 2
     assert vfy.spawn_calls == 0, "憑證都還沒讀到就去開 driver 了"
     assert vfy.rmtree == []
     assert vfy.reap_args == []
@@ -355,20 +390,20 @@ def test_the_credentials_path_returns_before_anything_is_created(vfy):
 
 def test_the_isolated_output_dir_is_only_removed_when_it_was_used(vfy, monkeypatch):
     """沒開 `--generate` 就沒有輸出目錄；照刪會刪到一個不屬於這次驗證的東西。"""
-    wn._run_setup_verification()
+    vfy.run()
     assert len(vfy.rmtree) == 1, f"多刪了東西：{vfy.rmtree}"
 
     vfy.rmtree.clear()
-    monkeypatch.setenv(wn.VERIFY_GENERATE_ENV, "1")
-    wn._run_setup_verification()
+    monkeypatch.setenv(ws.VERIFY_GENERATE_ENV, "1")
+    vfy.run()
     assert len(vfy.rmtree) == 2, f"開了 generate 卻沒刪輸出目錄：{vfy.rmtree}"
 
 
 def test_the_isolated_output_dir_honours_its_environment_variable(vfy, monkeypatch):
     target = vfy.tmp / "隔離輸出"
-    monkeypatch.setenv(wn.VERIFY_GENERATE_ENV, "1")
-    monkeypatch.setenv(wn.VERIFY_OUTPUT_DIR_ENV, str(target))
-    wn._run_setup_verification()
+    monkeypatch.setenv(ws.VERIFY_GENERATE_ENV, "1")
+    monkeypatch.setenv(ws.VERIFY_OUTPUT_DIR_ENV, str(target))
+    vfy.run()
     assert vfy.generate_args == [target]
     assert target in vfy.rmtree
 
@@ -376,19 +411,19 @@ def test_the_isolated_output_dir_honours_its_environment_variable(vfy, monkeypat
 def test_generation_only_happens_when_it_was_asked_for(vfy, monkeypatch):
     """預設不產圖。`--full` 不帶 `--generate` 時真的去產一張，等於每次驗證都消耗
     一次額度，而那正是這條路最想避免的副作用。"""
-    wn._run_setup_verification()
+    vfy.run()
     assert vfy.generate_args == []
 
-    monkeypatch.setenv(wn.VERIFY_GENERATE_ENV, "1")
-    wn._run_setup_verification()
+    monkeypatch.setenv(ws.VERIFY_GENERATE_ENV, "1")
+    vfy.run()
     assert len(vfy.generate_args) == 1
 
 
 @pytest.mark.parametrize("value", ["", "0", "true", "yes", "2"])
 def test_only_the_exact_flag_value_turns_generation_on(vfy, monkeypatch, value):
     """判準是 `== "1"`。任何其他值都不算——包括看起來像「開」的字。"""
-    monkeypatch.setenv(wn.VERIFY_GENERATE_ENV, value)
-    wn._run_setup_verification()
+    monkeypatch.setenv(ws.VERIFY_GENERATE_ENV, value)
+    vfy.run()
     assert vfy.generate_args == []
 
 
@@ -397,7 +432,7 @@ def test_only_the_exact_flag_value_turns_generation_on(vfy, monkeypatch, value):
 # ---------------------------------------------------------------------------
 
 def test_the_driver_is_quit_and_its_own_tree_is_reaped(vfy):
-    wn._run_setup_verification()
+    vfy.run()
     assert vfy.quit_calls == 1
     assert vfy.reap_args == [{4321: 111.0}]
 
@@ -405,25 +440,15 @@ def test_the_driver_is_quit_and_its_own_tree_is_reaped(vfy):
 def test_the_tree_is_captured_before_quit_not_after(vfy, monkeypatch):
     """抓行程樹必須在 `quit()` **之前**——quit 會讓幾十個 chrome 子行程結束，之後
     再抓就只剩空的，那些被 reparent 的殘留就沒人回收了。"""
-    order = []
-
-    class _Recording(_FakeDriver):
-        def quit(self):
-            order.append("quit")
-            return super().quit()
-
-    monkeypatch.setattr(wn, "_verify_capture_tree",
-                        lambda _pid: (order.append("capture"), dict(vfy.tree))[1])
-    monkeypatch.setattr(wn, "build_stealth_driver", lambda: _Recording(vfy))
-    wn._run_setup_verification()
-    assert order == ["capture", "quit"], order
+    vfy.run()
+    assert vfy.order == ["capture", "quit"], vfy.order
 
 
 def test_a_non_empty_reap_is_reported_as_progress(vfy, capsys):
     """回收到殘留要出聲。這條路是**事後判讀**用的：`verify_browser.py` 的輸出由人
     或 agent 直接讀，「這次留了幾個行程下來」是唯一看得到的線索。"""
     vfy.reaped_count = 3
-    wn._run_setup_verification()
+    vfy.run()
     out = capsys.readouterr().out
     assert "3" in out and "清理" in out
 
@@ -432,7 +457,7 @@ def test_a_failed_capture_does_not_stop_the_verification(vfy, capsys):
     """抓不到行程樹是「少回收一點」，不是「驗證失敗」。把它變成失敗，等於讓一個
     無害的權限問題否決掉整次驗證。"""
     vfy.capture_raises = True
-    assert wn._run_setup_verification() == 0
+    assert vfy.run() == 0
     assert vfy.reap_args == [{}], "抓不到的時候應該拿空的樹去回收"
 
 
@@ -440,33 +465,32 @@ def test_a_driver_that_refuses_to_quit_does_not_change_the_verdict(vfy, capsys):
     """`quit()` 在 driver 已經死掉時很常丟例外。讓它翻掉整個結果，就會把一次成功
     的驗證報成失敗。"""
     vfy.quit_raises = True
-    assert wn._run_setup_verification() == 0
+    assert vfy.run() == 0
     assert _result_lines(capsys)[0].startswith("VERIFY-SETUP: OK")
 
 
 def test_the_cleanup_runs_even_when_the_driver_never_started(vfy):
     """spawn 就失敗時沒有 driver 可以 quit，但清理照樣要跑完。"""
     vfy.spawn_raises = RuntimeError("起不來")
-    assert wn._run_setup_verification() == 1
+    assert vfy.run() == 1
     assert vfy.quit_calls == 0
     assert vfy.reap_args == [{}]
     assert vfy.profile_dest in vfy.rmtree
 
 
-def test_the_current_driver_is_published_before_setup_runs(vfy, monkeypatch):
-    """共用的 DOM 輔助函式是透過 `webdriver_wrapper_instance` 取得 driver 的；
-    沒設、或設得太晚，整條 setup 就是對著一個 None 操作。"""
-    seen = []
-    monkeypatch.setattr(
-        wn, "_setup_session",
-        lambda driver, email, password: (
-            seen.append(wn.webdriver_wrapper_instance.current_webdriver), True)[1])
-    wn._run_setup_verification()
+def test_the_current_driver_is_published_before_setup_runs(vfy):
+    """wrapper 的 `current_webdriver` 在 setup 開始之前就要指著剛開的 driver。
+
+    selenium 變體要自己把它設上去（`hide_chrome_window` 一類 wrapper helper 讀它）；je 變體
+    的 port 整個建在 `wr` 上，`start_driver` 的 `set_driver` 本來就會綁好。沒設、或設得太晚，
+    整條 setup 就是對著一個 None 操作。"""
+    vfy.run()
+    seen = vfy.published_at_setup
     assert seen and seen[0] is not None, "setup 開始跑的時候 driver 還沒發佈出去"
 
 
 # ---------------------------------------------------------------------------
-# 四、`_verify_capture_tree`
+# 四、`verify_capture_tree`
 # ---------------------------------------------------------------------------
 
 class _FakeProc:
@@ -515,52 +539,52 @@ def _without_psutil(monkeypatch):
 
 
 def test_capturing_without_a_service_pid_yields_nothing():
-    assert wn._verify_capture_tree(None) == {}
-    assert wn._verify_capture_tree(0) == {}
+    assert ws.verify_capture_tree(None) == {}
+    assert ws.verify_capture_tree(0) == {}
 
 
 def test_capturing_records_the_parent_and_every_descendant(monkeypatch):
     kids = [_FakeProc(21, 202.0), _FakeProc(22, 203.0)]
     procs = {11: _FakeProc(11, 201.0, kids)}
     _fake_psutil(monkeypatch, procs)
-    assert wn._verify_capture_tree(11) == {11: 201.0, 21: 202.0, 22: 203.0}
+    assert ws.verify_capture_tree(11) == {11: 201.0, 21: 202.0, 22: 203.0}
 
 
 def test_a_child_whose_identity_cannot_be_read_is_recorded_as_unknown(monkeypatch):
-    """身分讀不到要記成 `None`，不是**漏掉**。漏掉的話 `_verify_reap_tree` 連
+    """身分讀不到要記成 `None`，不是**漏掉**。漏掉的話 `verify_reap_tree` 連
     「跳過」的機會都沒有，那個 pid 就完全不在收尾的視野裡了。"""
     kids = [_FakeProc(21, None, born_raises=True)]
     _fake_psutil(monkeypatch, {11: _FakeProc(11, 201.0, kids)})
-    assert wn._verify_capture_tree(11) == {11: 201.0, 21: None}
+    assert ws.verify_capture_tree(11) == {11: 201.0, 21: None}
 
 
 def test_a_parent_whose_identity_cannot_be_read_still_yields_its_pid(monkeypatch):
     _fake_psutil(monkeypatch, {11: _FakeProc(11, None, born_raises=True)})
-    assert wn._verify_capture_tree(11) == {11: None}
+    assert ws.verify_capture_tree(11) == {11: None}
 
 
 def test_a_service_pid_that_is_already_gone_still_yields_its_own_entry(monkeypatch):
     _fake_psutil(monkeypatch, {}, missing=(11,))
-    assert wn._verify_capture_tree(11) == {11: None}
+    assert ws.verify_capture_tree(11) == {11: None}
 
 
 def test_without_psutil_the_capture_degrades_to_the_bare_pid(monkeypatch):
     _without_psutil(monkeypatch)
-    assert wn._verify_capture_tree(11) == {11: None}
+    assert ws.verify_capture_tree(11) == {11: None}
 
 
 # ---------------------------------------------------------------------------
-# 五、`_verify_reap_tree`——「不確定就不殺」
+# 五、`verify_reap_tree`——「不確定就不殺」
 # ---------------------------------------------------------------------------
 
 def test_reaping_an_empty_tree_kills_nothing():
-    assert wn._verify_reap_tree({}) == 0
+    assert ws.verify_reap_tree({}) == 0
 
 
 def test_a_matching_identity_is_killed(monkeypatch):
     proc = _FakeProc(11, 201.0)
     _fake_psutil(monkeypatch, {11: proc})
-    assert wn._verify_reap_tree({11: 201.0}) == 1
+    assert ws.verify_reap_tree({11: 201.0}) == 1
     assert proc.killed == 1
 
 
@@ -572,19 +596,19 @@ def test_a_recycled_pid_is_never_killed(monkeypatch):
     """
     intruder = _FakeProc(11, 999.0)   # 同一個 pid，不同的行程
     _fake_psutil(monkeypatch, {11: intruder})
-    assert wn._verify_reap_tree({11: 201.0}) == 0
+    assert ws.verify_reap_tree({11: 201.0}) == 0
     assert intruder.killed == 0, "殺了一個不是我們開的行程"
 
 
 def test_an_unknown_identity_is_never_killed(monkeypatch):
     """capture 當下就沒抓到身分（`None`）的，照樣不殺。
 
-    留下一個帶著隔離 profile 的 orphan 是無害的——`_verify_rmtree` 本來就容忍殘留
+    留下一個帶著隔離 profile 的 orphan 是無害的——`verify_rmtree` 本來就容忍殘留
     ；殺錯行程不是。
     """
     proc = _FakeProc(11, 201.0)
     _fake_psutil(monkeypatch, {11: proc})
-    assert wn._verify_reap_tree({11: None}) == 0
+    assert ws.verify_reap_tree({11: None}) == 0
     assert proc.killed == 0
 
 
@@ -595,7 +619,7 @@ def test_one_unkillable_process_does_not_stop_the_rest(monkeypatch):
 
     good = _FakeProc(22, 202.0)
     _fake_psutil(monkeypatch, {11: _Stubborn(11, 201.0), 22: good})
-    assert wn._verify_reap_tree({11: 201.0, 22: 202.0}) == 1
+    assert ws.verify_reap_tree({11: 201.0, 22: 202.0}) == 1
     assert good.killed == 1
 
 
@@ -611,7 +635,7 @@ def test_without_psutil_it_falls_back_to_a_per_pid_taskkill(monkeypatch):
         return types.SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
-    assert wn._verify_reap_tree({11: 201.0, 22: None}) == 2
+    assert ws.verify_reap_tree({11: 201.0, 22: None}) == 2
     assert [c[:4] for c in calls] == [["taskkill", "/F", "/T", "/PID"]] * 2
     assert sorted(c[4] for c in calls) == ["11", "22"]
     for call in calls:
@@ -623,7 +647,7 @@ def test_the_taskkill_fallback_counts_only_what_it_actually_killed(monkeypatch):
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setattr(subprocess, "run",
                         lambda *_a, **_k: types.SimpleNamespace(returncode=128))
-    assert wn._verify_reap_tree({11: 201.0}) == 0
+    assert ws.verify_reap_tree({11: 201.0}) == 0
 
 
 def test_the_taskkill_fallback_survives_a_failing_call(monkeypatch):
@@ -634,11 +658,11 @@ def test_the_taskkill_fallback_survives_a_failing_call(monkeypatch):
         raise OSError("taskkill 不在 PATH 上")
 
     monkeypatch.setattr(subprocess, "run", _boom)
-    assert wn._verify_reap_tree({11: 201.0}) == 0
+    assert ws.verify_reap_tree({11: 201.0}) == 0
 
 
 # ---------------------------------------------------------------------------
-# 六、`_verify_rmtree`
+# 六、`verify_rmtree`
 # ---------------------------------------------------------------------------
 
 def test_removing_an_absent_directory_is_a_no_op(tmp_path, monkeypatch):
@@ -649,16 +673,16 @@ def test_removing_an_absent_directory_is_a_no_op(tmp_path, monkeypatch):
     清理跑在 `verify_browser.py` 的總期限裡面，三秒是真的成本。所以這裡斷言的是
     **它沒有去睡**。
     """
-    monkeypatch.setattr(wn.time, "sleep", lambda _s: (_ for _ in ()).throw(
+    monkeypatch.setattr(ws.time, "sleep", lambda _s: (_ for _ in ()).throw(
         AssertionError("為了一個不存在的目錄睡了")))
-    wn._verify_rmtree(tmp_path / "不存在")
+    ws.verify_rmtree(tmp_path / "不存在")
 
 
 def test_a_directory_is_actually_removed(tmp_path):
     target = tmp_path / "隔離"
     (target / "深" / "一點").mkdir(parents=True)
     (target / "深" / "一點" / "檔案.txt").write_text("x", encoding="utf-8")
-    wn._verify_rmtree(target)
+    ws.verify_rmtree(target)
     assert not target.exists()
 
 
@@ -677,8 +701,8 @@ def test_a_locked_directory_is_retried_then_given_up_on(tmp_path, monkeypatch):
             raise OSError("檔案被佔用")
 
     monkeypatch.setattr(shutil, "rmtree", _fake_rmtree)
-    monkeypatch.setattr(wn.time, "sleep", lambda _s: None)
-    wn._verify_rmtree(target)
+    monkeypatch.setattr(ws.time, "sleep", lambda _s: None)
+    ws.verify_rmtree(target)
     assert attempts.count(False) == 6, f"重試次數變了：{attempts}"
     assert attempts[-1] is True, "最後一次應該是 ignore_errors 的兜底"
 
@@ -692,15 +716,15 @@ def test_the_retry_loop_stops_as_soon_as_it_succeeds(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shutil, "rmtree",
                         lambda path, ignore_errors=False: calls.append(path))
-    monkeypatch.setattr(wn.time, "sleep",
+    monkeypatch.setattr(ws.time, "sleep",
                         lambda _s: (_ for _ in ()).throw(
                             AssertionError("成功了還去睡")))
-    wn._verify_rmtree(target)
+    ws.verify_rmtree(target)
     assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------
-# 七、`_verify_generate_one`——真的產一張，但什麼正式狀態都不准碰
+# 七、`verify_generate_one`——真的產一張，但什麼正式狀態都不准碰
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -735,10 +759,10 @@ def gen(monkeypatch, tmp_path):
             Path(target).write_bytes(env.file_bytes)
         return True
 
-    monkeypatch.setattr(wn, "load_batch_config", lambda: {
+    monkeypatch.setattr(ws, "load_batch_config", lambda: {
         "generate_max_retries": 5, "generate_retry_delay_sec": 7,
         "download_max_retries": 9})
-    monkeypatch.setattr(wn, "human_pause", lambda *_a, **_k: None)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a, **_k: None)
     monkeypatch.setattr(ws, "with_retry", fake_with_retry)
     monkeypatch.setattr(ws, "fill_main_prompt", fake_fill)
     monkeypatch.setattr(ws, "get_main_image_src", lambda _p: env.previous_src)
@@ -751,7 +775,7 @@ def gen(monkeypatch, tmp_path):
 
 
 def test_one_image_lands_in_the_isolated_directory(gen):
-    ok, detail = wn._verify_generate_one(object(), gen.out)
+    ok, detail = ws.verify_generate_one(object(), gen.out)
     assert ok, detail
     written = list(gen.out.glob("*.png"))
     assert len(written) == 1, f"產出的檔案不是剛好一張：{written}"
@@ -760,7 +784,7 @@ def test_one_image_lands_in_the_isolated_directory(gen):
 
 def test_the_output_directory_is_created_if_it_is_not_there(gen):
     assert not gen.out.exists()
-    assert wn._verify_generate_one(object(), gen.out)[0]
+    assert ws.verify_generate_one(object(), gen.out)[0]
     assert gen.out.is_dir()
 
 
@@ -768,7 +792,7 @@ def test_a_prompt_that_cannot_be_filled_stops_before_generating(gen):
     """填不進去就不要按 Generate——按下去會用上一次留在畫面上的 prompt 產圖，
     那張圖與這次驗證無關，卻照樣消耗一次額度。"""
     gen.fill_ok = False
-    ok, detail = wn._verify_generate_one(object(), gen.out)
+    ok, detail = ws.verify_generate_one(object(), gen.out)
     assert (ok, detail) == (False, "無法填入隔離 prompt")
     assert gen.download_args == []
 
@@ -782,7 +806,7 @@ def test_a_blocked_generation_is_reported_not_waited_out(gen):
     後面的檢查。
     """
     gen.blocked = True
-    ok, detail = wn._verify_generate_one(object(), gen.out)
+    ok, detail = ws.verify_generate_one(object(), gen.out)
     assert ok is False
     assert "額度" in detail, detail
     assert gen.dismissed == 1, "對話框沒有被關掉，會留在畫面上"
@@ -790,13 +814,13 @@ def test_a_blocked_generation_is_reported_not_waited_out(gen):
 
 def test_an_image_that_never_changed_is_a_failure(gen):
     gen.new_src = None
-    ok, detail = wn._verify_generate_one(object(), gen.out)
+    ok, detail = ws.verify_generate_one(object(), gen.out)
     assert (ok, detail) == (False, "Generate 後影像未更新（重試耗盡）")
 
 
 def test_a_failed_download_is_a_failure(gen):
     gen.download_ok = False
-    assert wn._verify_generate_one(object(), gen.out) == (False, "影像下載失敗")
+    assert ws.verify_generate_one(object(), gen.out) == (False, "影像下載失敗")
 
 
 def test_a_download_that_reports_success_but_wrote_nothing_is_a_failure(gen):
@@ -806,25 +830,25 @@ def test_a_download_that_reports_success_but_wrote_nothing_is_a_failure(gen):
     確認那張圖真的落地了，所以這裡一定要自己看檔案。
     """
     gen.write_file = False
-    assert wn._verify_generate_one(object(), gen.out) == (False, "影像檔未生成或為空")
+    assert ws.verify_generate_one(object(), gen.out) == (False, "影像檔未生成或為空")
 
 
 def test_a_zero_byte_image_is_a_failure(gen):
     gen.file_bytes = b""
-    assert wn._verify_generate_one(object(), gen.out) == (False, "影像檔未生成或為空")
+    assert ws.verify_generate_one(object(), gen.out) == (False, "影像檔未生成或為空")
 
 
 def test_the_prompt_is_a_throwaway_literal_not_the_real_queue(gen):
     """用的是寫死的拋棄式 prompt。改成去讀 `todo_prompt.md` 會同時踩兩件事：
     驗證的結果變得不可重現，而且那條路是**只讀不寫**佇列的硬要求的反面教材。"""
-    wn._verify_generate_one(object(), gen.out)
+    ws.verify_generate_one(object(), gen.out)
     assert gen.prompts and gen.prompts[0].strip(), "沒有填入任何 prompt"
 
 
 def test_the_retry_budget_comes_from_the_batch_config(gen):
     """重試次數不要另寫一份。寫死的話，擁有者調了批次設定卻發現驗證行為不一樣，
     而兩邊本來就應該用同一組數字。"""
-    wn._verify_generate_one(object(), gen.out)
+    ws.verify_generate_one(object(), gen.out)
     assert gen.download_args[0][2].get("max_retries") == 9
 
 
@@ -834,8 +858,8 @@ def test_the_generation_path_never_reads_a_queue_file():
     行為測試擋不住「未來有人在這裡多讀一個檔」——而那個改動在開發機上跑起來完全
     正常，只有在正式批次同時在跑的時候才會互相干擾。
     """
-    src = (PKG_ROOT / "webrunner_novelai.py").read_text(encoding="utf-8")
-    body = ast.unparse(_func_named(src, "_verify_generate_one"))
+    src = (PKG_ROOT / "_webrunner_shared.py").read_text(encoding="utf-8")
+    body = ast.unparse(_func_named(src, "verify_generate_one"))
     for banned in ("todo_", "TODO_", "CHECKPOINT", "OUTPUT_ROOT", "pop_"):
         assert banned not in body, f"隔離產圖碰到了正式狀態：{banned}"
 
@@ -872,17 +896,51 @@ def _func_named(source: str, name: str) -> ast.AST:
     raise AssertionError(f"找不到 {name}")
 
 
-def test_the_verification_path_calls_nothing_that_touches_production_state():
+def _mentioned_names(func: ast.AST) -> set[str]:
+    """函式**程式碼**裡出現的每一個名字（呼叫、引用、屬性都算）。
+
+    薄殼把開機／收尾當 callback 交給共用本體：`quit_driver=_sync_chrome_profile_back`
+    不是一個呼叫節點，`_called_names` 看不到，但效果一樣。
+    """
+    names = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+    return names
+
+
+_VERIFY_PATH_FUNCS = (("webrunner_je_only.py", "_run_setup_verification"),
+                      ("webrunner_je_only.py", "_run_setup_verification"),
+                      ("_webrunner_shared.py", "run_setup_verification"))
+
+
+@pytest.mark.parametrize("module, func", _VERIFY_PATH_FUNCS,
+                         ids=[m for m, _f in _VERIFY_PATH_FUNCS])
+def test_the_verification_path_calls_nothing_that_touches_production_state(module, func):
     """行為測試只擋得住**今天**寫在那裡的東西。
 
-    這四個名字任何一個被加進這條路，代價都是一次驗證弄壞一個正在跑的正式批次，
-    或者把正式登入態改掉——而且在開發機上「剛好沒跑批次」的那一次會完全正常。
+    這四個名字任何一個被加進這條路——不論是直接呼叫、還是當 callback 交給共用本體——代價
+    都是一次驗證弄壞一個正在跑的正式批次，或者把正式登入態改掉；而且在開發機上「剛好沒跑
+    批次」的那一次會完全正常。兩個變體的薄殼與共用本體各查一次。
     """
-    src = (PKG_ROOT / "webrunner_novelai.py").read_text(encoding="utf-8")
-    called = _called_names(_func_named(src, "_run_setup_verification"))
-    hits = sorted(called & set(_FORBIDDEN_IN_VERIFY))
-    assert not hits, "隔離驗證呼叫了會碰正式狀態的東西：" + "、".join(
+    src = (PKG_ROOT / module).read_text(encoding="utf-8")
+    mentioned = _mentioned_names(_func_named(src, func))
+    hits = sorted(mentioned & set(_FORBIDDEN_IN_VERIFY))
+    assert not hits, f"{module} 的 {func} 碰到了會改正式狀態的東西：" + "、".join(
         f"{n}（{_FORBIDDEN_IN_VERIFY[n]}）" for n in hits)
+
+
+def test_the_mention_scan_can_see_a_callback_hand_off():
+    """正面對照：把 sync-back 當 callback 交出去，`_mentioned_names` 要看得到——
+    `_called_names` 看不到這個形狀，這正是換掃描器的理由。"""
+    synthetic = (
+        "def _run_setup_verification():\n"
+        "    return ws.run_setup_verification(port, quit_driver=_sync_chrome_profile_back)\n")
+    node = _func_named(synthetic, "_run_setup_verification")
+    assert "_sync_chrome_profile_back" in _mentioned_names(node)
+    assert "_sync_chrome_profile_back" not in _called_names(node)
 
 
 def test_the_forbidden_call_check_is_live():
@@ -894,3 +952,24 @@ def test_the_forbidden_call_check_is_live():
     called = _called_names(_func_named(synthetic, "_run_setup_verification"))
     assert called & set(_FORBIDDEN_IN_VERIFY) == {
         "_sync_chrome_profile_back", "claim_liveness_signal"}
+
+
+def test_the_je_sweep_is_a_no_op_while_verification_suppresses_it(monkeypatch, capsys):
+    """je 變體的 `_kill_orphan_chrome` 在 `_SUPPRESS_ORPHAN_SWEEP` 時**什麼都不碰**。
+
+    2026-10-01 之前 je 沒有這個旗標（也沒有驗證模式）；`--full --variant je` 接上之後，
+    沒有它的話 `start_driver` 重試之間那次掃描會殺光全機 chrome——連同正式批次的瀏覽器。
+    兩份本體逐一相同由 `test_chrome_recovery` 釘住；這裡只在旗標**開著**時真的呼叫它
+    （關著的那一面會真的掃，那由 `test_chrome_recovery` 在安全網底下測）。
+    """
+    import psutil as _real  # noqa: F401 — 確認「沒碰 psutil」不是因為它不在
+
+    touched = []
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        process_iter=lambda *a, **k: touched.append("psutil") or []))
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: touched.append("taskkill"))
+    monkeypatch.setattr(je, "_SUPPRESS_ORPHAN_SWEEP", True)
+    assert je._kill_orphan_chrome() is None
+    assert touched == [], f"抑制開著還是動手了：{touched}"
+    assert not capsys.readouterr().out

@@ -136,7 +136,7 @@ class Port:
         element.click()
 
     def press_escape(self):
-        # 鏡像 `webrunner_novelai.BrowserPort.press_escape`：driver 層的真按鍵，
+        # 鏡像 `webrunner_je_only.BrowserPort.press_escape`：driver 層的真按鍵，
         # `isTrusted === true`。這支腳本存在的理由就是「真 DOM 裡的真行為」，所以
         # 這條路一定要照跑，不能省成合成事件。
         ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
@@ -209,8 +209,10 @@ _CLEAR = ("document.body.innerHTML = ''; window.__clicks = [];"
 # 會是那個座標上**最上層**的元素——交出 <button> 而記錄到它裡面那層 <div> 是對的。
 # 真正的危險是落到子樹**外面**（有東西蓋在上面），這一段就是在問那件事。
 _TARGETS_WITHIN = """
-const roots = arguments[0].map(s => document.querySelector(s)).filter(Boolean);
 const seen = window.__clickTargets || [];
+// 關閉 handler 可能已移除對話框，事件 target 仍保留其脫離文件的祖先鏈。
+const roots = arguments[0].map(s => document.querySelector(s)
+  || seen.map(t => t.closest(s)).find(Boolean)).filter(Boolean);
 if (!roots.length) return {ok: seen.length === 0, roots: 0, clicks: seen.length};
 const ok = seen.every(t => roots.some(r => r === t || r.contains(t)));
 return {ok: ok, roots: roots.length, clicks: seen.length};
@@ -382,9 +384,10 @@ _ACCOUNT_LABELS = ("Unsubscribe", "Update Payment Details",
 _ESC_CLOSES_ON_DIALOG = """
 const dlg = document.querySelector('[role="dialog"]');
 window.__escSeen = 0;
+window.__escTrusted = false;
 dlg.setAttribute('tabindex', '-1');
 dlg.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { window.__escSeen++; dlg.remove(); }
+  if (e.key === 'Escape') { window.__escSeen++; window.__escTrusted = e.isTrusted; dlg.remove(); }
 });
 return true;
 """
@@ -470,7 +473,7 @@ def scenarios(port, drv):
     clicks = js(_CLICKS)
     check("Purchase Anlas" not in clicks,
           "★ 全程絕不按到 Purchase Anlas", f"clicks={clicks}")
-    check(clicks == ["Cancel"], "只按了 Cancel", f"clicks={clicks}")
+    check(clicks == ["Cancel", "Cancel"], "兩次嘗試都只按 Cancel", f"clicks={clicks}")
     # dismiss 之後對話框還在（這頁沒有人真的把它移除），所以回 False 是對的：
     # 「點了東西」不等於「關掉了」——這正是以結果為準那條規則。
     check(closed is False,
@@ -506,7 +509,7 @@ def scenarios(port, drv):
           f"action={action!r} picked={_ident(el)!r}")
     ws.dismiss_blocking_dialog(port)
     clicks = js(_CLICKS)
-    check(clicks == ["Close dialog"],
+    check(clicks == ["Close dialog", "Close dialog"],
           "按了 aria-label 的關閉鈕", f"clicks={clicks}")
     check("Purchase Anlas" not in clicks, "★ 仍然沒按 Purchase")
 
@@ -566,7 +569,7 @@ def scenarios(port, drv):
           f"picked tag={el.tag_name if el is not None else None!r}")
     ws.dismiss_blocking_dialog(port)
     clicks = js(_CLICKS)
-    check(clicks == ["Cancel"], "按到最內層的 Cancel", f"clicks={clicks}")
+    check(clicks == ["Cancel", "Cancel"], "兩次都按到最內層的 Cancel", f"clicks={clicks}")
 
     # --- 11. 放寬選擇器之後，付款控制項一樣一個都不准點 --------------------
     print("\n11) 付款控制項換成 div / span（放寬後仍不得點）")
@@ -600,6 +603,18 @@ def scenarios(port, drv):
     check(closed is True, "對話框真的關掉了，不必退回整頁重新整理",
           f"got {closed}")
     check(js(_CLICKS) == [], "全程一個鍵都沒點", f"clicks={js(_CLICKS)}")
+
+    print("\n12b) 已對焦的 modal 必須收到 driver 的真實 Escape")
+    js(_CLEAR)
+    js(_SETUP)
+    js(_BUILD_HTML_DIALOG,
+       "<p>" + QUOTA_TEXT + "</p><button>Purchase Anlas</button>")
+    js(_ESC_CLOSES_ON_DIALOG)
+    js("document.querySelector('[role=dialog]').focus(); return true;")
+    check(ws.dismiss_blocking_dialog(port) is True, "真實 Escape 關閉已對焦的 modal")
+    check(js("return window.__escTrusted;") is True,
+          "★ driver 動作鏈送出 isTrusted=true 的 Escape")
+    check(js(_CLICKS) == [], "全程沒有按購買按鈕")
 
     # --- 13. 關不掉時的控制項清單：要有內容，而且不點任何東西 --------------
     print("\n13) 關不掉時列出控制項清單（純唯讀）")

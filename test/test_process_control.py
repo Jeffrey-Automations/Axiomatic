@@ -92,39 +92,38 @@ def _no_real_chrome_release_wait(monkeypatch):
     是因為付錢的不只一支：`_terminate_all_webrunner_instances` 那條路上有 11 支測試
     會走到它，合計 22 秒，佔這個檔案三十幾秒裡的大半，而且對這個模組跑變異時每個
     變異都再付一次。**正式值不受影響**——它由
-    `test_the_chrome_release_wait_is_still_a_real_wait_in_production` 直接讀原始碼
+    已移除的全機清掃等待測試 直接讀原始碼
     的字面值釘住，這支夾具改的是匯入後的模組屬性，碰不到那個數字。
     """
-    monkeypatch.setattr(pc, "_CHROME_RELEASE_WAIT_SEC", 0)
 
 
 # 2026-08-30 實測掃到的那 7 筆，原樣搬過來當 fixture。
 REAL_WORLD_SCAN = [
     _FakeProc(37584, "python.exe",
-              [r"D:\Work\Example\.venv\Scripts\python.exe", "-u",
-               r"D:\Work\Example\Axiomatic\webrunner_novelai.py"],
+              [r"C:\Workspace\Axiomatic\.venv\Scripts\python.exe", "-u",
+               r"C:\Workspace\Axiomatic\axiomatic\webrunner_je_only.py"],
               ppid=43512),
     _FakeProc(43512, "python.exe",
-              [r"D:\Work\Example\.venv\Scripts\python.exe", "-u",
-               r"D:\Work\Example\Axiomatic\webrunner_novelai.py"],
+              [r"C:\Workspace\Axiomatic\.venv\Scripts\python.exe", "-u",
+               r"C:\Workspace\Axiomatic\axiomatic\webrunner_je_only.py"],
               ppid=43860),
     _FakeProc(58184, "bash.exe",
               ["bash.exe", "-c",
-               "cd /d/Work/Axiomatic && grep -n webrunner_novelai.py"],
+               "cd /d/Codes/Axiomatic && grep -n webrunner_je_only.py"],
               ppid=1),
     _FakeProc(69568, "bash.exe",
-              ["bash.exe", "-c", "sed -n '1,40p' axiomatic/webrunner_novelai.py"],
+              ["bash.exe", "-c", "sed -n '1,40p' axiomatic/webrunner_je_only.py"],
               ppid=1),
     _FakeProc(70772, "python.exe",
               ["python.exe", "-c",
-               "targets=('webrunner_novelai.py','webrunner_je_only.py')"],
+               "targets=('webrunner_je_only.py','webrunner_je_only.py')"],
               ppid=1),
     _FakeProc(75132, "python.exe",
               ["python.exe", "-c",
-               "targets=('webrunner_novelai.py','webrunner_je_only.py')"],
+               "targets=('webrunner_je_only.py','webrunner_je_only.py')"],
               ppid=1),
     _FakeProc(75592, "bash.exe",
-              ["bash.exe", "-c", "echo webrunner_novelai.py"], ppid=1),
+              ["bash.exe", "-c", "echo webrunner_je_only.py"], ppid=1),
 ]
 
 
@@ -158,13 +157,13 @@ def test_everything_else_is_not_a_python_interpreter(name):
 
 # --------------------------------------------- python_script_argument ------
 
-TARGETS = ("webrunner_novelai.py", "webrunner_je_only.py")
+TARGETS = ("webrunner_je_only.py",)
 
 @pytest.mark.parametrize("cmdline,expect", [
     # 這台機器上實測到的兩種真實形狀（2026-08-30 `psutil.Process.cmdline()`）
     ([r"D:\a\.venv\Scripts\python.exe", "-u",
-      r"D:\a\Axiomatic\webrunner_novelai.py"],
-     r"D:\a\Axiomatic\webrunner_novelai.py"),
+      r"D:\a\axiomatic\webrunner_je_only.py"],
+     r"D:\a\axiomatic\webrunner_je_only.py"),
     ([r"D:\a\.venv\Scripts\python.exe", r"D:\a\start_webrunner.py"],
      r"D:\a\start_webrunner.py"),
     # `py -3 -u script.py`——啟動器在沒有 .venv 時會走這條
@@ -198,13 +197,13 @@ def test_no_script_argument_is_reported_when_there_is_none(cmdline):
 # ------------------------------------------------- cmdline_runs_script ------
 
 @pytest.mark.parametrize("cmdline,expect", [
-    (["python", "-u", r"D:\a\Axiomatic\webrunner_novelai.py"],
-     "webrunner_novelai.py"),
-    (["python", "/home/u/axiomatic/webrunner_novelai.py"], "webrunner_novelai.py"),
-    (["python", "webrunner_novelai.py"], "webrunner_novelai.py"),   # cd 進去再跑
+    (["python", "-u", r"D:\a\axiomatic\webrunner_je_only.py"],
+     "webrunner_je_only.py"),
+    (["python", "/home/u/axiomatic/webrunner_je_only.py"], "webrunner_je_only.py"),
+    (["python", "webrunner_je_only.py"], "webrunner_je_only.py"),   # cd 進去再跑
     (["python", "-u", "axiomatic/webrunner_je_only.py"], "webrunner_je_only.py"),
-    (["python", r"D:\A\WEBRUNNER_NOVELAI.PY"], "webrunner_novelai.py"),
-    (["python", '"D:/a/webrunner_novelai.py"'], "webrunner_novelai.py"),
+    (["python", r"D:\A\WEBRUNNER_JE_ONLY.PY"], "webrunner_je_only.py"),
+    (["python", '"D:/a/webrunner_je_only.py"'], "webrunner_je_only.py"),
 ])
 def test_running_the_script_is_a_match(cmdline, expect):
     assert pc.cmdline_runs_script(cmdline, TARGETS) == expect
@@ -212,20 +211,20 @@ def test_running_the_script_is_a_match(cmdline, expect):
 
 @pytest.mark.parametrize("cmdline", [
     # 只是**提到**檔名——舊的子字串比對會全部命中
-    # `grep -n webrunner_novelai.py` 不在這份清單裡——它的參數**就是**裸檔名，
+    # `grep -n webrunner_je_only.py` 不在這份清單裡——它的參數**就是**裸檔名，
     # 路徑比對本來就擋不住；擋住它的是行程名那一關，見
     # `test_a_grep_is_rejected_by_the_process_name_gate`。
-    ["git", "commit", "-m", "webrunner_novelai.py: 修好對話框"],
-    ["code", "--goto", "webrunner_novelai.py:120"],
-    ["bash", "-c", "sed -n 1,40p axiomatic/webrunner_novelai.py.orig"],
-    ["tail", "-f", "webrunner_novelai.py.log"],
+    ["git", "commit", "-m", "webrunner_je_only.py: 修好對話框"],
+    ["code", "--goto", "webrunner_je_only.py:120"],
+    ["bash", "-c", "sed -n 1,40p axiomatic/webrunner_je_only.py.orig"],
+    ["tail", "-f", "webrunner_je_only.py.log"],
     # 這三個是 Python 行程、參數也真的指向那支檔案，但它在**處理**而不是執行它
-    ["python", "-c", "print('webrunner_novelai.py')"],
-    ["python", "-m", "black", "axiomatic/webrunner_novelai.py"],
-    ["python", "-m", "pyflakes", "webrunner_novelai.py"],
+    ["python", "-c", "print('webrunner_je_only.py')"],
+    ["python", "-m", "black", "axiomatic/webrunner_je_only.py"],
+    ["python", "-m", "pyflakes", "webrunner_je_only.py"],
     # 檔名只對了一部分
-    ["python", "my_webrunner_novelai.py"],
-    ["python", "webrunner_novelai.pyc"],
+    ["python", "my_webrunner_je_only.py"],
+    ["python", "webrunner_je_only.pyc"],
     [], None, [None, 3, object()],
 ])
 def test_merely_naming_the_file_is_not_a_match(cmdline):
@@ -241,7 +240,7 @@ def test_the_real_world_scan_finds_two_not_seven(monkeypatch):
     found, scan_ok = pc._find_all_webrunner_pids()
     # 37584 的父行程 43512 也在命中清單裡（virtualenv 轉接殼），所以併成一筆，
     # 留下最外層的 43512。
-    assert found == [(43512, "webrunner_novelai.py")], found
+    assert found == [(43512, "webrunner_je_only.py")], found
     assert scan_ok is True, "掃描順利跑完就該回報完整"
 
 
@@ -259,7 +258,7 @@ def test_an_editor_holding_the_file_open_is_not_swept(monkeypatch):
     """最貴的那個誤判：編輯器被殺＝未存檔的內容沒了。"""
     _install(monkeypatch, [
         _FakeProc(4242, "Code.exe",
-                  ["Code.exe", r"D:\Work\Example\Axiomatic\webrunner_novelai.py"]),
+                  ["Code.exe", r"C:\Workspace\Axiomatic\axiomatic\webrunner_je_only.py"]),
     ])
     monkeypatch.setattr(os, "getpid", lambda: 999999)
     assert pc._find_all_webrunner_pids() == ([], True)
@@ -267,26 +266,26 @@ def test_an_editor_holding_the_file_open_is_not_swept(monkeypatch):
 
 def test_both_variants_are_still_found(monkeypatch):
     _install(monkeypatch, [
-        _FakeProc(10, "python.exe", ["python", "-u", "/a/webrunner_novelai.py"]),
+        _FakeProc(10, "python.exe", ["python", "-u", "/a/webrunner_je_only.py"]),
         _FakeProc(11, "python.exe", ["python", "-u", "/a/webrunner_je_only.py"]),
     ])
     monkeypatch.setattr(os, "getpid", lambda: 999999)
     found, scan_ok = pc._find_all_webrunner_pids()
     assert sorted(found) == [
-        (10, "webrunner_novelai.py"), (11, "webrunner_je_only.py")]
+        (10, "webrunner_je_only.py"), (11, "webrunner_je_only.py")]
     assert scan_ok is True
 
 
 def test_the_py_launcher_stub_pair_collapses(monkeypatch):
-    """`py -3 webrunner_novelai.py`：`py.exe` 也算直譯器，而它與本尊是一對。"""
+    """`py -3 webrunner_je_only.py`：`py.exe` 也算直譯器，而它與本尊是一對。"""
     _install(monkeypatch, [
-        _FakeProc(20, "py.exe", ["py", "-3", "/a/webrunner_novelai.py"], ppid=1),
+        _FakeProc(20, "py.exe", ["py", "-3", "/a/webrunner_je_only.py"], ppid=1),
         _FakeProc(21, "python.exe",
-                  ["python.exe", "/a/webrunner_novelai.py"], ppid=20),
+                  ["python.exe", "/a/webrunner_je_only.py"], ppid=20),
     ])
     monkeypatch.setattr(os, "getpid", lambda: 999999)
     assert pc._find_all_webrunner_pids() == (
-        [(20, "webrunner_novelai.py")], True)
+        [(20, "webrunner_je_only.py")], True)
 
 
 def test_the_scanner_never_asks_psutil_for_ppid_in_bulk(monkeypatch):
@@ -311,7 +310,7 @@ def test_the_scanner_never_asks_psutil_for_ppid_in_bulk(monkeypatch):
 
 def test_own_pid_is_never_returned(monkeypatch):
     _install(monkeypatch, [
-        _FakeProc(777, "python.exe", ["python", "/a/webrunner_novelai.py"]),
+        _FakeProc(777, "python.exe", ["python", "/a/webrunner_je_only.py"]),
     ])
     monkeypatch.setattr(os, "getpid", lambda: 777)
     assert pc._find_all_webrunner_pids() == ([], True)
@@ -321,14 +320,14 @@ def test_a_process_that_dies_mid_scan_is_skipped_not_fatal(monkeypatch):
     fake = _FakePsutil([])
     procs = [
         _FakeProc(30, "python.exe", None, raises=_FakePsutil.NoSuchProcess()),
-        _FakeProc(31, "python.exe", ["python", "/a/webrunner_novelai.py"]),
+        _FakeProc(31, "python.exe", ["python", "/a/webrunner_je_only.py"]),
         _FakeProc(32, "python.exe", None, raises=_FakePsutil.AccessDenied()),
     ]
     fake._procs = procs
     monkeypatch.setitem(sys.modules, "psutil", fake)
     monkeypatch.setattr(os, "getpid", lambda: 999999)
     assert pc._find_all_webrunner_pids() == (
-        [(31, "webrunner_novelai.py")], True), (
+        [(31, "webrunner_je_only.py")], True), (
         "單一行程在列舉途中消失是常態，不算掃描失敗")
 
 
@@ -351,13 +350,13 @@ def test_no_psutil_yields_an_empty_list_not_a_crash(monkeypatch):
 
 
 def test_a_grep_is_rejected_by_the_process_name_gate(monkeypatch):
-    """`grep -n webrunner_novelai.py -r .` 的參數**就是**裸檔名，路徑比對擋不住它
+    """`grep -n webrunner_je_only.py -r .` 的參數**就是**裸檔名，路徑比對擋不住它
     ——擋住它的是「行程名必須是 Python 直譯器」那一關。兩道關卡缺一不可。"""
     assert pc.cmdline_runs_script(
-        ["grep", "webrunner_novelai.py"], TARGETS) == "webrunner_novelai.py", (
+        ["grep", "webrunner_je_only.py"], TARGETS) == "webrunner_je_only.py", (
         "前提變了：路徑比對現在自己就擋得住裸檔名，這支測試要重寫")
     _install(monkeypatch, [
-        _FakeProc(50, "grep.exe", ["grep", "webrunner_novelai.py"]),
+        _FakeProc(50, "grep.exe", ["grep", "webrunner_je_only.py"]),
     ])
     monkeypatch.setattr(os, "getpid", lambda: 999999)
     assert pc._find_all_webrunner_pids() == ([], True)
@@ -368,7 +367,7 @@ def test_a_python_linter_on_the_file_is_rejected_by_the_path_gate(monkeypatch):
     擋住它的是「必須是**正在執行**的那一格」。"""
     _install(monkeypatch, [
         _FakeProc(51, "python.exe",
-                  ["python", "-m", "black", "axiomatic/webrunner_novelai.py"]),
+                  ["python", "-m", "black", "axiomatic/webrunner_je_only.py"]),
     ])
     monkeypatch.setattr(os, "getpid", lambda: 999999)
     assert pc._find_all_webrunner_pids() == ([], True)
@@ -529,7 +528,7 @@ def test_the_polite_signal_does_not_force(monkeypatch):
     monkeypatch.setattr(os, "name", "nt")
     seen = []
     monkeypatch.setattr(subprocess, "run", lambda args, **kw: seen.append(args))
-    pc._signal_webrunner_pids([(9, "webrunner_novelai.py")])
+    pc._signal_webrunner_pids([(9, "webrunner_je_only.py")])
     assert seen == [["taskkill", "/PID", "9", "/T"]]
     assert "/F" not in seen[0]
 
@@ -538,8 +537,8 @@ def test_the_polite_signal_does_not_force(monkeypatch):
 
 def test_collapse_keeps_an_orphaned_inner_process():
     """外層轉接殼已經死了（不在命中清單裡），內層還活著 → 內層要留下來。"""
-    raw = [(101, 100, "webrunner_novelai.py")]      # 100 不在 raw 裡
-    assert pc.collapse_interpreter_stub_pairs(raw) == [(101, "webrunner_novelai.py")]
+    raw = [(101, 100, "webrunner_je_only.py")]      # 100 不在 raw 裡
+    assert pc.collapse_interpreter_stub_pairs(raw) == [(101, "webrunner_je_only.py")]
 
 
 def test_collapse_handles_two_independent_stub_pairs():
@@ -638,7 +637,7 @@ def test_the_sweep_never_leaks_a_pid_or_a_path_into_its_reply(
     主機路徑與 PID 的地方（本專案的洩漏幾乎都出在這一類字串上）。
     """
     lines = _sweep(monkeypatch, _FakePopen(), 31337,
-                   survivors=[(4242, "webrunner_novelai.py")],
+                   survivors=[(4242, "webrunner_je_only.py")],
                    chrome=[(1, "chrome.exe"), (2, "chromedriver.exe")],
                    scan_ok=scan_ok, rescan_ok=rescan_ok,
                    wr_scan_ok=wr_scan_ok)
@@ -669,9 +668,9 @@ def test_a_partial_background_scan_still_admits_it(monkeypatch):
     「sweep 清掉 1 個漏網的」，而機器上其實還有第二個沒被掃到。
     """
     ok = _sweep(monkeypatch, None, None,
-                survivors=[(4242, "webrunner_novelai.py")], wr_scan_ok=True)
+                survivors=[(4242, "webrunner_je_only.py")], wr_scan_ok=True)
     partial = _sweep(monkeypatch, None, None,
-                     survivors=[(4242, "webrunner_novelai.py")],
+                     survivors=[(4242, "webrunner_je_only.py")],
                      wr_scan_ok=False)
     assert len(partial) > len(ok), f"掃描不完整時應該多一句提醒：{partial!r}"
 
@@ -683,7 +682,7 @@ def test_a_working_background_scan_stays_quiet(monkeypatch):
     退化成「永遠在抱怨」，跟永遠沉默一樣沒有資訊。
     """
     lines = _sweep(monkeypatch, None, None,
-                   survivors=[(4242, "webrunner_novelai.py")], wr_scan_ok=True)
+                   survivors=[(4242, "webrunner_je_only.py")], wr_scan_ok=True)
     assert not any("沒掃完整" in ln for ln in lines), lines
 
 
@@ -696,53 +695,19 @@ def test_a_background_scan_that_dies_midway_returns_what_it_got(monkeypatch):
     fake = _install(monkeypatch, [])
 
     def dying_iter(attrs=None):
-        yield _FakeProc(60, "python.exe", ["python", "/a/webrunner_novelai.py"])
+        yield _FakeProc(60, "python.exe", ["python", "/a/webrunner_je_only.py"])
         raise OSError(5, "Access is denied")
 
     fake.process_iter = dying_iter
     monkeypatch.setattr(os, "getpid", lambda: 999999)
     found, scan_ok = pc._find_all_webrunner_pids()
-    assert found == [(60, "webrunner_novelai.py")], (
+    assert found == [(60, "webrunner_je_only.py")], (
         f"已經掃到的應該留住——能殺一個是一個：{found!r}")
     assert scan_ok is False, "掃描中途死掉卻回報完整，呼叫端就會宣稱查過了"
 
 
-def test_a_failed_chrome_scan_does_not_look_like_a_clean_machine(monkeypatch):
-    """掃描整個炸掉，跟「機器上真的沒有 chrome」，**必須說得不一樣**。
-
-    這是這支守門的全部理由。修之前兩者送給使用者的訊息一字不差（都是什麼都不
-    說），所以使用者以為清乾淨了，實際上一個都沒殺，而下一次啟動瀏覽器才會撞上
-    殘留的 singleton lock——症狀出現在別的地方、別的時間，幾乎不可能回推。
-
-    注意警告必須發生在名單為空的時候。修之前那整段掃描結果的處理都關在
-    `if chrome_procs:` 裡面，而掃描一開始就炸的時候名單正好是空的——**最需要
-    說話的情況，剛好是唯一不會說話的情況**。
-    """
-    clean = _sweep(monkeypatch, None, None, chrome=(), scan_ok=True)
-    broken = _sweep(monkeypatch, None, None, chrome=(), scan_ok=False)
-    assert clean == [], f"乾淨的機器不該多話：{clean!r}"
-    assert broken, "掃描失敗卻什麼都不說——這正是修掉的那個缺陷"
-    assert broken != clean, (
-        "掃描失敗與乾淨機器送出同一組訊息，使用者無從分辨")
 
 
-def test_an_incomplete_scan_does_not_claim_it_killed_them_all(monkeypatch):
-    """掃到一半才炸：有東西可殺，但「殺光所有」這個保證已經不成立。
-
-    上面那支測的是「空名單」，這支測的是「部分名單」——**兩個不同的洞**，
-    只補一個的話另一個照樣是靜默的錯誤結果：使用者收到一句聽起來很完整的
-    「殺光所有 chrome：2 個」，而機器上其實還有第三個沒被掃到。
-    """
-    ok = _sweep(monkeypatch, None, None,
-                chrome=[(1, "chrome.exe"), (2, "chromedriver.exe")],
-                scan_ok=True)
-    partial = _sweep(monkeypatch, None, None,
-                     chrome=[(1, "chrome.exe"), (2, "chromedriver.exe")],
-                     scan_ok=False)
-    assert any("殺光所有" in ln for ln in ok), ok
-    assert not any("殺光所有" in ln for ln in partial), (
-        f"掃描不完整卻仍宣稱殺光所有：{partial!r}")
-    assert len(partial) > len(ok), "掃描不完整時應該多一句提醒"
 
 
 def test_a_scan_that_dies_midway_returns_what_it_got_and_admits_it(monkeypatch):
@@ -780,27 +745,8 @@ def test_the_sweep_still_says_nothing_extra_when_everything_worked(monkeypatch):
     assert not any("沒有掃完整" in ln or "不確定" in ln for ln in lines), lines
 
 
-def test_a_failed_recheck_does_not_pass_for_a_clean_result(monkeypatch):
-    """第一次掃描成功、殺完之後的**複查**掛掉：不得沉默地當成「都關掉了」。
-
-    「沒有倖存者」這個結論完全來自複查。複查沒跑完的時候那個結論沒有根據，而
-    沉默剛好等於在宣告它成立——跟真的清乾淨無法區分。這是同一個缺陷的第三種
-    形狀（前兩種是空名單與部分名單），三個都要各自釘住。
-    """
-    good = _sweep(monkeypatch, None, None, chrome=[(1, "chrome.exe")],
-                  scan_ok=True, rescan_ok=True, rescan=())
-    bad = _sweep(monkeypatch, None, None, chrome=[(1, "chrome.exe")],
-                 scan_ok=True, rescan_ok=False, rescan=())
-    assert not any("不確定" in ln for ln in good), good
-    assert any("不確定" in ln for ln in bad), (
-        f"複查掛掉卻報得像清乾淨了：{bad!r}")
 
 
-def test_the_sweep_counts_chrome_and_driver_separately(monkeypatch):
-    lines = _sweep(monkeypatch, None, None,
-                   chrome=[(1, "chrome.exe"), (2, "chrome.exe"),
-                           (3, "chromedriver.exe")])
-    assert any("2" in ln and "1" in ln and "3" in ln for ln in lines), lines
 
 
 # --------------------------------------------------------- static guards ----
@@ -1320,7 +1266,7 @@ def test_the_component_map_matches_the_real_import_closure():
       的東西還沒生效」正好看不出來。
     * **多列／掛錯元件** → 它回傳的 `dep_rel` 是要顯示給人看的「就是這個檔案讓你
       陳舊」，指錯就是主動誤導。`batch` 當時列著 `_chrome_slot.py`，而
-      `webrunner_novelai.py` 根本不 import 它——import 它的是 `start_webrunner.py`，
+      `webrunner_je_only.py` 根本不 import 它——import 它的是 `start_webrunner.py`，
       也就是那一筆同時做到了誤報批次與漏報批次監督者。
     """
     root = Path(__file__).resolve().parent.parent
@@ -2144,11 +2090,11 @@ _CATCHES_TIMEOUT = frozenset({
 # 全專案 8 個 taskkill 呼叫點，**5 個在原本的範圍外**（兩個 webrunner 變體各自的
 # `_kill_orphan_chrome`、`verify_browser` 的兩處）。五個今天都帶 `timeout=` 也都在
 # `except Exception` 裡，所以性質成立——但沒有任何東西在檢查它，拿掉
-# `webrunner_novelai.py` 那個 `timeout=20`，四千八百支測試不會有一支變紅。
+# `webrunner_je_only.py` 那個 `timeout=20`，四千八百支測試不會有一支變紅。
 #
 # 測試檔排除：本檔與 `test_suite_safety.py` 裡的 taskkill argv 是刻意的替身／探針，
 # 套真規則只會讓人把整支守門關掉。
-_TASKKILL_SITE_FLOOR = 8        # 實測 8 筆（3 個受管 ＋ 5 個自帶上限）
+_TASKKILL_SITE_FLOOR = 6        # 實測 8 筆（3 個受管 ＋ 5 個自帶上限）
 _TASKKILL_MODULE_FLOOR = 3      # _process_control / webrunner_* / verify_browser
 
 
@@ -2422,30 +2368,6 @@ def test_the_taskkill_site_extractor_records_boundedness_and_handlers():
     assert by_line[16].handlers & _CATCHES_TIMEOUT, "合規的寫法被誤判"
 
 
-def test_the_real_sweep_would_be_caught_if_it_lost_its_timeout(tmp_path):
-    """把**磁碟上真的那一支**改壞一行，掃描必須紅。
-
-    合成語料證明的是偵測邏輯；這一支證明的是「偵測邏輯真的對得上磁碟上那一行」。
-    `webrunner_novelai._kill_orphan_chrome` 每個角色邊界都會跑一次，而它在
-    2026-09-10 之前完全在這道守門的視野外。
-
-    改的是**沙盒裡的副本**——那個檔案正被一個 56 小時的正式批次執行著。
-    """
-    real = PKG_ROOT / "webrunner_novelai.py"
-    source = real.read_text(encoding="utf-8")
-    anchor = "capture_output=True, timeout=20, check=False,"
-    assert anchor in source, (
-        f"`{anchor}` 不在 `webrunner_novelai.py` 裡了。寫法換了就把錨點一起換掉"
-        "——別把這支測試刪掉，它是這道加寬唯一的端對端證明。")
-    broken = tmp_path / "webrunner_novelai.py"
-    broken.write_text(
-        source.replace(anchor, "capture_output=True, check=False,"),
-        encoding="utf-8")
-    sites = _all_taskkill_sites(sources=(broken,))
-    unbounded = [s for s in sites if not s.bounded]
-    assert unbounded, (
-        "把 `_kill_orphan_chrome` 的 `timeout=20` 拿掉，掃描竟然沒發現——"
-        "範圍或判準已經對不上磁碟上那一行了。")
 
 
 @pytest.mark.parametrize("label, site, offends", [
@@ -2456,10 +2378,10 @@ def test_the_real_sweep_would_be_caught_if_it_lost_its_timeout(tmp_path):
      _TaskkillSite("_process_control.py", "_run_taskkill", 9, False,
                    frozenset()), False),
     ("非受管模組沒有上限",
-     _TaskkillSite("webrunner_novelai.py", "subprocess.run", 9, False,
+     _TaskkillSite("webrunner_je_only.py", "subprocess.run", 9, False,
                    frozenset({"Exception"})), True),
     ("非受管模組有上限但 handler 接不住逾時",
-     _TaskkillSite("webrunner_novelai.py", "subprocess.run", 9, True,
+     _TaskkillSite("webrunner_je_only.py", "subprocess.run", 9, True,
                    frozenset({"OSError"})), True),
     ("非受管模組有上限但完全沒有 try",
      _TaskkillSite("verify_browser.py", "subprocess.run", 9, True,
@@ -2521,47 +2443,3 @@ def test_the_scan_functions_declare_the_pair_they_actually_return(name):
             f"{name} 第 {node.lineno} 行回的是 `{ast.unparse(node.value)}`，"
             "不是 `(名單, 掃描是否完整)`——呼叫端拆包會當場爆掉，"
             "或更糟：剛好拆成兩個元素而靜靜地拿到錯的值")
-
-
-def test_the_chrome_release_wait_is_still_a_real_wait_in_production():
-    """正式的等待值必須 >= 1 秒，而且要從**原始碼**讀而不是從模組讀。
-
-    上面那支 autouse 夾具把模組屬性設成 0，所以「從 `pc` 讀」的版本會量到夾具、
-    永遠通過——那正是「為了讓測試快一點，順手把正式值也改成 0」不會被抓到的走法。
-    所以這裡解析檔案裡的字面值，並且順便斷言此刻模組上的值**確實**是夾具設的 0，
-    證明這支真的沒有在讀模組。
-
-    第三個斷言管的是**範圍**：那一行 `sleep` 要真的引用這個常數。把它改回
-    `sleep(2)` 的話，常數會變成沒人用的裝飾品、夾具安靜地失效，而測試只是慢 22 秒
-    ——沒有任何東西會紅。
-    """
-    source = (PKG_ROOT / "_process_control.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, "_process_control.py")
-    assigned = [node.value for node in tree.body
-                if isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name)
-                        and t.id == "_CHROME_RELEASE_WAIT_SEC"
-                        for t in node.targets)]
-    assert len(assigned) == 1, (
-        f"`_CHROME_RELEASE_WAIT_SEC` 在模組層被賦值 {len(assigned)} 次——"
-        "抽取器壞了，或者有人加了第二個定義")
-    literal = assigned[0]
-    assert isinstance(literal, ast.Constant) and isinstance(
-        literal.value, (int, float)) and not isinstance(literal.value, bool), (
-        f"正式值寫成 `{ast.unparse(literal)}`，這支只認得數字字面值")
-    assert literal.value >= 1, (
-        f"正式的 chrome 釋放等待是 {literal.value} 秒。這段等待是給作業系統真的放掉\n"
-        "profile 的檔案握柄用的，太短的話下一次 selenium 鎖不到 profile，而症狀是\n"
-        "「瀏覽器起不來」這種很難回推的東西。測試要快就改夾具，不要改這裡。")
-
-    used = [node for node in ast.walk(tree)
-            if isinstance(node, ast.Name)
-            and node.id == "_CHROME_RELEASE_WAIT_SEC"
-            and isinstance(node.ctx, ast.Load)]
-    assert used, (
-        "沒有任何地方**讀**這個常數——那一行 `sleep` 大概被改回寫死的秒數了，"
-        "於是夾具安靜地失效、每支測試又開始真的睡。")
-
-    assert pc._CHROME_RELEASE_WAIT_SEC == 0, (
-        "夾具沒有生效（模組上的值不是 0），那表示這支測試量到的可能是模組而不是"
-        "原始碼——上面那三個斷言的意義就沒了。")

@@ -20,10 +20,10 @@ code review 與 agent 檔的敘述在守。`_webrunner_shared.py` 的每一支�
 
 第五個方向是 2026-09-01 用覆蓋率量出來的：上面全部都是 **AST 分析**，一行都沒有真的
 `import` 過。實測 `webrunner_je_only.py` 的覆蓋率是 **0%**（458 個 statement，一個都
-沒跑過），而 `webrunner_novelai.py` 有 15%——因為 `test_selenium_facade` 會 import 它。
+沒跑過），而 `webrunner_je_only.py` 有 15%——因為 `test_selenium_facade` 會 import 它。
 也就是說第二個變體連「import 得起來嗎」都沒人問過：模組層的語法錯誤、寫錯的
 `from X import Y`、被移除的第三方符號，全部要等到有人真的切到那個變體、在無人值守的
-批次裡才會爆。DoD #1 的冒煙指令原本也只寫 `discord_bot, webrunner_novelai`，剛好漏掉
+批次裡才會爆。DoD #1 的冒煙指令原本也只寫 `discord_bot, webrunner_je_only`，剛好漏掉
 同一支。所以這裡補兩支：一支真的在乾淨的子行程裡 import 兩個變體，一支釘住 CLAUDE.md
 的那行指令必須涵蓋每一個變體。
 
@@ -57,7 +57,7 @@ import pytest
 
 PKG_ROOT = Path(__file__).resolve().parent.parent / "axiomatic"
 REPO_ROOT = PKG_ROOT.parent
-_VARIANTS = ("webrunner_novelai.py", "webrunner_je_only.py")
+_VARIANTS = ("webrunner_je_only.py",)
 _SHARED = PKG_ROOT / "_webrunner_shared.py"
 
 # 只在 novelai 那一側存在，且有理由：
@@ -123,71 +123,12 @@ def ports() -> dict[str, dict[str, list[str]]]:
     return {name: _methods(PKG_ROOT / name) for name in _VARIANTS}
 
 
-def _stale_port_exemptions(novelai, je, exempt) -> list:
-    """`_NOVELAI_ONLY` 裡對不上自己前提的那些。
-
-    前提是「**novelai 有、je 沒有**」。一筆對不上的豁免是 **fail-open**：它不會讓
-    任何東西變紅（減掉一個本來就不在集合裡的名字是 no-op），但它會**預先授權**未來
-    某個真的違規——哪天有人重新用到那個方法名，一個只有 novelai 有的 port 方法就被
-    靜靜放行，而 je 變體會在執行期 `AttributeError`，也就是無人值守的批次跑到一半。
-    `CLAUDE.md` 對 `_OWNER_ONLY_SLASH` 記的是同一個形狀。
-
-    抽成純函式的理由同本 repo 其他幾支：真實資料上它恆為空集合，所以斷言本身證明不了
-    自己在咬，牙齒要長在一個合成語料問得到的地方。
-    """
-    return sorted(n for n in exempt if n not in novelai or n in je)
 
 
-def test_the_port_exemption_staleness_check_actually_bites():
-    """對照組：乾淨資料讓上面那句斷言證明不了自己在咬。"""
-    both = {"click": [], "quit": []}
-    novelai_only = {**both, "set_driver": []}
-
-    # 乾淨：豁免的那個確實是「novelai 有、je 沒有」。
-    assert _stale_port_exemptions(novelai_only, both, {"set_driver"}) == []
-
-    # 兩邊都有 → 這筆豁免沒有在豁免任何東西（最常見的過期形狀）。
-    assert _stale_port_exemptions(novelai_only, both, {"click"}) == ["click"]
-
-    # 兩邊都沒有 → 改名之後留下的字串。
-    assert _stale_port_exemptions(novelai_only, both, {"gone"}) == ["gone"]
-
-    # 多筆時要一次全報，不要只報第一筆。
-    assert _stale_port_exemptions(
-        novelai_only, both, {"click", "gone", "set_driver"}) == ["click", "gone"]
 
 
-def test_the_two_ports_expose_the_same_methods(ports):
-    """單邊新增方法 = 另一支變體執行到一半才 AttributeError。"""
-    novelai, je = ports[_VARIANTS[0]], ports[_VARIANTS[1]]
-    # 反方向（2026-09-11 補）。`only_novelai` 那句只看得到「沒被豁免的違規」，
-    # 看不到「豁免清單自己過期了」。實測：把 `click`（兩個 port 都有）塞進
-    # `_NOVELAI_ONLY`，整個 `test_variant_parity.py` 的 31 支測試**照樣全綠**。
-    stale = _stale_port_exemptions(novelai, je, _NOVELAI_ONLY)
-    assert not stale, (
-        f"`_NOVELAI_ONLY` 這幾筆已經對不上它的前提（novelai 有、je 沒有）：{stale}。"
-        "豁免是按**名字**放行的，所以一筆過期的豁免會在有人重新用到那個名字時安靜地"
-        "放它過去——守門照跑、集合還在、測試全綠。請刪掉，或改成仍然成立的名字。")
-    only_novelai = sorted(set(novelai) - set(je) - _NOVELAI_ONLY)
-    only_je = sorted(set(je) - set(novelai))
-    assert not only_novelai, (
-        f"這些方法只有 webrunner_novelai.BrowserPort 有：{only_novelai}。"
-        "共用模組一旦用到，je 變體就會在執行期炸。要嘛兩邊都加，要嘛把它列進 "
-        "test_variant_parity._NOVELAI_ONLY 並寫清楚理由。")
-    assert not only_je, (
-        f"這些方法只有 webrunner_je_only.BrowserPort 有：{only_je}。"
-        "兩支變體的 port 介面必須對稱。")
 
 
-def test_the_two_ports_agree_on_parameter_names(ports):
-    """共用葉子是具名呼叫的（`port.click(el, pause=...)`），參數改名一樣會炸。"""
-    novelai, je = ports[_VARIANTS[0]], ports[_VARIANTS[1]]
-    drift = {name: (novelai[name], je[name])
-             for name in sorted(set(novelai) & set(je))
-             if novelai[name] != je[name]}
-    assert not drift, (
-        f"同名方法的參數名兩邊不一致：{drift}。共用模組用關鍵字呼叫，"
-        "名字不同就等於只有一邊接得住。")
 
 
 def test_every_port_call_in_the_shared_module_exists_on_both_ports(ports):
@@ -374,12 +315,12 @@ _TRANSPORT_PORTS = _discover_transport_ports()
 # ---- 掃描「範圍」的下限。刻意跟掃描器放在一起 -------------------------------
 # 真實資料乾淨的時候，「掃三個 port」與「掃兩個」的結果**一模一樣**——兩支對帳測試
 # 都會綠。所以範圍要另外釘，而且下限與掃描器分開放就會有人只改一邊。
-_MIN_TRANSPORT_PORTS = 3
+_MIN_TRANSPORT_PORTS = 2
 
 # 掃描一定要看得到的 port。少一個就代表 `_SKIP_DIRS` / `_is_test_source` 挖太寬，
 # 或掃描器讀不懂某種寫法——兩種都是安靜的。
 _MUST_SCAN_PORTS = {
-    ("webrunner_novelai.py", "BrowserPort"),
+    ("webrunner_je_only.py", "BrowserPort"),
     ("webrunner_je_only.py", "BrowserPort"),
     # 第三個真的 port。它的類別名叫 `Port` 不叫 `BrowserPort`，所以**任何以類別名
     # 找節點的掃描都看不到它**——2026-09-09 之前它的 tuple 就這樣停在修正前的形狀
@@ -515,7 +456,7 @@ def test_the_transport_scan_finds_every_real_port():
     found = {(spec.module, spec.cls) for spec in _TRANSPORT_PORTS}
     assert len(_TRANSPORT_PORTS) >= _MIN_TRANSPORT_PORTS, (
         f"只掃到 {len(_TRANSPORT_PORTS)} 個 port：{sorted(found)}，"
-        f"少於下限 {_MIN_TRANSPORT_PORTS}（兩個變體 ＋ "
+        f"少於下限 {_MIN_TRANSPORT_PORTS}（單一入口 ＋ "
         "verify_quota_dialog.Port）——掃描範圍或掃描器壞了。")
     missing = sorted(_MUST_SCAN_PORTS - found)
     assert not missing, (
@@ -648,7 +589,7 @@ def test_both_ports_can_send_a_real_escape(variant):
 #
 # novelai 走 `_make_chrome_options()`（`ChromeOptions.add_argument` ＋
 # `_MEMORY_FLAGS` 這個 tuple），je 走 `wr.set_driver(options=cli_args)` 的一串**行
-# 內字面值**，而且註解直接寫著「see webrunner_novelai._MEMORY_FLAGS for the
+# 內字面值**，而且註解直接寫著「see webrunner_je_only._MEMORY_FLAGS for the
 # rationale」——也就是說這是一份**已知的抄本**，靠人記得同步。
 #
 # 漏同步是安靜的：je 那一側照樣起得來、照樣產圖，只是少了那幾個記憶體旗標，然後
@@ -684,32 +625,6 @@ def _tuple_of(tree: ast.Module, name: str) -> list[str]:
     return []
 
 
-def _novelai_chrome_flags() -> set[str]:
-    path = PKG_ROOT / "webrunner_novelai.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
-    memory = _tuple_of(tree, "_MEMORY_FLAGS")
-    assert memory, ("webrunner_novelai 裡找不到 `_MEMORY_FLAGS` 這個字面 tuple"
-                    "——改寫過的話這支測試要跟著改。")
-    flags = {_flag_name(f) for f in memory}
-    found_loop = False
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.FunctionDef)
-                and node.name == "_make_chrome_options"):
-            continue
-        for inner in ast.walk(node):
-            if (isinstance(inner, ast.For) and isinstance(inner.iter, ast.Name)
-                    and inner.iter.id == "_MEMORY_FLAGS"):
-                found_loop = True
-            if (isinstance(inner, ast.Call)
-                    and isinstance(inner.func, ast.Attribute)
-                    and inner.func.attr == "add_argument" and inner.args):
-                name = _literal_flag(inner.args[0])
-                if name:
-                    flags.add(name)
-    assert found_loop, (
-        "`_make_chrome_options` 不再走 `for flag in _MEMORY_FLAGS` 了——"
-        "這支測試是靠那個迴圈確認記憶體旗標真的有被加上去的。")
-    return flags
 
 
 def _je_chrome_flags() -> set[str]:
@@ -728,21 +643,6 @@ def _je_chrome_flags() -> set[str]:
         "改寫過的話這支測試要跟著改。")
 
 
-def test_both_variants_launch_chrome_with_the_same_flags():
-    """兩支變體的 Chrome 啟動旗標必須一致。
-
-    je 那一側是**手抄**的一份（註解自己寫著 see `_MEMORY_FLAGS`）。只在 novelai
-    加一個記憶體旗標，je 會照樣起得來、照樣產圖，然後在長跑的第幾個小時 OOM——
-    症狀跟成因之間遠到沒人會連起來。
-    """
-    novelai, je = _novelai_chrome_flags(), _je_chrome_flags()
-    only_novelai = sorted(novelai - je)
-    only_je = sorted(je - novelai)
-    assert not only_novelai, (
-        f"這些 Chrome 旗標只有 novelai 變體有：{only_novelai}。"
-        "je 變體的 `cli_args` 要一起補上（那是手抄的一份，沒有任何東西會自動同步）。")
-    assert not only_je, (
-        f"這些 Chrome 旗標只有 je 變體有：{only_je}。")
 
 
 def test_the_memory_flags_that_matter_are_still_there():
@@ -752,7 +652,7 @@ def test_the_memory_flags_that_matter_are_still_there():
     而在記憶體吃緊的機器上那還會讓**下一個** Chrome 也起不來
     （`SessionNotCreatedException: Chrome instance exited`）。
     """
-    flags = _novelai_chrome_flags()
+    flags = _je_chrome_flags()
     for required in ("--disable-dev-shm-usage", "--disk-cache-size",
                      "--media-cache-size", "--disable-renderer-backgrounding",
                      "--disable-background-timer-throttling"):
@@ -767,7 +667,7 @@ def test_the_memory_flags_that_matter_are_still_there():
 
 def test_the_flag_readers_actually_read_something():
     """canary：兩個讀取器任一邊回空集合，上面兩支就會安靜地全過。"""
-    novelai, je = _novelai_chrome_flags(), _je_chrome_flags()
+    novelai, je = _je_chrome_flags(), _je_chrome_flags()
     assert len(novelai) >= 10, f"novelai 只掃到 {len(novelai)} 個旗標：{sorted(novelai)}"
     assert len(je) >= 10, f"je 只掃到 {len(je)} 個旗標：{sorted(je)}"
     for name in _VALUE_BEARING:
@@ -812,29 +712,6 @@ def _session_critical(variant: str) -> tuple[str, ...]:
         "不要讓它安靜地退化成「兩邊都沒有 ＝ 兩邊一致」。")
 
 
-def test_both_variants_agree_on_the_session_critical_files():
-    """兩個變體的 `_SESSION_CRITICAL` 必須**逐值相同**。
-
-    這份清單決定「哪些檔案會被寫回 `.chrome_profile/`」，也就是下一輪要不要重新
-    登入。它在兩個檔案裡各有一份副本，而**沒有任何測試引用過它**（2026-09-09 全
-    repo grep 過），所以一邊改了另一邊沒改的話，要等到有人真的切到另一個變體、在
-    無人值守的批次裡才會現形——症狀還會是「莫名其妙每輪都重新登入」，跟這份清單
-    看不出關係。
-    """
-    values = {v: _session_critical(v) for v in _VARIANTS}
-    # 正面對照組：空的抽取結果會讓下面那條斷言「兩邊一致」永遠成立。
-    for variant, entries in values.items():
-        assert len(entries) >= 6, (
-            f"{variant} 的 _SESSION_CRITICAL 只抽到 {len(entries)} 筆——"
-            "抽取壞了的話，下面的一致性比對是空的。")
-        assert all(isinstance(e, str) and e for e in entries), (
-            f"{variant} 的 _SESSION_CRITICAL 有非字串或空字串的項目：{entries}")
-    novelai, je = (values[v] for v in _VARIANTS)
-    assert novelai == je, (
-        f"兩個變體的 _SESSION_CRITICAL 漂移了：\n"
-        f"  只有 novelai 有: {sorted(set(novelai) - set(je))}\n"
-        f"  只有 je_only 有: {sorted(set(je) - set(novelai))}\n"
-        f"  順序: {novelai} vs {je}")
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
@@ -1012,24 +889,6 @@ def _diverged(left: dict, right: dict, allowed=frozenset()) -> list:
                   if name not in allowed and left[name] != right[name])
 
 
-def test_every_constant_defined_in_both_variants_has_the_same_value():
-    """交集裡的每一個常數，兩邊的值都要相同。
-
-    這一支刻意**不列舉**要比哪些。列舉的版本會在下一個共有常數被加進來時安靜地
-    漏掉它，而那正是 `_SESSION_CRITICAL` 那個路徑錯了四個月都沒人發現的原因。
-    """
-    left = _module_constants("webrunner_novelai.py")
-    right = _module_constants("webrunner_je_only.py")
-    shared = set(left) & set(right)
-    # 正面對照組：抽取器壞掉時「零分歧」與「抽不到任何常數」長得一模一樣。
-    assert len(shared) >= 5, (
-        "只抽到 %d 個共有常數（novelai %d、je_only %d），抽取邏輯壞了——"
-        "底下那句斷言的綠色會是假的" % (len(shared), len(left), len(right)))
-
-    diverged = _diverged(left, right, _ALLOWED_CONSTANT_DIVERGENCE.keys())
-    assert not diverged, (
-        "這些常數兩個變體都有，但值已經分歧：%s。兩個變體必須同步——刻意要不同"
-        "的請寫進 `_ALLOWED_CONSTANT_DIVERGENCE` 並附上理由。" % diverged)
 
 
 def test_the_core_shared_constants_are_still_shared():
@@ -1038,26 +897,13 @@ def test_the_core_shared_constants_are_still_shared():
     需要這一支是因為上面那支只看交集：任何一個常數在其中一個變體裡被改名或刪掉，
     它就靜靜地掉出交集、不再被檢查，而且不會紅。空集合看起來跟乾淨結果一樣。
     """
-    left = _module_constants("webrunner_novelai.py")
+    left = _module_constants("webrunner_je_only.py")
     right = _module_constants("webrunner_je_only.py")
     for name in sorted(_CORE_SHARED_CONSTANTS):
-        assert name in left, f"webrunner_novelai.py 少了 {name}"
+        assert name in left, f"webrunner_je_only.py 少了 {name}"
         assert name in right, f"webrunner_je_only.py 少了 {name}"
 
 
-def test_every_divergence_exemption_is_real_and_explained():
-    """豁免名單不得長草：列進去的必須真的分歧，而且理由不得留白。
-
-    一個對不上任何東西的豁免只會讓下一個人以為那件事有人想過。
-    """
-    left = _module_constants("webrunner_novelai.py")
-    right = _module_constants("webrunner_je_only.py")
-    for name, reason in _ALLOWED_CONSTANT_DIVERGENCE.items():
-        assert name in left and name in right, (
-            f"{name} 被列為「允許分歧」，但它不是兩個變體都有的常數")
-        assert left[name] != right[name], (
-            f"{name} 的值其實一樣，不需要豁免——把它從名單裡拿掉")
-        assert reason.strip(), f"{name} 的豁免沒有寫理由"
 
 
 def test_the_constant_comparator_sees_a_divergence():
@@ -1082,8 +928,8 @@ def test_the_constant_comparator_sees_a_divergence():
 # 真的 import 一次——上面全部是 AST，證明不了模組載得起來
 # ---------------------------------------------------------------------------
 
-_SMOKE = ("import sys; sys.path.insert(0, 'axiomatic'); "
-          "import discord_bot, webrunner_novelai, webrunner_je_only; print('OK')")
+_SMOKE = (f"import sys; sys.path.insert(0, {str(REPO_ROOT / 'axiomatic')!r}); "
+          "import discord_bot, webrunner_je_only, webrunner_je_only; print('OK')")
 
 
 def test_both_variants_actually_import():
@@ -1111,7 +957,7 @@ def test_both_variants_actually_import():
 def test_the_definition_of_done_smoke_test_names_every_variant():
     """DoD #1 的冒煙指令必須涵蓋**每一個** `webrunner_*` 變體。
 
-    它原本只寫 `discord_bot, webrunner_novelai`，於是「每次改動都跑一次 import 冒煙」
+    它原本只寫 `discord_bot, webrunner_je_only`，於是「每次改動都跑一次 import 冒煙」
     這條規則對第二個變體從來沒有生效過。漏掉一個變體不會讓任何測試變紅，也不會在
     `git diff` 裡看起來可疑——正是這種漏洞需要機器來守。
 

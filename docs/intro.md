@@ -33,38 +33,30 @@
 重新認領仍在跑的 webrunner，從 `.backup/` 重建 undo 堆疊，從 `events.ndjson`
 的尾端接續監看。
 
-## 兩個 webrunner 變體
+## 單一 webrunner 入口
 
-| 變體 | 說明 |
-|---|---|
-| `webrunner_je_only.py` | 以 `je_web_runner` 套件驅動，啟動較輕 |
-| `webrunner_novelai.py` | 純 Selenium / undetected driver，反偵測較強 |
-
-兩支變體共用 `_webrunner_shared.py` 這一份核心（DOM 操作 ＋ 純函式 ＋ 批次主
-迴圈），差別只在怎麼取得 driver。改動作行為要**同時**顧到兩支。
-
-`/run` 會**先試 je 變體**，若 5 分鐘啟動視窗內非零退出（通常是 `/login` 被
-反機器人擋下）就自動 fallback 到 selenium 變體並在頻道公告切換。
+`webrunner_je_only.py` 透過瀏覽器函式庫取得 driver，DOM 操作、佇列配對、批次與單圖服務集中在 `_webrunner_shared.py`。
+`/run`、本機批次與開機啟動都使用這個入口；異常結束依退避策略重啟，快速失敗或零產出連續達上限就停止，等待人工處理。
 
 ## 目錄結構（重點）
 
 ```text
 Axiomatic/
 ├── axiomatic/
-│   ├── webrunner_novelai.py     # Selenium 批次產圖（長時間執行）
+│   ├── webrunner_je_only.py     # Selenium 批次產圖（長時間執行）
 │   ├── webrunner_je_only.py     # je_web_runner 變體
 │   ├── discord_bot.py           # Discord 事件迴圈
 │   ├── dorossi_backend.py       # Dorossi 問答後端（bot 端）
 │   ├── _batch_config.py         # batch_config.json 載入 / 寫入
 │   ├── _bot_config.py           # bot_config.json 載入
-│   ├── _webrunner_shared.py     # 兩個 webrunner 變體共用的核心（run_batch）
+│   ├── _webrunner_shared.py     # 瀏覽器流程核心（run_batch）
 │   ├── _queue_consume.py        # 動態佇列消耗決策（純函式）
 │   ├── _run_progress.py         # 中斷角色的續跑檢查點
 │   ├── _supervisor.py           # 監督器退避的純數學（兩個啟動器共用）
 │   ├── _process_control.py      # 行程探查 / 終止原語（bot 端）
 │   ├── _gui_control.py          # 桌面自動化門面（bot 端；實作在函式庫）
 │   └── presence_probe.py        # 本機 presence（遊戲 / 音樂）偵測
-├── start_webrunner.py           # webrunner 監督式啟動器（je / selenium）
+├── start_webrunner.py           # webrunner 監督式啟動器（單一 je 入口）
 ├── start_discord_bot.py         # bot 監督式啟動器（無限重啟）
 ├── batch_config.json            # 產圖批次參數（hot-reload，每角色重讀；唯一追蹤的設定檔）
 ├── *.example.json / *.example.md  # 版本庫帶的範本，複製成同名正式檔再填

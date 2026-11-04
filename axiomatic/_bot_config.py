@@ -35,6 +35,10 @@ another reason: 96% of the lines were the same sentence).
 from __future__ import annotations
 
 import copy
+try:
+    from _webrunner_location import coerce_webrunner_path
+except ImportError:
+    from axiomatic._webrunner_location import coerce_webrunner_path
 import json
 import math
 import sys
@@ -49,7 +53,6 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BOT_CONFIG_FILE = _PROJECT_ROOT / "bot_config.json"
 
 _DEFAULT_SUPERVISOR: dict = {
-    "fallback_window_sec": 300,
     "respawn_backoff_min_sec": 5.0,
     "respawn_backoff_max_sec": 300.0,
     "healthy_threshold_sec": 60.0,
@@ -185,6 +188,7 @@ _DEFAULT_PLATFORMS: dict = {
 
 
 _DEFAULT_BOT_CONFIG: dict = {
+    "webrunner_path": "",
     # The channel ID that channel-restricted commands apply to. **No usable
     # default**: 0 = not yet configured, and the bot blocks at startup and tells
     # the user to copy `bot_config.example.json`.
@@ -913,6 +917,7 @@ def _coerce_supervisor(raw, default: dict) -> dict:
 # + `_INT_LIST_KEYS` cover `_DEFAULT_BOT_CONFIG` with no gaps or overlaps (pinned
 # in both directions).
 _COERCERS: dict = {
+    "webrunner_path": (coerce_webrunner_path, {}),
     "channel_id": (_coerce_int, {"min_value": 0}),
     "owner_user_id": (_coerce_int, {"min_value": 0}),
     # `""` is this key's meaningful "no contact info attached", so it is not
@@ -980,7 +985,6 @@ _COERCERS: dict = {
 # `_DEFAULT_*`, so adding a section field but forgetting to attach a coercion
 # (= no validation at all, and no warning) goes straight red.
 _SUPERVISOR_COERCERS: dict = {
-    "fallback_window_sec": (_coerce_int, {}),
     "respawn_backoff_min_sec": (_coerce_positive_num, {}),
     "respawn_backoff_max_sec": (_coerce_positive_num, {}),
     "healthy_threshold_sec": (_coerce_positive_num, {}),

@@ -104,13 +104,13 @@ def _site_packages_versions() -> dict[str, str]:
     """`{正規化套件名: 版本}`，**只看這個直譯器的 site-packages**。
 
     為什麼要限定範圍：`importlib.metadata.version()` 掃的是當下的 `sys.path`，而
-    `webrunner_novelai.py` / `webrunner_je_only.py` 在 import 期會把 sibling
-    checkout（`D:\\Work\\WebRunner`）插到 `sys.path[0]`。那份 checkout 自帶
+    `webrunner_je_only.py` / `webrunner_je_only.py` 在 import 期會把 sibling
+    checkout（`C:\\Workspace\\WebRunner`）插到 `sys.path[0]`。那份 checkout 自帶
     `je_web_runner` 的中繼資料，版本跟 site-packages 裝的那一份**不一樣**，於是
     「裝了哪個版本」這個問題的答案會隨著「這個 pytest 行程裡誰先被 import」而變。
 
     2026-09-03 實測：單獨跑這個檔案回 0.0.88（通過），先跑
-    `test_selenium_facade.py`（它會 import `webrunner_novelai`）之後再跑就回
+    `test_selenium_facade.py`（它會 import `webrunner_je_only`）之後再跑就回
     0.0.85（失敗）。目前全套會過只是因為字母序 `d` 排在 `s` 前面——加一個檔名排更
     前面、又會 import webrunner 的測試，這支就會翻臉。**會看順序的守門等於沒有
     守門**：它可能亂叫，也可能在真的該叫的時候剛好安靜。
@@ -990,8 +990,9 @@ def test_the_venv_reader_actually_reads_something():
 def test_the_version_lookup_ignores_a_sibling_checkout_on_sys_path():
     """版本查詢不得受 `sys.path` 影響。
 
-    `webrunner_novelai.py` / `webrunner_je_only.py` 在 import 期會把 sibling
-    checkout（`WEBRUNNER_PATH`，預設 `<parent>/WebRunner`）插到 `sys.path[0]`，而
+    `webrunner_je_only.py` / `webrunner_je_only.py` 在 import 期會把 sibling
+    checkout（`_webrunner_location` 決定：`WEBRUNNER_PATH`、設定檔的 `webrunner_path`，預設
+    `<parent>/WebRunner`）插到 `sys.path[0]`，而
     那份 checkout 自帶 `je_web_runner` 的中繼資料、版本跟 site-packages 裝的那一份
     不同。`importlib.metadata.version()` 掃的是當下的 `sys.path`，所以「裝了哪個
     版本」的答案會隨著「這個 pytest 行程裡誰先被 import」而改變。
@@ -1002,10 +1003,12 @@ def test_the_version_lookup_ignores_a_sibling_checkout_on_sys_path():
 
     這支直接製造那個情境：把 sibling 路徑插到最前面，再問一次版本。
     """
-    sibling = os.environ.get("WEBRUNNER_PATH") or str(
-        REQUIREMENTS.parent.parent / "WebRunner")
-    if not os.path.isdir(sibling):
-        pytest.skip("這台機器沒有 sibling checkout，製造不出這個情境")
+    import _webrunner_location  # noqa: PLC0415  正式變體用的同一支解析器
+
+    library = _webrunner_location.resolve_webrunner_path().path
+    if library is None:
+        pytest.skip("這台機器沒有本機工作樹，製造不出這個情境")
+    sibling = str(library)
 
     _site_packages_versions.cache_clear()
     before = _installed("je_web_runner")

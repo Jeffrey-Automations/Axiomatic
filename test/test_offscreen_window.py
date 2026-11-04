@@ -106,15 +106,15 @@ def test_finding_no_window_is_not_reported_as_hidden(monkeypatch):
     """`(0, 0)` 是「一個都沒找到」，呼叫端不得把它讀成「藏好了」。"""
     result, _lib = _hide_with(monkeypatch, {}, [])
     assert result == (0, 0)
-    for variant in ("webrunner_novelai", "webrunner_je_only"):
+    for variant in ("webrunner_je_only",):
         module = __import__(variant)
         monkeypatch.setattr(module, "hide_browser_windows", lambda dirs: (0, 0))
         hide = module.hide_chrome_window
-        assert (hide(None) if variant == "webrunner_novelai" else hide()) is False
+        assert (hide()) is False
         monkeypatch.setattr(module, "hide_browser_windows", lambda dirs: (2, 1))
-        assert (hide(None) if variant == "webrunner_novelai" else hide()) is False
+        assert (hide()) is False
         monkeypatch.setattr(module, "hide_browser_windows", lambda dirs: (2, 0))
-        assert (hide(None) if variant == "webrunner_novelai" else hide()) is True
+        assert (hide()) is True
 
 
 def _launch_flags(module_name: str) -> list[str]:
@@ -134,7 +134,7 @@ def _launch_flags(module_name: str) -> list[str]:
     return flags
 
 
-@pytest.mark.parametrize("module_name", ["webrunner_novelai", "webrunner_je_only"])
+@pytest.mark.parametrize("module_name", ["webrunner_je_only"])
 def test_both_variants_open_the_browser_off_screen(module_name):
     flags = _launch_flags(module_name)
     # 正面對照用一個一定在的旗標，而不是數量——novelai 那一側的記憶體旗標走迴圈、profile
@@ -184,7 +184,7 @@ def test_the_window_showing_scan_actually_bites():
 
 
 @pytest.mark.parametrize("module_name",
-                         ["webrunner_novelai", "webrunner_je_only", "_webrunner_shared"])
+                         ["webrunner_je_only", "_webrunner_shared"])
 def test_no_production_path_minimizes_or_raises_the_browser_window(module_name):
     """最小化、最大化、還原、帶到前面——任何一個加回來，視窗就會再在前景閃一下。"""
     tree = ast.parse((PKG_ROOT / f"{module_name}.py").read_text(encoding="utf-8"))

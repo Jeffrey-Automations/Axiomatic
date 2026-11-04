@@ -1,5 +1,9 @@
 # Axiomatic
 
+Requires `je_web_runner>=0.0.95` and `je-auto-control>=1.0.4`. Set `webrunner_path` only to prefer a local library checkout; otherwise the installed package works directly. Exit code 5 means setup is incomplete; code 6 means a single-image server completed and the batch supervisor should restart it.
+
+Delete, clear and reset actions require confirmation, can be cancelled, and expire after 60 seconds. Permissions are checked again before execution. `/queue` and `/eta` use status cards. Abort stops child processes, queued turns and API calls. The batch runner now has one implementation; abnormal exits restart with backoff.
+
 **English** · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 **A chat-operated automation host.** You talk to a machine from whatever chat
@@ -99,8 +103,7 @@ import those, because they are standalone, stateless, driver-agnostic code.
 
 | File | Purpose |
 |---|---|
-| `axiomatic/webrunner_novelai.py` | Batch runner, Selenium variant (the production default) |
-| `axiomatic/webrunner_je_only.py` | Batch runner, wrapper variant (fallback; `/run` tries this one first) |
+| `axiomatic/webrunner_je_only.py` | The single batch runner, using the browser automation library |
 | `axiomatic/_webrunner_shared.py` | The core both variants share: DOM work, pure helpers, the batch loop — driver-agnostic |
 
 **Launchers** (repo root)
@@ -118,6 +121,8 @@ import those, because they are standalone, stateless, driver-agnostic code.
 <!-- section: requirements -->
 ## Requirements
 
+Requires **Python 3.13+**.
+
 Windows with Python 3.11 or newer, a browser, and the packages in
 `requirements.txt`. `requirements.txt` pins nothing — a fresh clone gets the
 current release of each package — but it floors anything with a known
@@ -125,9 +130,9 @@ advisory this project can actually reach.
 
 | Package | Used for |
 |---|---|
-| `selenium` | Browser driving in the Selenium variant |
+| `selenium` | Browser driving through the shared facade |
 | `je_web_runner` | Browser driving in the wrapper variant |
-| `urllib3` | Both variants catch `ReadTimeoutError` directly (selenium does not re-export it) |
+| `urllib3` | The browser core catches `ReadTimeoutError` directly |
 | `discord.py` | Transport and event loop for the platform that has a native slash menu |
 | `aiohttp` | Outbound API calls, and the long-polling transport other platforms use |
 | `psutil` | Process liveness probing and window matching (**required**) |
@@ -282,6 +287,17 @@ of logs look perfectly normal.
 Queue editing is unaffected: the queues live on disk, so editing them from any
 platform works. Only *who supervises the batch* is decided by the lock.
 
+### Presence detection and updates only
+
+
+```powershell
+py -3 install_autostart.py --install --presence-only
+py -3 start_discord_bot.py --platform discord --presence-only
+py -3 wake_autostart.py --presence-only
+```
+
+Use `--presence-only` to run local status detection, bot activity updates, and local RPC only. Commands, batch supervision, scheduled work, and other platform transports remain off. The mode supports Discord only. Registration disables the other existing Axiomatic logon tasks, including Batch, without stopping running processes. The wake command requires a task already registered in this mode. Omit the flag when directly running `start_discord_bot.py` for full operation; register again with `--install` to restore the configured logon tasks. Wake always uses the registered mode.
+
 ### Start automatically at logon (Windows)
 
 ```powershell
@@ -339,6 +355,8 @@ would read back as several entries.
 
 <!-- section: commands -->
 ## Commands
+
+For an image target in `/locate gone`, upload the template with `template`, optionally set the similarity threshold with `target` (default 0.9), and set the wait with `seconds`; text and window targets still require `target`. Backend aborts, timeouts, cancelled turns, and host-command timeouts also stop identifiable descendants. `install_autostart.py --status` follows the console output code page, including UTF-8 consoles.
 
 On a platform with a native slash menu the commands are **slash commands**:
 typing `/` autocompletes them and arguments are type- and range-checked before
@@ -503,6 +521,8 @@ moment a process disappears — there is no stale-flag state to clean up:
 
 ---
 
+Model selection can search aliases from all providers and switches provider automatically. Model and effort changes during a task take effect on the next round. Usage reports also include separately opened local CLI sessions and subagents; do not add this total to the overlapping bot ledger. Tokens include caches; costs are API-rate estimates, not subscription charges.
+
 <!-- section: worked-examples -->
 ## Worked examples
 
@@ -619,7 +639,7 @@ vocabulary, and the documentation parity this README set is part of.
 
 Before committing, at a minimum:
 
-1. `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_novelai, webrunner_je_only; print('OK')"` prints `OK`.
+1. `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_je_only; print('OK')"` prints `OK`.
 2. Every new slash command appears in all the user-doc corpora, and
    `commands/*.md` is regenerated with `py -3 axiomatic/gen_command_docs.py`
    rather than hand-edited.

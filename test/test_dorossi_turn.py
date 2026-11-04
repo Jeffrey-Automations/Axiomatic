@@ -1836,3 +1836,11 @@ def test_an_aborted_turn_frees_the_conversation_for_the_question_behind_it(
     assert b._dorossi_turns == []
     assert b._dorossi_power_holds == {}
     assert env.power["held"] == env.power["released"] == 3
+
+
+def test_cross_provider_model_directive_dispatches_with_effort(turn_env):
+    _turn(turn_env, model_tier="sol", effort="high")
+    assert [c[0] for c in turn_env.calls] == ["codex"]
+    assert _kwargs_of(turn_env)["effort"] == "high"
+    assert _kwargs_of(turn_env)["model"] == db.dorossi_resolve_model("codex", "sol")
+    assert _slot(turn_env)["ai_provider"] == "codex"

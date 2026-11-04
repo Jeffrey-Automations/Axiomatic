@@ -7,7 +7,7 @@
 2026-08-30 量出來的狀況：`webrunner_je_only.py` 有四個 `wr.*` 呼叫點
 （`get_current_url` / `get_title` / `save_screenshot` /
 `add_script_to_evaluate_on_new_document`）在**當時安裝的 0.0.79 上根本不存在**。
-它沒有炸，只是因為這台機器上剛好有一份 sibling checkout（`D:\\Work\\WebRunner`），
+它沒有炸，只是因為這台機器上剛好有一份 sibling checkout（`C:\\Workspace\\WebRunner`），
 而模組開頭會把它 `sys.path.insert(0, ...)`——所以**被 import 的是開發用的簽出，不是
 宣告出來的那個套件**。checkout 一旦搬走、改名，或換一台只照 `requirements.txt` 裝的
 機器，那四個呼叫就會變成 `AttributeError`，而且是在無人值守的批次跑到一半的時候。
@@ -18,7 +18,7 @@
 所以這裡查兩個方向，而且**刻意分成兩支**，因為它們回答的是不同的問題：
 
 1. `test_every_wr_call_exists_on_the_imported_package`——「這台機器現在跑起來會不會
-   炸」。用模組自己的解析順序（sibling / `WEBRUNNER_PATH` 優先）。
+   炸」。用正式變體同一支解析器（`_webrunner_location`）。
 2. `test_every_wr_call_exists_on_the_installed_package`——「只照 `requirements.txt`
    裝的機器會不會炸」。跑一個把 sibling 路徑排掉的子行程去問。
 
@@ -31,18 +31,39 @@ import json
 import os
 import subprocess  # nosec B404
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 PKG_ROOT = Path(__file__).resolve().parent.parent / "axiomatic"
-REPO_ROOT = PKG_ROOT.parent
 _JE = PKG_ROOT / "webrunner_je_only.py"
 
-# `webrunner_je_only.py` 自己的解析順序，原封不動抄過來——抄錯就等於沒在測同一件事。
-_WR_SIBLING = REPO_ROOT.parent / "WebRunner"
-_WR_PATH = Path(os.environ["WEBRUNNER_PATH"]) if os.environ.get("WEBRUNNER_PATH") \
-    else _WR_SIBLING
+# 正式變體用的**同一支**解析器（環境變數 → `bot_config.json` 的 `webrunner_path` → 同層資料夾
+# → 已安裝的套件）。2026-10-01 之前這裡抄了一份「環境變數，否則同層資料夾」；改成可設定
+# 之後抄本會少掉設定那一層，測到的就不是正式變體會載入的那一份。落到已安裝的套件時沒有
+# 工作樹可插，這裡留一個不存在的路徑，底下的 `.exists()` 判斷照舊成立。
+import _webrunner_location  # noqa: E402
+
+_WR_PATH = (_webrunner_location.resolve_webrunner_path().path
+            or _webrunner_location._SIBLING_WEBRUNNER)
+
+
+def _run_library_probe(script: str) -> subprocess.CompletedProcess:
+    """在子行程裡跑一段會 `import je_web_runner` 的探針，工作目錄在 repo **外面**。
+
+    套件庫的發佈版（0.0.88）一 import 就以相對路徑開 `WEBRunner.log`（不存在就建），而
+    在大小寫不分的磁碟上 repo 根目錄那份**就是**正式的 `webrunner.log`——這幾支「只照
+    `requirements.txt` 裝」的探針問的正是那個版本。原始碼樹版改看 `WEBRUNNER_LOG_PATH`，
+    `conftest` 已經把它指到停放目錄、子行程繼承。丟棄式工作目錄讓兩代都碰不到 repo；
+    `-c` 的 `sys.path[0]` 是工作目錄，探針本來就不從那裡 import 任何東西。
+    """
+    with tempfile.TemporaryDirectory(prefix="je_facade_probe_",
+                                     ignore_cleanup_errors=True) as workdir:
+        return subprocess.run(  # nosec B603
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=workdir, timeout=120, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
 
 def _wr_attributes() -> list[tuple[int, str]]:
@@ -88,10 +109,7 @@ def _missing_in_subprocess(sys_path_extra: list[str], drop_sibling: bool
         "    'version': getattr(m, '__version__', '?'),\n"
         "}))\n"
     )
-    proc = subprocess.run(  # nosec B603
-        [sys.executable, "-c", script],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        cwd=str(REPO_ROOT), timeout=120, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    proc = _run_library_probe(script)
     if proc.returncode != 0:
         pytest.skip(f"這個直譯器 import 不到 je_web_runner：{proc.stderr[-300:]}")
     data = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -105,7 +123,9 @@ def test_the_call_sites_are_actually_findable():
         f"只掃到 {len(attrs)} 個 `wr.*` 呼叫點，太少了。"
         "是不是別名從 `wr` 改掉了？改了的話這支測試要跟著改，不然它會一直是綠的。")
     names = {name for _lineno, name in attrs}
-    for expected in ("find_element", "execute_script", "quit"):
+    # `find_elements` 而不是 `find_element`：2026-10-01 起 port 的「找一個」也走
+    # `find_elements` 取第一個（包裝層丟例外之後，「沒找到」不該是例外）。
+    for expected in ("find_elements", "execute_script", "quit"):
         assert expected in names, f"`wr.{expected}` 不見了，掃描器可能壞了"
 
 
@@ -147,10 +167,7 @@ def test_the_test_object_import_still_resolves():
               "print('ok')\n")
     if extra:
         script = f"import sys; sys.path.insert(0, {extra[0]!r})\n" + script
-    proc = subprocess.run(  # nosec B603
-        [sys.executable, "-c", script],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        cwd=str(REPO_ROOT), timeout=120, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    proc = _run_library_probe(script)
     assert proc.returncode == 0, (
         f"`TestObject(xpath, 'xpath')` 建不起來：{proc.stderr[-300:]}")
 
@@ -162,7 +179,7 @@ def test_the_test_object_import_still_resolves():
 # 於是 Chrome 起不來時 stderr 只有一句猜測（「likely Out of Memory or a
 # chromedriver/Chrome version mismatch」）——而 selenium 變體那句一樣的訊息旁邊
 # 有整份 driver 記錄可讀。差別很要緊，因為 bot 的 `/run` **預設就是 je 變體**，
-# 而 `_watch_for_fallback` 會在 5 分鐘的 startup window 內靜靜轉跑 selenium 變體：
+# 而 `_watch_webrunner` 會在 5 分鐘的 startup window 內靜靜轉跑 selenium 變體：
 # 使用者看到產圖繼續，永遠不會問「je 為什麼死掉」。
 #
 # 能補起來的唯一理由是 `WebDriverWrapper.set_driver` 把 `**kwargs` **原封不動**
@@ -216,10 +233,7 @@ def _kwargs_passthrough_in_subprocess(sys_path_extra: list[str],
         "out['forwarded'] = captured.get('service') is sentinel\n"
         "print(json.dumps(out))\n"
     )
-    proc = subprocess.run(  # nosec B603
-        [sys.executable, "-c", script],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        cwd=str(REPO_ROOT), timeout=120, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    proc = _run_library_probe(script)
     if proc.returncode != 0:
         pytest.skip(f"這個直譯器 import 不到 je_web_runner：{proc.stderr[-300:]}")
     return json.loads(proc.stdout.strip().splitlines()[-1])
@@ -285,3 +299,128 @@ def test_the_je_variant_really_asks_for_a_driver_log():
             f"`wr.set_driver(...)`（第 {call.lineno} 行）沒有傳 `service=`——"
             "chromedriver 的記錄檔就不會被寫出來，spawn 失敗時只剩下一句猜測。"
             f"目前傳的是：{sorted(kwargs)}")
+
+
+# ---------------------------------------------------------------------------
+# 兩個比 `requirements.txt` 下限新的 API（2026-10-01，§8.222 G8／G10）
+# ---------------------------------------------------------------------------
+# `webrunner_je_only._require_wrapper_contract` 開機時當場查：
+#   * `je_web_runner.executor.set_raise_wrapper_errors`——把包裝層的失敗改成丟例外；
+#   * `set_driver(..., install_driver=...)`——跳過 webdriver-manager 那次結果會被丟掉的下載。
+# 缺了就不開機（擁有者的要求：缺 API 要在開機時大聲失敗，不能安靜地降級）。WebRunner
+# 那一側的 `architecture.md` §6 把這兩項列為 je 變體依賴的介面，它自己的
+# `test/unit_test/test_public_api.py` 也守著——這裡是我們這一側的那一半。
+
+def _contract_in_subprocess(sys_path_extra: list[str], drop_sibling: bool) -> dict:
+    """在子行程裡問「這一份 je_web_runner 有沒有本變體開機要的兩個 API」。"""
+    script = (
+        "import inspect, json, sys\n"
+        f"drop = {drop_sibling!r}\n"
+        f"extra = {sys_path_extra!r}\n"
+        "if drop:\n"
+        "    bad = {str(p).lower() for p in extra}\n"
+        "    sys.path = [p for p in sys.path if str(p).lower() not in bad]\n"
+        "else:\n"
+        "    for p in reversed(extra):\n"
+        "        sys.path.insert(0, p)\n"
+        "import je_web_runner as m\n"
+        "from je_web_runner import webdriver_wrapper_instance as wr\n"
+        "setter = getattr(getattr(m, 'executor', None), 'set_raise_wrapper_errors', None)\n"
+        "print(json.dumps({\n"
+        "    'file': m.__file__,\n"
+        "    'version': getattr(m, '__version__', '?'),\n"
+        "    'policy': callable(setter),\n"
+        "    'install_driver': 'install_driver' in inspect.signature(wr.set_driver).parameters,\n"
+        "}))\n"
+    )
+    proc = _run_library_probe(script)
+    if proc.returncode != 0:
+        pytest.skip(f"這個直譯器 import 不到 je_web_runner：{proc.stderr[-300:]}")
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def _contract_gaps(data: dict) -> list[str]:
+    return [name for name, have in (
+        ("executor.set_raise_wrapper_errors", data["policy"]),
+        ("set_driver(install_driver=...)", data["install_driver"])) if not have]
+
+
+def test_the_boot_contract_holds_on_the_imported_package():
+    """這台機器現在開得了 je 變體嗎——用模組自己的解析順序（sibling 優先）。
+
+    缺了的話 je 變體每一次開機都會在 `_require_wrapper_contract` 失敗；bot 的 `/run`
+    預設跑 je，而退路會在 5 分鐘內靜靜改跑 selenium，所以這個失敗在正式環境裡**看不見**。
+
+    沒有 sibling checkout 時跳過：那時 import 到的**就是**安裝的那一份，答案由下面那支
+    （已發行介面的守門）負責，兩支問同一個套件只會讓同一個已知缺口紅兩次。
+    """
+    if not _WR_PATH.exists():
+        pytest.skip("這台機器沒有 sibling checkout：import 到的就是安裝的那一份，"
+                    "見 test_the_boot_contract_holds_on_the_installed_package")
+    data = _contract_in_subprocess([str(_WR_PATH)], drop_sibling=False)
+    gaps = _contract_gaps(data)
+    assert not gaps, (
+        f"import 到的 je_web_runner（{data['version']}，{data['file']}）少了 {gaps}。"
+        "je 變體開機時會拒絕執行（`_require_wrapper_contract`）。")
+
+
+def test_the_boot_contract_holds_on_the_installed_package():
+    """只照 `requirements.txt` 裝的機器開得了 je 變體嗎——把 sibling checkout 排掉再問。
+
+    跟上面那支分開，理由與本檔開頭那一對相同：「能跑」如果是靠一份沒有宣告出來的開發
+    簽出，那是巧合不是設計。今天它的答案是「不能」，而這件事要**看得見**——strict 的
+    xfail 讓它在有人裝上新版的那一刻翻成紅燈，提醒去拉下限。
+
+    **沒有 sibling checkout 也照跑**（與本檔開頭那一對不同）：把一個不存在的路徑從
+    `sys.path` 排掉是 no-op，問到的照樣是安裝的那一份；跳過的話，在沒有開發簽出的機器
+    上——也就是最需要知道答案的那種機器——兩支會同時沉默。
+    """
+    data = _contract_in_subprocess([str(_WR_PATH)], drop_sibling=True)
+    where = data["file"].lower()
+    assert "site-packages" in where or "dist-packages" in where, (
+        f"想問的是安裝的那一份，實際問到 {data['file']}——排除 sibling 的邏輯沒生效")
+    assert not _contract_gaps(data), _contract_gaps(data)
+
+
+def _start_driver_node() -> ast.FunctionDef:
+    tree = ast.parse(_JE.read_text(encoding="utf-8"), str(_JE))
+    func = next((n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == "start_driver"), None)
+    assert func is not None, "`start_driver` 不見了——這支測試要跟著改"
+    return func
+
+
+def test_the_je_variant_really_skips_the_webdriver_manager_download():
+    """AST：每一個 `wr.set_driver(...)` 都帶 `install_driver=False`，字面的 False。
+
+    上面那對測試證明「函式庫有這個參數」，這一支證明「我們真的傳了」。一個 `True`、一個
+    變數、或乾脆沒傳，行為都會悄悄回到「每次開機先下載一次、再把它丟掉」。
+    """
+    calls = [n for n in ast.walk(_start_driver_node())
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "set_driver"]
+    assert calls, "`start_driver` 裡找不到 `wr.set_driver(...)`"
+    for call in calls:
+        value = next((kw.value for kw in call.keywords if kw.arg == "install_driver"),
+                     None)
+        assert isinstance(value, ast.Constant) and value.value is False, (
+            f"`wr.set_driver(...)`（第 {call.lineno} 行）沒有帶字面的 "
+            f"`install_driver=False`：{ast.unparse(value) if value else '沒傳'}")
+
+
+def test_the_boot_contract_is_the_first_thing_start_driver_does():
+    """AST：`start_driver` 的第一個呼叫就是 `_require_wrapper_contract()`。
+
+    排在後面的話，缺 API 的函式庫會先花 1～3 分鐘暖機、先刪掉重建 profile 快照，甚至先
+    開一個瀏覽器，才失敗。用 AST 而不是看順序的行為測試：替身會把 `start_driver` 的每一步
+    都換掉，換掉之後「第一步是什麼」就只是替身的排列。
+    """
+    body = [stmt for stmt in _start_driver_node().body
+            if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))]
+    calls = [stmt.value for stmt in body
+             if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)]
+    assert calls, "`start_driver` 抽不到任何呼叫敘述——抽取器壞了"
+    first = calls[0].func
+    assert isinstance(first, ast.Name) and first.id == "_require_wrapper_contract", (
+        f"`start_driver` 的第一個呼叫是 `{ast.unparse(first)}`，"
+        "不是 `_require_wrapper_contract()`")

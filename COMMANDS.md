@@ -259,7 +259,7 @@
 
 用文字 / 圖片 / 元素名稱在畫面上定位（限擁有者）
 
-- `/locate gone <kind> <target> [seconds]` — 等某個東西從畫面上消失
+- `/locate gone <kind> [target] [seconds] [template]` — 等某個東西從畫面上消失；圖片用 `template` 附樣板，`target` 為選填門檻（預設 0.9）；文字／視窗須填目標
 - `/locate pixel <x> <y> <color> [invert] [seconds] [tolerance]` — 等某一點變成（或不再是）指定顏色
 
 **`/locate image`** — 用樣板圖片定位（不需辨識引擎）
@@ -505,3 +505,8 @@ token 不接問題就只是改設定，不會送出一輪。
 - `/web quote` — 隨機名言
 - `/web wiki <topic>` — 百科摘要
 - `/web xkcd [n]` — 網路漫畫（隨機 / 指定編號）
+
+
+模型選單可搜尋所有後端別名並自動切換後端；模型與力度在任務中可更新，下一輪生效。用量報告包含本機另外開啟的 CLI 工作階段與快取 token，與 bot 用量有重疊、勿相加；金額為 API 費率估算。
+
+刪除、清空與重設操作會先顯示確認／取消按鈕，僅發出指令的人可操作；60 秒後失效，確認時重新檢查擁有者與角色權限。緊急放開按鍵的 `/input key clear` 立即執行。

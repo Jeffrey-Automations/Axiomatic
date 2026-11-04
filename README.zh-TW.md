@@ -1,5 +1,9 @@
 # Axiomatic
 
+函式庫下限為 `je_web_runner>=0.0.95` 與 `je-auto-control>=1.0.4`。選填 `webrunner_path` 可優先使用本機工作樹，未設定時可直接使用安裝套件。結束碼 5 表示設定未完成；6 表示單圖伺服器收工，批次監督者應重生。
+
+刪除、清空與重設操作需確認，可取消，60 秒後失效；執行前重新檢查權限。`/queue` 與 `/eta` 使用狀態卡片。中止會一起結束子行程、等待中的提問與 API 回合。批次只保留單一實作，異常結束時退避重啟。
+
 [English](README.md) · **繁體中文** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 **一台用聊天操作的自動化主機。** 你人在哪個聊天平台，就從那裡對這台機器下指令，
@@ -88,8 +92,7 @@ transport 模組加一段設定；移除一個平台是一個 `false`。工作�
 
 | 檔案 | 用途 |
 |---|---|
-| `axiomatic/webrunner_novelai.py` | 批次產圖器，Selenium 變體（正式預設） |
-| `axiomatic/webrunner_je_only.py` | 批次產圖器，wrapper 變體（備援；`/run` 先試這支） |
+| `axiomatic/webrunner_je_only.py` | 唯一的批次產圖器，透過瀏覽器函式庫執行 |
 | `axiomatic/_webrunner_shared.py` | 兩支變體的共用核心：DOM 操作、純函式、批次主迴圈，與 driver 無關 |
 
 **啟動器**（repo 根目錄）
@@ -107,15 +110,17 @@ transport 模組加一段設定；移除一個平台是一個 `false`。工作�
 <!-- section: requirements -->
 ## 需要什麼
 
+需要 **Python 3.13+**。
+
 Windows、Python 3.11 以上、一個瀏覽器，以及 `requirements.txt` 裡的套件。
 `requirements.txt` **不釘版本**——fresh clone 拿到的是各套件當下的版本——但對
 「本專案真的碰得到、而且有已知安全通報」的套件會設下限。
 
 | 套件 | 用途 |
 |---|---|
-| `selenium` | Selenium 變體的瀏覽器驅動 |
+| `selenium` | 共用門面的瀏覽器驅動 |
 | `je_web_runner` | wrapper 變體的瀏覽器驅動 |
-| `urllib3` | 兩支變體直接接 `ReadTimeoutError`（selenium 不轉出這個例外） |
+| `urllib3` | 瀏覽器核心直接接 `ReadTimeoutError` |
 | `discord.py` | 有原生斜線選單那個平台的 transport 與事件迴圈 |
 | `aiohttp` | 對外 API 呼叫，以及其他平台用的長輪詢 transport |
 | `psutil` | 行程存活探測與視窗比對（**必要**） |
@@ -259,6 +264,17 @@ py -3 run_batch.py
 編輯佇列不受影響：佇列本來就在磁碟上，從哪個平台編都一樣有效。只有「誰監督批次」
 這一件事認鎖。
 
+### 只偵測與更新狀態
+
+
+```powershell
+py -3 install_autostart.py --install --presence-only
+py -3 start_discord_bot.py --platform discord --presence-only
+py -3 wake_autostart.py --presence-only
+```
+
+使用 `--presence-only` 只執行本機狀態偵測、bot 活動更新與本機 RPC。指令、批次監督、排程與其他平台服務均不啟動。此模式只支援 Discord。註冊時會停用其他既有 Axiomatic 登入工作，包含批次，不會停止正在執行的程式。叫醒指令要求工作已註冊為此模式。直接執行 `start_discord_bot.py` 時省略旗標即可完整執行；再次以 `--install` 註冊會恢復設定中的登入工作。叫醒工作一律沿用註冊模式。
+
 ### 登入時自動啟動（Windows）
 
 ```powershell
@@ -311,6 +327,8 @@ py -3 install_autostart.py --remove
 
 <!-- section: commands -->
 ## 指令
+
+`/locate gone` 選圖片時，以 `template` 上傳樣板圖，`target` 可填相似度門檻（預設 0.9），`seconds` 設定等待秒數；文字與視窗仍須填 `target`。後端中止、逾時或回合取消，以及主機指令逾時，會一併停止當下可辨識的子孫行程。`install_autostart.py --status` 依主控台輸出代碼頁解碼，支援 UTF-8 主控台。
 
 在有原生斜線選單的平台上，指令就是**斜線指令**：打 `/` 會自動補全，參數在送出前就
 有型別與值域檢查。沒有斜線選單的平台則走文字表面（見下），一份實作、一組權限閘。
@@ -452,6 +470,8 @@ py -3 install_autostart.py --remove
 
 ---
 
+模型選單可搜尋所有後端別名，選擇後自動切換後端；模型與力度在任務中可調整，下一輪生效。用量報告另列本機全部 CLI 工作階段與子任務，不與 bot 用量相加；token 包含快取，金額為 API 費率估算，非訂閱帳單。
+
 <!-- section: worked-examples -->
 ## 實際操作範例
 
@@ -558,7 +578,7 @@ README 也在其中的文件一致性。
 
 提交前至少要做到：
 
-1. `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_novelai, webrunner_je_only; print('OK')"` 印出 `OK`。
+1. `py -3 -c "import sys; sys.path.insert(0, 'axiomatic'); import discord_bot, webrunner_je_only; print('OK')"` 印出 `OK`。
 2. 新的斜線指令同步寫進每一份使用者文件語料，而 `commands/*.md` 是用
    `py -3 axiomatic/gen_command_docs.py` 重新產生的，不是手改的。
 3. 改動觸及 `architecture.md` 描述的東西時，同時更新它。

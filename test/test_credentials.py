@@ -3,7 +3,7 @@
 `_webrunner_shared.read_credentials()` 是這個專案裡**唯一**讀 `auth.md` 的函式。
 2026-09-21 量到它八行裡有七行從來沒有被任何測試跑過——而它同時是：
 
-* 兩支 webrunner 啟動路徑上的第一件事（`webrunner_novelai.py` / `webrunner_je_only.py`
+* 兩支 webrunner 啟動路徑上的第一件事（`webrunner_je_only.py` / `webrunner_je_only.py`
   都是 `email, password = read_credentials(AUTH_FILE)`，**外面沒有 try**）；
 * 唯一一個手上同時握著使用者名稱與密碼的純函式。
 
@@ -28,7 +28,7 @@
 讀，本來卻沒有那個待遇——這一份的第一批測試就是在釘那個對齊。
 
 `FileNotFoundError` 與其他 `OSError` **刻意不包**：那是「檔案不在／權限」，跟
-「檔案在但內容不對」是兩件事，而 `webrunner_novelai._run_setup_verification` 的
+「檔案在但內容不對」是兩件事，而 `webrunner_je_only._run_setup_verification` 的
 註解也是照這個分類寫的。
 """
 from __future__ import annotations

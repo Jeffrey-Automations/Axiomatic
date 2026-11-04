@@ -12,7 +12,7 @@
 批次已經連續跑了十四小時，那正是本模組存在的理由。
 
 模組邊界（`CLAUDE.md` 硬規則）：這是 **bot 側專屬模組**，不得 `import discord_bot`
-（循環），也不得 `from webrunner_novelai import …`。它只 import stdlib、選用的
+（循環），也不得 `from webrunner_je_only import …`。它只 import stdlib、選用的
 psutil，以及同為 bot 側的 `_process_control`——而且**只讀**：用的是那邊的判定述詞
 （`looks_like_python_process`／`cmdline_runs_script`／`collapse_interpreter_stub_pairs`）
 與腳本名常數，一個字都不改。理由是那個模組在批次的 import 閉包裡
@@ -69,13 +69,12 @@ ROLE_LABELS = {
 
 # 角色判定：腳本檔名 → 角色。命中條件是「這個 Python 行程**在執行**這支腳本」，
 # 用 `_process_control.cmdline_runs_script` 的判定，不是 cmdline 子字串比對——
-# 理由見該函式（`python -m black webrunner_novelai.py` 不是在跑批次）。
+# 理由見該函式（`python -m black webrunner_je_only.py` 不是在跑批次）。
 SCRIPT_ROLES = {
     "discord_bot.py": ROLE_BOT,
     "start_discord_bot.py": ROLE_LAUNCHER,
     _pc.LAUNCHER_SCRIPT_NAME: ROLE_LAUNCHER,   # start_webrunner.py
     "run_batch.py": ROLE_LAUNCHER,
-    "webrunner_novelai.py": ROLE_BATCH,
     "webrunner_je_only.py": ROLE_BATCH,
 }
 

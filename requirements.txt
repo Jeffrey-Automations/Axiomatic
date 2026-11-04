@@ -142,7 +142,7 @@
 # 在這裡加上限**（隔離 venv，套件庫上的 je_auto_control 0.0.222）：它原始碼裡用到的
 # 95 個 `cv2.*` 名字在 5.0 全部存在；`/locate image` 走的 `match_template_all` 在合成
 # 圖上 5.0 與 4.13 結果完全相同（中心座標一致、分數 1.0000）。
-je-auto-control
+je-auto-control>=1.0.4
 # **2026-09-09：本機兩個直譯器都是 4.48.0，套件庫最新是 4.49.0——刻意先不升。**
 # 不是因為有疑慮，是因為**時機**：升級要動的是 `.venv`，而兩個正式批次
 # （已連續執行 50 小時）此刻正把 selenium 載在記憶體裡跑；`pip install -U` 換掉
@@ -262,7 +262,7 @@ simpleeval
 # `webrunner_je_only.py` 會把 sibling checkout 插到 `sys.path[0]`——那是巧合不是
 # 設計。行為面由 `test_je_facade.py` 對**裝著的**套件實查，這條下限只是讓 pip 在
 # 安裝當下就擋掉。
-je_web_runner>=0.0.88
+je_web_runner>=0.0.95
 # psutil：presence 的遊戲白名單比對、行程探查與清理。
 #
 # **pywin32 已經移除**（2026-08-17）：視窗查詢與操作全部轉呼叫 je-auto-control，

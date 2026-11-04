@@ -322,6 +322,7 @@ _os.environ["WEBRUNNER_LOG_PATH"] = str(_BROWSER_LIB_LOG_DIR / "WEBRunner.log")
 # 程式碼裡每一個以附加模式開啟的模組常數都要列在這裡。
 _SIDE_EFFECT_LOGS = (
     ("discord_bot", "AUDIT_FILE"),
+    ("discord_bot", "WEBRUNNER_LOG"),
     ("discord_bot", "EVENTS_FILE"),
     ("discord_bot", "DOROSSI_EVENTS_FILE"),
     ("discord_bot", "GENERATE_HISTORY_FILE"),
@@ -777,3 +778,20 @@ def _flat_ast_walk(node):
 if not _os.environ.get("AXIOMATIC_AST_CACHE_OFF"):
     _ast.parse = _cached_ast_parse
     _ast.walk = _flat_ast_walk
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mocked_process_jobs():
+    """一般測試的子行程是替身；實機測試自行啟用真實工作物件。"""
+    import sys
+    import _process_job
+    modules = {id(module): module for name, module in list(sys.modules.items())
+               if module is not None and (name == "_process_job" or name.endswith("._process_job"))}
+    originals = [(module, module._new_job) for module in modules.values()]
+    for module, _original in originals:
+        module._new_job = lambda: None
+    try:
+        yield
+    finally:
+        for module, original in originals:
+            module._new_job = original

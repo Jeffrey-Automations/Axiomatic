@@ -1420,7 +1420,7 @@ def _valve_env(monkeypatch, tmp_path, *, inflight="R1", giveup=3, cap=60):
     """
     spawns: list[tuple[str, bool]] = []
 
-    def _spawn(variant, *, single_image_server=False):
+    def _spawn(variant="je", *, single_image_server=False):
         spawns.append((variant, single_image_server))
         if len(spawns) > cap:
             b._webrunner_proc = None

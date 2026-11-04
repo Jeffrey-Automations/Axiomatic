@@ -29,7 +29,7 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _PKG = REPO_ROOT / "axiomatic"
-_WEBRUNNER = _PKG / "webrunner_novelai.py"
+_WEBRUNNER = _PKG / "webrunner_je_only.py"
 
 # **兩個變體都自己建 `ChromeService`**（je 2026-09-09 接上——在那之前它一個
 # chromedriver 記錄檔都沒有，而 `/run` 的預設變體就是 je）。所以每一支 AST 掃描
@@ -37,7 +37,6 @@ _WEBRUNNER = _PKG / "webrunner_novelai.py"
 # 會完全沒有人說話，也就是把本檔開頭那個踩了幾個月的坑換一個變體原封不動重演。
 # 對應的 spawn 進入點名字不同，所以連函式名一起列。
 _SPAWN_FUNCTION = {
-    "webrunner_novelai.py": "build_stealth_driver",
     "webrunner_je_only.py": "start_driver",
 }
 _VARIANTS = tuple(_SPAWN_FUNCTION)
@@ -381,14 +380,14 @@ def test_the_log_tail_reader_does_not_load_the_whole_file():
 def _load_webrunner():
     import sys
     sys.path.insert(0, str(REPO_ROOT / "axiomatic"))
-    import webrunner_novelai as wn
+    import webrunner_je_only as wn
     return wn
 
 
 def _load_shared():
     """chromedriver 記錄檔那一組的**擁有者**是共用模組，不是任一個變體。
 
-    2026-09-09 從 `webrunner_novelai.py` 搬過去，讓 je 變體用同一份（那一側原本
+    2026-09-09 從 `webrunner_je_only.py` 搬過去，讓 je 變體用同一份（那一側原本
     整組都沒有）。這裡刻意對著共用模組 monkeypatch 而不是對著變體：常數只存在共用
     模組那一份，變體若又綁一份同名常數，patch 就會**安靜地**失效，而修剪會改打到
     repo 根目錄那個正被活著的 chromedriver 握著的真檔。對不上時要立刻
@@ -601,7 +600,7 @@ def test_the_spawn_path_dumps_the_log_when_an_attempt_fails(variant):
     這支釘的是 je 那一側 2026-09-09 之前的實際狀況：記錄檔可以產生、封頂與保留也
     可以做，但**沒有任何人在失敗時去讀它**，於是留在 stderr 的只有一句猜測
     （「likely Out of Memory or a chromedriver/Chrome version mismatch」）。而
-    `/run` 的預設變體就是 je，`_watch_for_fallback` 又會在 5 分鐘內靜靜轉跑
+    `/run` 的預設變體就是 je，`_watch_webrunner` 又會在 5 分鐘內靜靜轉跑
     selenium 變體，所以「je 為什麼起不來」在正式環境是查不到的。
 
     只釘「有呼叫」不釘位置，因為兩個變體的重試迴圈長得不一樣；重要的是它在
@@ -1072,7 +1071,6 @@ def test_the_one_line_helpers_really_do_lose_it():
 
 _REPR_SCANNED_MODULES = (
     "_webrunner_shared.py",
-    "webrunner_novelai.py",
     "webrunner_je_only.py",
 )
 
@@ -1084,6 +1082,10 @@ _EXCEPTION_REPR_EXEMPT: dict[tuple, tuple[int, str]] = {
            "`str(OSError)` 會印出被雜湊的原始碼路徑。"),
     ("_webrunner_shared.py", "report_code_drift", ("Exception",), "error"): (
         1, "同上，`_code_fingerprint` 是純模組。"),
+    ("_webrunner_shared.py", "_loaded_library_version",
+     ("OSError", "ValueError"), "error"): (
+        1, "try 裡只有 `importlib.metadata` 讀套件中繼資料檔，碰不到 driver；"
+           "`str(OSError)` 會印出中繼資料檔的完整路徑。"),
     ("_webrunner_shared.py", "run_with_liveness_signal", ("Exception",), "error"): (
         1, "`claim_liveness_signal` 是檔案 I/O ＋ pid 探測；`str(OSError)` 會帶出"
            "存活訊號檔的完整路徑。"),
@@ -1106,57 +1108,34 @@ _EXCEPTION_REPR_EXEMPT: dict[tuple, tuple[int, str]] = {
            "請求檔的完整路徑。"),
     ("_webrunner_shared.py", "generate_loop", ("OSError",), "error"): (
         1, "刪除重複圖檔的 `unlink()`；`str()` 會印出那張圖的完整輸出路徑。"),
+    # 隔離驗證的本體（2026-10-01 從 selenium 變體搬進共用模組，兩個變體共用，§8.222 G1）。
+    ("_webrunner_shared.py", "run_setup_verification", ("Exception",), "err"): (
+        1, "try 裡只有 `credentials()`（兩個變體都是 `read_credentials(AUTH_FILE)`）："
+           "收得到 `OSError`（`str()` 會印出憑證檔路徑）與 `CredentialsError`（合約就是"
+           "訊息只帶檔名、位元組位置或缺漏的欄位名），兩種都不含憑證值本身。"),
     # --- 兩個變體共有（`_MIRRORED` 那一族，逐一相同） -----------------------
-    ("webrunner_novelai.py", "_kill_orphan_chrome", ("Exception",), "error"): (
-        2, "psutil 掃描與 `subprocess.run(['taskkill', ...])`，兩者都在自己的"
-           "driver 存在之前／之外執行，收不到 selenium 例外。"),
-    ("webrunner_je_only.py", "_kill_orphan_chrome", ("Exception",), "error"): (
-        2, "同 selenium 變體。"),
-    ("webrunner_novelai.py", "_clear_snapshot_locks", ("OSError",), "error"): (
-        1, "`path.unlink()`；`str()` 會印出 snapshot profile 的完整路徑。"),
     ("webrunner_je_only.py", "_clear_snapshot_locks", ("OSError",), "error"): (
-        1, "同 selenium 變體。"),
-    ("webrunner_novelai.py", "_reclaim_dir_sync_residue", ("OSError",), "error"): (
-        1, "`os.replace()`；`str()` 會印出 profile 的完整路徑。"),
+        1, "`path.unlink()`；`str()` 會印出 snapshot profile 的完整路徑。"),
     ("webrunner_je_only.py", "_reclaim_dir_sync_residue", ("OSError",), "error"): (
-        1, "同 selenium 變體。"),
-    ("webrunner_novelai.py", "_sync_profile_dir_back",
-     ("OSError", "shutil.Error"), "error"): (
-        1, "`shutil.Error` 也是 `OSError` 的子類別；`str()` 會印出完整路徑。"),
+        1, "`os.replace()`；`str()` 會印出 profile 的完整路徑。"),
     ("webrunner_je_only.py", "_sync_profile_dir_back",
      ("OSError", "shutil.Error"), "error"): (
-        1, "同 selenium 變體。"),
-    ("webrunner_novelai.py", "_snapshot_chrome_profile",
-     ("OSError", "shutil.Error"), "error"): (
-        1, "逐檔複製失敗，收進 `skipped` 再印；`str()` 會讓每一筆都帶完整路徑。"),
+        1, "`shutil.Error` 也是 `OSError` 的子類別；`str()` 會印出完整路徑。"),
     ("webrunner_je_only.py", "_snapshot_chrome_profile",
      ("OSError", "shutil.Error"), "error"): (
-        1, "同 selenium 變體。"),
-    ("webrunner_novelai.py", "_snapshot_chrome_profile", ("Exception",), "error"): (
-        1, "try 裡只有 `os.walk` ＋ `shutil.copy2`，而且跑在 Chrome 起來之前。"),
+        1, "逐檔複製失敗，收進 `skipped` 再印；`str()` 會讓每一筆都帶完整路徑。"),
     ("webrunner_je_only.py", "_snapshot_chrome_profile", ("Exception",), "error"): (
-        1, "同 selenium 變體。"),
-    ("webrunner_novelai.py", "_sync_chrome_profile_back", ("OSError",), "error"): (
-        1, "`shutil.copy2` ＋ `os.replace`；`str()` 會印出登入 profile 的完整路徑。"),
+        1, "try 裡只有 `os.walk` ＋ `shutil.copy2`，而且跑在 Chrome 起來之前。"),
     ("webrunner_je_only.py", "_sync_chrome_profile_back", ("OSError",), "error"): (
-        1, "同 selenium 變體。"),
+        1, "`shutil.copy2` ＋ `os.replace`；`str()` 會印出登入 profile 的完整路徑。"),
     # --- 兩個變體各自的（`main` / `_restart_chrome_session` 是宣告分歧的） ---
-    ("webrunner_novelai.py", "_restart_chrome_session", ("Exception",), "error"): (
+    ("webrunner_je_only.py", "_restart_chrome_session", ("Exception",), "error"): (
         1, "⚠️ 曾被列為「該換格式器」的候選，實際上 try 裡只有 "
            "`_sync_chrome_profile_back(...)` ＝ 純檔案 I/O：Chrome 在上面幾行"
            "已經 `quit()` 了。`str(OSError)` 會帶出登入 profile 的完整路徑。"),
-    ("webrunner_je_only.py", "_restart_chrome_session", ("Exception",), "error"): (
-        1, "同 selenium 變體。"),
-    ("webrunner_novelai.py", "main", ("Exception",), "error"): (
+    ("webrunner_je_only.py", "main", ("Exception",), "error"): (
         1, "`finally` 的收尾，driver 已經 `quit()`，try 裡只剩 sync-back 的檔案"
            "I/O。"),
-    ("webrunner_je_only.py", "main", ("Exception",), "error"): (
-        1, "同 selenium 變體的收尾那一站（je 的 `main` 另有一個包著 "
-           "`start_driver()` 的 handler，那一個已經走 `full_error_detail`）。"),
-    ("webrunner_novelai.py", "_run_setup_verification", ("Exception",), "err"): (
-        1, "try 裡只有 `read_credentials(AUTH_FILE)`：收得到 `OSError`"
-           "（`str()` 會印出憑證檔路徑）與 `CredentialsError`（合約就是訊息只帶"
-           "檔名、位元組位置或缺漏的欄位名），兩種都不含憑證值本身。"),
 }
 
 # 改掉的 12 個站點，連「選了哪一支格式器」一起釘住。只釘「沒有 `!r`」的話，
@@ -1174,7 +1153,6 @@ _DRIVER_FACING_FORMATTER: dict[tuple[str, str], str] = {
     ("_webrunner_shared.py", "verify_character_prompt"): "_long_error",
     ("_webrunner_shared.py", "_refill_character_fields"): "_long_error",
     # spawn 鑑識 -> 不截斷
-    ("webrunner_novelai.py", "_run_setup_verification"): "full_error_detail",
     ("webrunner_je_only.py", "main"): "full_error_detail",
 }
 # `serve_single_image_request` 一支裡兩種都有（清空角色框的迴圈用短的、外層的
@@ -1255,7 +1233,7 @@ def test_every_exception_repr_site_is_declared_with_a_written_reason():
     長得一模一樣，而這支的整個價值就建立在抽得到。
     """
     found = _all_exception_repr_sites()
-    assert sum(found.values()) >= 25, (
+    assert sum(found.values()) >= 20, (
         f"整個 webrunner 三件組只抽到 {sum(found.values())} 個例外 `!r` 插值"
         "（2026-09-12 實測 34 個）——抽取器壞了，不是程式碼變乾淨了。")
 
@@ -1299,8 +1277,8 @@ def test_every_exemption_states_why():
     for key, (_, why) in _EXCEPTION_REPR_EXEMPT.items():
         module, funcname, types, expr = key
         if _MIRROR_REASON in why:
-            twin = ("webrunner_novelai.py", funcname, types, expr)
-            if module == "webrunner_novelai.py":
+            twin = ("webrunner_je_only.py", funcname, types, expr)
+            if module == "webrunner_je_only.py":
                 thin.append(key)            # novelai 不能拿自己當交叉引用
             elif twin not in _EXCEPTION_REPR_EXEMPT:
                 dangling.append(key)
@@ -1314,21 +1292,6 @@ def test_every_exemption_states_why():
         f"（或它自己也沒寫理由）：{sorted(dangling)}")
 
 
-def test_the_mirror_cross_reference_is_actually_checked():
-    """正面對照組：上一支那條交叉引用要真的咬得到人。
-
-    現況是乾淨的，所以「沒有懸空的交叉引用」這句斷言本身永遠成立——刪掉它也會
-    綠。用合成的表問一次「novelai 那一筆不見了會怎樣」。
-    """
-    twinless = ("webrunner_je_only.py", "_nonexistent_twin", ("OSError",), "e")
-    assert _MIRROR_REASON not in _EXCEPTION_REPR_EXEMPT.get(
-        twinless, (0, ""))[1], "合成鍵不該真的存在於表裡"
-    # 把判斷抽出來對合成資料跑一次，不動正式的表。
-    fake = {twinless: (1, f"{_MIRROR_REASON}。")}
-    dangling = [k for k, (_, why) in fake.items()
-                if _MIRROR_REASON in why
-                and ("webrunner_novelai.py", k[1], k[2], k[3]) not in fake]
-    assert dangling == [twinless], "交叉引用的對帳邏輯抓不到懸空的那一筆"
 
 
 @pytest.mark.parametrize("key,formatter",

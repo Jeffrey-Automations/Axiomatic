@@ -547,7 +547,7 @@ def interrupted_targets(snapshot_dir: Path | None = None) -> list[str]:
 # 產圖批次的兩個進入點。變異骨架寫檔的那幾十秒裡，只要監督者把子行程重生
 # （OOM、定期重啟、當掉），新行程就是**從磁碟重新讀** `.py`——於是變異版會真的
 # 跑起來，對著真的瀏覽器、真的帳號。
-_BATCH_ENTRY_POINTS = ("webrunner_novelai", "webrunner_je_only")
+_BATCH_ENTRY_POINTS = ("webrunner_je_only",)
 
 
 def _import_closure(entry: str) -> set[str]:

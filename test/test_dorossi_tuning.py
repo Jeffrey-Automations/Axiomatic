@@ -200,9 +200,9 @@ def test_a_stranger_is_refused_before_anything_happens(store, handler_name):
 
 
 @pytest.mark.parametrize("handler_name", ["mcmd_model", "mcmd_effort"])
-def test_a_running_task_blocks_a_change_but_not_a_read(store, monkeypatch,
+def test_a_running_task_accepts_a_change_for_the_next_round(store, monkeypatch,
                                                        handler_name):
-    """自走任務進行中改設定會半途換模型，所以擋下來；純顯示不受影響。"""
+    """設定持久化供下一輪快照讀取，不改正在進行的呼叫。"""
     handler = getattr(b, handler_name)
     _run(handler(_Msg(), ""))          # 先讓 active slot 存在
     uid = str(b.DOROSSI_USER_ID)
@@ -212,12 +212,14 @@ def test_a_running_task_blocks_a_change_but_not_a_read(store, monkeypatch,
 
     busy = _Msg()
     _run(handler(busy, "opus" if handler_name == "mcmd_model" else "high"))
-    assert "進行中" in busy.text
-    assert _tuning_of(store) == {}, "任務進行中還是把設定寫進去了"
+    assert "下一輪" in busy.text
+    expected = {"tune_model": "opus"} if handler_name == "mcmd_model" else {"tune_effort": "high"}
+    assert _tuning_of(store) == expected
 
     reading = _Msg()
     _run(handler(reading, ""))
     assert "進行中" not in reading.text, "純顯示不該被進行中的任務擋下來"
+
 
 
 def test_showing_does_not_change_anything(store):
@@ -255,7 +257,7 @@ def test_the_effort_menu_is_generated_from_the_backend_allowlist():
 
 
 @pytest.mark.parametrize("backend", ["claude_code", "api", "codex"])
-def test_the_model_autocomplete_offers_exactly_this_backends_allowlist(backend):
+def test_the_model_autocomplete_offers_all_backends_with_current_first(backend):
     """模型候選 ＝ **這個後端**的 allowlist ＋ `default`，不多不少。
 
     靜態 `choices=` 只能列一張表，所以另一個後端的使用者會選到一批送出去必定失敗
@@ -264,8 +266,10 @@ def test_the_model_autocomplete_offers_exactly_this_backends_allowlist(backend):
     allowed = db.dorossi_model_choices(backend)
     assert allowed, f"{backend} 的 allowlist 是空的——這支會空過"
     values = [value for _name, value in b._dorossi_model_options(backend, "")]
-    assert values == list(allowed) + [db.DOROSSI_TUNE_DEFAULT], (
+    aliases = list(allowed) + [a for a in db.DOROSSI_ALL_MODEL_CHOICES if a not in allowed]
+    assert values == ([db.DOROSSI_TUNE_DEFAULT] + aliases)[:25], (
         f"`/dorossi model` 在 {backend} 上的候選值與 allowlist 不一致：{values}")
+
 
 
 def test_the_model_autocomplete_never_exceeds_the_platform_cap():
@@ -696,3 +700,30 @@ def test_a_used_upload_cannot_simply_be_sent_again():
     from_disk = b.discord.File(str(Path(__file__)))
     from_disk.close()
     assert from_disk.fp.closed, "函式庫不再關掉自己開的檔了"
+
+
+@pytest.mark.parametrize("alias,provider", [
+    ("sol", "codex"), ("gemini-3.8-flash-high", "gemini"), ("opus", "claude")])
+def test_model_selection_switches_provider_on_both_entry_paths(store, alias, provider):
+    _run(b.mcmd_model(_Msg(), alias))
+    assert _slot(store)["ai_provider"] == provider
+    assert db._dorossi_session_tuning(_slot(store))[1] is not None
+    store.unlink()
+    _run(b.mcmd_dorossi(_Msg(), f"/model {alias}"))
+    assert _slot(store)["ai_provider"] == provider
+    assert _slot(store)["tune_model"] == alias
+
+
+
+def test_autocomplete_can_find_models_on_other_providers():
+    assert ("sol", "sol") in b._dorossi_model_options("claude_code", "sol")
+    assert ("opus", "opus") in b._dorossi_model_options("codex", "opus")
+
+
+
+def test_model_autocomplete_does_not_read_state_for_other_users(monkeypatch):
+    def forbidden():
+        raise AssertionError("non-owner must not read state")
+    monkeypatch.setattr(b, "_dorossi_load_state", forbidden)
+    interaction = types.SimpleNamespace(user=types.SimpleNamespace(id=b.DOROSSI_USER_ID+1))
+    assert _run(b._dorossi_model_autocomplete(interaction, "")) == []

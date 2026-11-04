@@ -38,13 +38,12 @@
 | 路徑 | 職責 |
 | --- | --- |
 | `axiomatic/discord_bot.py` | 意圖層（模組名是歷史遺留，它不綁任何平台）：指令樹與文字相容層、身分閘、佇列編輯、webrunner 監督、單張產圖佇列、Dorossi 編排、presence 與背景任務 |
-| `axiomatic/webrunner_novelai.py`、`axiomatic/webrunner_je_only.py` | 執行層的兩個變體（Selenium 為正式預設、wrapper 為備援）：瀏覽器生命週期、登入、設定檔快照、`BrowserPort` adapter |
-| `axiomatic/_webrunner_shared.py` | 兩個變體的共用核心，不 import 任何 driver：DOM 操作、佇列 I/O、輸出資料夾分配、產圖迴圈、單圖服務、`run_batch` |
-| `axiomatic/_batch_config.py`、`_bot_config.py`、`_queue_consume.py`、`_run_progress.py`、`_supervisor.py`、`_chrome_slot.py`、`_code_fingerprint.py`、`_warn_dedup.py` | 無狀態的共用模組：設定載入、佇列消耗決策、續跑檢查點、退避與單一實例鎖、跨行程瀏覽器槽鎖、程式碼指紋、警告去重（允許當第三通道的完整清單以 `CLAUDE.md`「Module boundaries」為準） |
-| `axiomatic/_process_control.py`、`_gui_control.py`、`_external_apis.py`、`_help_strings.py`、`_bot_prompts.py`、`dorossi_backend.py`、`_dorossi_gemini.py`、`presence_probe.py`、`discord_rpc.py`、`_resource_report.py`、`_reply_card.py`、`_reply_pager.py` | bot 專屬模組：行程探查與終止、桌面自動化門面、外部圖庫／web API、說明文字資料、外部化 prompt 載入、Dorossi 後端與工作階段、Gemini CLI 串流與用量解析、本機狀態探測、本機 Rich Presence、依角色分組的行程數與資源占用（`/proc usage`，只讀作業系統行程表，只回數字與角色代號、不組送出字串）、回覆的卡片原語與分頁回覆（見 §4「回覆版面」） |
+| `axiomatic/_webrunner_shared.py` | 瀏覽器流程核心，不 import 任何 driver：DOM 操作、佇列 I/O、輸出資料夾分配、產圖迴圈、單圖服務、`run_batch` |
+| `axiomatic/_batch_config.py`、`_bot_config.py`、`_queue_consume.py`、`_run_progress.py`、`_supervisor.py`、`_chrome_slot.py`、`_code_fingerprint.py`、`_warn_dedup.py`、`_process_job.py`、`_webrunner_location.py` | 無狀態的共用模組：設定載入、佇列消耗決策、續跑檢查點、退避與單一實例鎖、跨行程瀏覽器槽鎖、程式碼指紋、警告去重（允許當第三通道的完整清單以 `CLAUDE.md`「Module boundaries」為準） |
+| `axiomatic/_process_control.py`、`_gui_control.py`、`_external_apis.py`、`_help_strings.py`、`_bot_prompts.py`、`dorossi_backend.py`、`_dorossi_gemini.py`、`presence_probe.py`、`discord_rpc.py`、`_resource_report.py`、`_reply_card.py`、`_reply_pager.py`、`_reply_confirm.py` | bot 專屬模組：行程探查與終止、桌面自動化門面、外部圖庫／web API、說明文字資料、外部化 prompt 載入、Dorossi 後端與工作階段、Gemini CLI 串流與用量解析、本機狀態探測、本機 Rich Presence、依角色分組的行程數與資源占用（`/proc usage`，只讀作業系統行程表，只回數字與角色代號、不組送出字串）、回覆的卡片原語與分頁回覆（見 §4「回覆版面」） |
 | `axiomatic/_chat_platform.py`、`_telegram_transport.py`、`_platform_runtime.py` | bot 專屬的對話平台層：介接接縫（身分映射、能力旗標——含 `slash_commands` 與 `buttons`，每個 transport 都明寫——、送出引數正規化與嵌入訊息攤平、沒有斜線選單時的指令提示改寫、transport 註冊表）、逐平台 transport（一個平台一個 `_*_transport.py`）、行程的平台身分與它自己的狀態／鎖／記錄檔位置 |
 | `start_platforms.py`、`start_discord_bot.py`、`start_webrunner.py`、`run_batch.py`、`install_autostart.py`、`wake_autostart.py` | repo 根目錄的啟動器：把每個開著的平台各起一個受監督行程、單一平台的監督迴圈（`--platform`）、批次監督迴圈、一鍵批次入口、Windows 工作排程器自動啟動的註冊與手動叫醒 |
-| `axiomatic/verify_*.py`、`dashboard_server.py` | 手動驗證腳本（瀏覽器、外部 API、額度對話框、後端 CLI）與本機唯讀狀態儀表板 |
+| `axiomatic/verify_*.py`、`dashboard_server.py` | 手動驗證腳本（瀏覽器、外部 API、額度對話框、後端 CLI）與本機狀態儀表板與指令主控台 |
 | `axiomatic/gen_command_docs.py`、`audit_dependencies.py`、`audit_simplified_chars.py`、`mutation_harness.py` | 文件產生、相依與字形稽核、變異測試骨架 |
 | `test/test_*.py`、`test/conftest.py`、`test/_test_*.py`；`axiomatic/_browser_killguard.py`；`pytest.ini` | pytest 測試（大量是把硬規則變成靜態守門）、全套共用的守門夾具與兩支手動 e2e；防止測試誤殺正式瀏覽器的執行期防線（留在套件裡，repo 外的探針也要 import 它）；`testpaths = test`、`pythonpath = axiomatic .` 讓測試照舊用頂層名字匯入正式模組 |
 | `todo_prompt.md`、`todo_character1.md`、`todo_character2.md`、`todo_undesired.md`；`prompt.md`、`character1.md`、`character2.md`、`undesired.md`；`default_prompt.md` | 四條佇列、各自的 fallback 提示詞、主提示詞範本（bot 寫、webrunner 讀）。全部是**使用者內容**：repo 只帶 `*.example.md` 範本，實際檔案 gitignored |
@@ -61,10 +60,10 @@
 | --- | --- |
 | `py -3 start_platforms.py [--list]` | 把**每個開著的平台**各起一個受監督行程（一個平台一個行程）；`--list` 只列出哪些會起來與原因 |
 | `py -3 start_discord_bot.py [--platform <名稱>]` | **單一平台**的 bot 監督迴圈（逐平台的單一實例鎖與記錄檔、致命 rc 不重試、輸出 tee 進 `state/<平台>/`） |
-| `py -3 start_webrunner.py [selenium\|je]` | webrunner 監督迴圈（退避、快速失敗放棄、參與瀏覽器槽協定） |
-| `py -3 run_batch.py [selenium\|je] [--clear-pause]` | 本機一鍵批次：前置檢查 → 印 run-plan → 交棒給 `start_webrunner.py` |
+| `py -3 start_webrunner.py [je]` | webrunner 監督迴圈（退避、快速失敗放棄、參與瀏覽器槽協定） |
+| `py -3 run_batch.py [je] [--clear-pause]` | 本機一鍵批次：前置檢查 → 印 run-plan → 交棒給 `start_webrunner.py` |
 | `py -3 install_autostart.py --install\|--status\|--remove` | 登入時自動拉起**開著的每個平台**與批次監督者（Windows 工作排程器，`\Axiomatic\Bot-<平台>`／`\Axiomatic\Batch`；名稱由 `_platform_runtime.autostart_task_names()` 算，`/sys doctor` 查的是同一份） |
-| `py -3 axiomatic/dashboard_server.py [--platform <名稱>]` | 本機唯讀狀態儀表板（批次、佇列、Dorossi、系統；一個平台一份，見 `docs/dashboard.md`） |
+| `py -3 axiomatic/dashboard_server.py [--platform <名稱>]` | 本機狀態儀表板與指令主控台（批次、佇列、Dorossi、系統；一個平台一份，見 `docs/dashboard.md`） |
 | `py -3 axiomatic/verify_browser.py [--full] [--variant je]` | 隔離瀏覽器驗證，不碰正式設定檔 |
 | `py -3 -m pytest` | 全部測試（`pytest.ini` 的 `testpaths` 指向 `test/`；單檔 `py -3 -m pytest test/test_x.py`） |
 
@@ -78,7 +77,7 @@
   `webrunner_progress.json`。
 - **webrunner 回傳碼**：`0` 乾淨收工、`1` 無事可做、`2` session setup 失敗、`3` 零產出
   （`RC_ZERO_PROGRESS`）、`4` 被擋住不重生（`RC_GENERATION_BLOCKED`）、`5` 設定／憑證
-  還沒填（`RC_SETUP_INCOMPLETE`，同樣不重生）。常數在 `_supervisor.py`。
+  還沒填（`RC_SETUP_INCOMPLETE`，同樣不重生）、`6` 單圖伺服器收工（`RC_SERVED_ONESHOT`，批次監督者重生並計入零產出閘）。常數在 `_supervisor.py`。
 - **bot 回傳碼**：`3` 已經有另一個實例在跑（`RC_ALREADY_RUNNING`）、`5` 設定還沒填
   （`RC_SETUP_INCOMPLETE`，非預設平台「沒有可用的 transport」也走這個碼）。兩者都讓
   監督啟動器直接收工，不進退避重試（`child_exit_is_fatal`）——否則一個沒設定好的平台
@@ -110,7 +109,7 @@
 3. **Dorossi 對話（`/dorossi ask`；沒有斜線選單的平台是一段不是指令的文字）**：解析開頭的微調 token → 決定工作
    階段 slot → 取 per-session 鎖 → `dorossi_backend.py` 串流叫用後端並套兩段式看門狗 →
    即時更新單一訊息 → 記錄用量、存 `dorossi_session.json`。`/dorossi abort` 中止進行中的單輪回合或自走
-   迴圈：設旗標，當場砍掉後端行程與它已經起的子孫行程（`dorossi_backend._dorossi_kill_backend_tree`）。
+   迴圈：設旗標，當場砍掉後端行程與它已經起的子孫行程（`dorossi_backend._dorossi_kill_backend_tree`，是 `_process_control.kill_child_process_tree` 的別名）。後端逾時、取消、查詢收尾與主機指令逾時也共用這支；每條父子邊比出生時間，先列再砍根與子孫，避免 PID 重用誤殺。看門狗指定 `raise_backend_error=True`，根 kill 失敗時仍先清子孫再拋出錯誤。
 4. **回覆版面**：狀態類回覆（`/sys health`、`/gen plan`、`/dorossi running`、`/out stats`）由
    `_reply_card.card(title, status=, description=, fields=, footer=)` 組成卡片——狀態決定顏色
    （`ok`／`warn`／`bad`／`info`／`idle`），平台的長度上限在這裡一次處理，放不下的欄位不送、頁尾講
@@ -140,15 +139,8 @@
 
 ## 6. 跨專案邊界
 
-- **WebRunner（`je_web_runner`）**：`axiomatic/webrunner_novelai.py` 與
-  `axiomatic/webrunner_je_only.py` 把環境變數 `WEBRUNNER_PATH`，或 repo 上一層的
-  `WebRunner/`（即 `<parent>/WebRunner`），插到 `sys.path[0]`；`requirements.txt` 另宣告
-  `je_web_runner>=0.0.88`。`test/conftest.py` 會引用該函式庫的
-  `je_web_runner.utils.logging.loggin_instance`。
-- **AutoControlGUI（`je_auto_control`）**：`requirements.txt` 的 `je-auto-control`。門面是
-  `axiomatic/_gui_control.py`；`axiomatic/_webrunner_shared.py` 與
-  `axiomatic/presence_probe.py` 另有直接 import。pytest 以 `pytest.ini` 的
-  `-p no:je_auto_control` 擋掉它的外掛。
+- **瀏覽器函式庫**：單一 `axiomatic/webrunner_je_only.py` 入口；最低版本 `je_web_runner>=0.0.95`。`_webrunner_location.py` 依序解析環境變數、`webrunner_path` 設定、同層工作樹與已安裝套件；未設定且沒有工作樹時直接使用套件。
+- **桌面函式庫**：最低版本 `je-auto-control>=1.0.4`。`axiomatic/_gui_control.py` 將辨識健康、語言、多擊、拖曳與鍵名交給函式庫；測試停用它的 pytest 外掛。
 - **變異測試的探針腳本**：`axiomatic/mutation_harness.py` 是被 repo **外**的一次性腳本
   import 的骨架；快照目錄預設在系統暫存區底下，可用 `AXIOMATIC_MUTATION_SNAPSHOT_DIR`
   覆寫。repo 裡刻意不放那些一次性腳本。
@@ -182,3 +174,18 @@
 - `CLAUDE.md` 的硬規則新增、刪除或改名。
 
 本檔只寫總覽；單一模組的細節與陷阱寫在該模組自己的 docstring 與對應的測試裡。
+
+
+Dorossi tuning now resolves model aliases across providers and stores the matching provider with the model. Running calls retain their snapshot; subsequent rounds re-read model and effort. The second CLI receives model_reasoning_effort through its config override. _claude_local_usage.py reads local transcript usage and deduplicates repeated blocks and copied histories. A local SQLite index holds only identifiers, timestamps and counters, and resumes at complete-line offsets. The report keeps bot and all-session totals separate; cache tokens are included and API-rate estimates never imply subscription charges.
+
+`/locate gone` 的圖片樣板以選填 `template` 附件傳入，`target` 可填門檻（預設 0.9），文字／視窗仍須有目標。安裝下限是 Python 3.13；排程狀態依主控台輸出代碼頁解碼，無主控台才退回 OEM。
+
+Windows 子行程由 `_process_job.py` 的工作物件管理，先指派、再以具名事件放行。CLI 保留 stdin/stdout；背景程式使用合作式閘門保留腳本及 PID 身分。關閉工作物件會清掉自己的子孫，不清掃其他瀏覽器。`_reply_confirm.py` 提供 60 秒確認／取消，執行前重新套用權限閘。後端號誌等待與 API 呼叫均可立即中止；日誌經管線附加寫入。桌面多擊、拖曳、鍵名與辨識狀態皆委派函式庫。
+
+一般後端隨父行程結束清理；由 bot 啟動的獨立批次會持有自己的不繼承工作物件 handle，保留 bot 重啟後重新收養的能力。明確停止透過 `TerminateJobObject` 結束整組，批次結束後不留瀏覽器子孫。單圖伺服器回傳 `RC_SERVED_ONESHOT`，批次監督者計為零進度而重生，單圖收尾不重生批次。
+
+額度對話框驗證保留無焦點事件退路，另驗證有焦點 modal 收到可信任 Escape；真 DOM 共 136 項。單一入口的驗證提示與操作文件同步，工作物件、回覆確認及依賴下限均有回歸。
+
+### Presence-only startup
+
+`--presence-only` is a process startup mode for Discord. The supervisor forwards it to every child restart. The bot reuses its presence initialization and probe loop, including local RPC, and blocks command and reaction entry points. Ready and resumed events cannot restore batch or conversation jobs in this mode. Registration enables only the Discord task and disables the other existing application tasks without ending running processes. Wake validates the stored mode before requesting the Discord task. Full registration restores the configured tasks.

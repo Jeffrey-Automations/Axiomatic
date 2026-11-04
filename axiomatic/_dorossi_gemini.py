@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from _process_job import create_subprocess_exec as _spawn_backend
 import json
 import os
 import re
@@ -9,6 +10,8 @@ import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
+
+from _process_control import kill_child_process_tree
 
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash-medium"
 
@@ -270,7 +273,7 @@ async def via_gemini(prompt: str, session_id: str | None, *, on_text=None,
                        effort=effort, full=full,
                        extra_dir=extra_dir)
     args += ["--print-timeout", f"{max(1, int(hard_limit))}s"]
-    proc = await asyncio.create_subprocess_exec(
+    proc = await _spawn_backend(
         *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, cwd=workdir, limit=16 * 1024 * 1024)
     if on_proc:
@@ -284,7 +287,7 @@ async def via_gemini(prompt: str, session_id: str | None, *, on_text=None,
         aborted = False
     if aborted and proc.returncode is None:
         try:
-            proc.kill()
+            kill_child_process_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass   # exited between the returncode check and the kill
     try:
@@ -317,7 +320,7 @@ async def via_gemini(prompt: str, session_id: str | None, *, on_text=None,
     except asyncio.TimeoutError:
         if proc.returncode is None:
             try:
-                proc.kill()
+                kill_child_process_tree(proc, raise_backend_error=True)
             except ProcessLookupError:
                 pass   # exited in the same instant the timeout fired
         if silence_limit is not None:
@@ -326,7 +329,7 @@ async def via_gemini(prompt: str, session_id: str | None, *, on_text=None,
     finally:
         if proc.returncode is None:
             try:
-                proc.kill()
+                kill_child_process_tree(proc, raise_backend_error=True)
             except ProcessLookupError:
                 pass
         if reap:

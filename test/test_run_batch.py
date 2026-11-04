@@ -180,7 +180,7 @@ def test_run_batch_never_names_a_webrunner_variant_directly():
 def test_the_spawn_scanner_would_see_a_direct_call():
     """合成資料的對照組：沒有這支，上面那個掃描器直接 `return []` 也全綠。"""
     assert _direct_webrunner_spawns(
-        'x = ["py", "webrunner_novelai.py"]') == ["webrunner_novelai.py"]
+        'x = ["py", "webrunner_je_only.py"]') == ["webrunner_je_only.py"]
     assert _direct_webrunner_spawns('x = "start_webrunner.py"') == []
 
 

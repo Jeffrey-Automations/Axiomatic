@@ -229,6 +229,7 @@ def armed(monkeypatch, tmp_path):
     回傳一個 `touched` 清單：任何被鎖的 handler 只要被呼叫到，名字就會進去。
     閘沒壞的話它永遠是空的。
     """
+    monkeypatch.setattr(b, "_pending_confirmations", {})
     touched: list[str] = []
 
     for name in _HANDLERS_TO_DISARM:
@@ -320,10 +321,13 @@ def test_the_owner_still_reaches_every_locked_bang_handler(head, armed):
     """
     message = _bang(f"{head} whatever", b.OWNER_USER_ID, b.CHANNEL_ID)
     _deliver(message)
+    confirming = bool(b._pending_confirmations)
+    if confirming:
+        _deliver(message)  # 同一位擁有者重送，經相同的閘門確認刪除。
     assert armed.touched == BANG_ROUTES[head], (
         f"擁有者跑 `{head}` 應該走到 {BANG_ROUTES[head]}，"
         f"實際走到 {armed.touched}")
-    assert message.replies == []
+    assert (len(message.replies) == 1 and "確認" in message.replies[0]) if confirming else message.replies == []
 
 
 def test_a_refused_bang_is_neither_counted_nor_audited(armed):
@@ -466,7 +470,7 @@ _NOT_A_CONTROL_WORD = [
     "dorossi 幫我看一下這個函式",
     "Dorossi 幫我看一下",
     "/new",
-    "/new D:/Codes/Elsewhere",
+    "/new C:/Workspace/Elsewhere",
     "/effort high 你好",
     "/session s3 接著做",
     "持續推進直到做完，不要問我",
@@ -598,8 +602,11 @@ def test_every_control_word_still_reaches_its_handler_from_a_mention(
         monkeypatch.setattr(b, name, _record)
     message = _mention(key, b.OWNER_USER_ID, OTHER_CHANNEL)
     _deliver(message)
+    confirming = bool(b._pending_confirmations)
+    if confirming:
+        _deliver(message)
     assert set(reached) == set(MENTION_ROUTES[key]), (key, reached)
-    assert gallery.random == [] and message.replies == [], (
+    assert gallery.random == [] and (bool(message.replies) == confirming), (
         f"`@bot {key}` 是控制字，卻被當成一般文字回了圖")
     assert b._METRICS_CMD_COUNTS == Counter({f"@{key}": 1})
 

@@ -1,57 +1,22 @@
-"""
-webrunner_je_only.py — pure je_web_runner port of webrunner_novelai.py.
+"""唯一的背景產圖程式，所有瀏覽器操作透過函式庫門面執行。
 
-Functionally equivalent to ``webrunner_novelai.py`` but routes EVERY browser
-interaction through ``webdriver_wrapper_instance``. No ``from selenium ...
-import webdriver`` / ``ActionChains`` calls. The only selenium symbol used
-is ``Keys`` (constants only — no driver coupling).
-
-Why this file exists
-====================
-
-Until je_web_runner 0.x grew the advanced WebDriverWrapper APIs, a pure-
-wrapper port could not pass NovelAI's anti-bot filter on a cold start. The
-two blockers were:
-
-* ``Options.add_experimental_option("excludeSwitches", ["enable-automation"])``
-  and ``add_experimental_option("useAutomationExtension", False)`` — required
-  to hide ``navigator.webdriver`` and suppress the automation infobar.
-* ``Page.addScriptToEvaluateOnNewDocument`` — required so stealth patches
-  run BEFORE NovelAI's React bootstrap snapshots the globals.
-
-Both are now exposed via:
-
-* ``set_driver(..., experimental_options={...})``
-* ``execute_cdp_cmd(method, params)`` /
-  ``add_script_to_evaluate_on_new_document(source)``
-
-So a pure-wrapper driver is finally on par with the hand-rolled selenium
-build in webrunner_novelai.py. This file is the working proof.
-
-How to run
-==========
-
-From the repo root::
-
-    py -3 axiomatic/webrunner_je_only.py
-
-It reads/writes the same on-disk contracts as ``webrunner_novelai.py``
-(``auth.md``, ``prompt.md``, ``todo_*.md``, ``output/``, ``events.ndjson``,
-``debug_*.png``, ``.chrome_profile/``) so the Discord bot keeps working.
+批次與單張伺服器共用磁碟協定，主迴圈在 `_webrunner_shared`。
+Windows 啟動前必須通過工作物件閘門，父行程負責收尾自己的瀏覽器子孫。
+最低函式庫版本與開機契約見 requirements.txt、`_require_wrapper_contract`。
+從專案根目錄執行：`py -3 axiomatic/webrunner_je_only.py`。
 """
 from __future__ import annotations
 
+from _process_job import wait_start_gate, popen as _job_popen
+_JOB_GUARDED = wait_start_gate()
+
+import inspect
+import logging
 import os
+import random
 import sys
 import time
 from pathlib import Path
-
-# Locate the je_web_runner repository (sibling clone, or WEBRUNNER_PATH env).
-_WR_ENV = os.environ.get("WEBRUNNER_PATH")
-_WR_SIBLING = Path(__file__).resolve().parent.parent.parent / "WebRunner"
-WEBRUNNER_PATH = Path(_WR_ENV) if _WR_ENV else _WR_SIBLING
-if str(WEBRUNNER_PATH) not in sys.path:
-    sys.path.insert(0, str(WEBRUNNER_PATH))
 
 from selenium.common.exceptions import WebDriverException  # noqa: E402
 from selenium.webdriver.common.keys import Keys  # noqa: E402 — constants only
@@ -67,9 +32,18 @@ from urllib3.exceptions import (  # noqa: E402
 # name so existing call sites stay byte-identical; `ws.*` reaches the rest
 # (the bulk now lives in the shared module after C1–C6).
 import _webrunner_shared as ws  # noqa: E402
+
+# `je_web_runner` 從哪裡載入：環境變數 `WEBRUNNER_PATH` → `bot_config.json` 的
+# `webrunner_path` → repo 旁邊的同層資料夾 → 已安裝的套件（規則只有一份，在
+# `_webrunner_location.resolve_webrunner_path`；與 selenium 變體同一行）。必須排在下面
+# `import je_web_runner` 之前——本變體依賴的兩個介面比 PyPI 上的發行版新，載入哪一份
+# 決定開不開得了機（`_require_wrapper_contract`）。同一行也把函式庫的記錄檔
+# （`WEBRUNNER_LOG_PATH`，沒設才設）指向 `webrunner.log`，函式庫只在第一次匯入時讀它。
+WEBRUNNER_LIBRARY = ws.put_webrunner_tree_first()
+
 from _webrunner_shared import (  # noqa: E402
     # 裸名字匯入是必要的，不是風格：接合守門認不得 `ws.` 前綴的呼叫。理由與實測
-    # 寫在 `webrunner_novelai.py` 同一個匯入區塊。
+    # 寫在 `webrunner_je_only.py` 同一個匯入區塊。
     _is_single_path_component,
     human_pause,
     human_type,
@@ -79,7 +53,7 @@ from _webrunner_shared import (  # noqa: E402
 )
 # chromedriver 記錄檔的處理，與 selenium 變體共用同一份（實測度量與「為什麼是一份
 # 不是兩份」寫在共用模組那個區段的抬頭）。**只匯入函式，不匯入 `_CHROMEDRIVER_LOG*`
-# 常數**——理由同 `webrunner_novelai.py` 那一側：常數只留在共用模組，測試 patch 的
+# 常數**——理由同 `webrunner_je_only.py` 那一側：常數只留在共用模組，測試 patch 的
 # 目標對不上就會立刻 AttributeError，而不是安靜地讓修剪打到 repo 根目錄那個真檔。
 from _webrunner_shared import (  # noqa: E402
     _dump_chromedriver_log_tail,
@@ -97,7 +71,7 @@ from _webrunner_shared import full_error_detail  # noqa: E402
 # mid-batch. Hot-path helpers wrap their script calls in this tuple so caller
 # poll / retry loops can recover.
 #
-# **必須與 `webrunner_novelai.py` 的那一份逐項相同**（`test_variant_parity.py`
+# **必須與 `webrunner_je_only.py` 的那一份逐項相同**（`test_variant_parity.py`
 # 釘住）。完整的理由、實測資料與「新加進來的每一個類別都同時列在
 # `_webrunner_shared._SESSION_GONE_EXC_NAMES` 裡」這條不變式寫在那一份的註解裡，
 # 這裡不重抄一遍，免得兩份說明各自漂移。一句話版本：`MaxRetryError` /
@@ -114,12 +88,13 @@ _DRIVER_TRANSPORT_ERRORS = (
     OSError,                        # socket 層（ConnectionRefusedError…）
 )
 
+import je_web_runner  # noqa: E402 — `_require_wrapper_contract` 讀它的 `executor`
 from je_web_runner import (  # noqa: E402
     TestObject,
     webdriver_wrapper_instance,
 )
 
-# Short alias — every "driver.X" in webrunner_novelai.py becomes "wr.X" here.
+# Short alias — every "driver.X" in webrunner_je_only.py becomes "wr.X" here.
 wr = webdriver_wrapper_instance
 
 
@@ -131,11 +106,35 @@ wr = webdriver_wrapper_instance
 # by `wr.set_driver` / `wr.quit` in the lifecycle code, so the port always
 # follows the live driver with no re-pointing needed (unlike the selenium
 # variant, whose raw driver object is replaced on restart). Mirrors
-# `webrunner_novelai.BrowserPort` method-for-method; the only deltas are the
-# je wrapper call style and `click` (plain `el.click()` + JS fallback, NOT
-# novelai's ActionChains hover) / `mouse_wiggle` (no-op — the je login never
-# wiggled). Lifecycle methods (restart/quit/sync_back) are deliberately NOT
-# on the port yet — those stay raw `wr.*` for now (deferred to C6).
+# `webrunner_je_only.BrowserPort` method-for-method, including the human-like
+# input (2026-10-01, §8.222 G3/G4/G5): `click` hovers, pauses, then clicks with
+# a JS fallback; `mouse_wiggle` really wiggles; `press_escape` sends an
+# ActionChains Escape before the activeElement fallback. The only delta is the
+# call style — the ActionChains go through the wrapper's queue (`wr.move_to_element`
+# / `wr.pause` / `wr.left_click` / `wr.move_by_offset` / `wr.send_keys` /
+# `wr.perform`) instead of a fresh selenium `ActionChains(driver)`. Lifecycle
+# methods (restart/quit/sync_back) are deliberately NOT on the port yet — those
+# stay raw `wr.*` for now (deferred to C6).
+
+
+def _drop_queued_actions() -> None:
+    """ActionChains 失敗之後清掉包裝層的動作佇列（本機與瀏覽器那一側），永不 raise。
+
+    包裝層的 ActionChains 是**一個共用、會累積的佇列**（selenium 變體每次都 new 一個，
+    沒有這個問題）。`perform()` 會先把佇列清空再送出，所以送出失敗不會留下東西；但只要
+    排隊排到一半就丟例外，殘留的動作會被**下一次**不相干的 `perform()` 一起送出去——例如
+    一次沒送出的 hover 跑進下一次 Escape 裡。順手的 `reset_actions` 也會請瀏覽器放開所有
+    按著的鍵與滑鼠鍵（W3C 的 release actions）：一個在送到一半時斷掉的點選，可能留下
+    「滑鼠鍵還按著」的狀態。
+
+    多一次往返只發生在失敗那條路上；瀏覽器已經不在的話這裡會失敗，接著的 JS 退路會把
+    真正的原因往上丟。
+    """
+    try:
+        wr.reset_actions()
+    except Exception:  # pylint: disable=broad-except  # nosec B110
+        pass
+
 
 class BrowserPort:
     """je_web_runner-backed DOM/driver adapter. See module comment above."""
@@ -163,11 +162,20 @@ class BrowserPort:
         return wr.find_elements(TestObject(xpath, "xpath")) or []
 
     def find_element_xpath(self, xpath):
-        return wr.find_element(TestObject(xpath, "xpath"))
+        """第一個符合的元素，沒有就回 None——「沒找到」不是錯誤。
+
+        刻意走 `find_elements` 取第一個，不走 `wr.find_element`：後者在沒找到時丟
+        `NoSuchElementException`，包裝層的失敗政策釘成丟例外之後（見
+        `_require_wrapper_contract`），每一次輪詢（`_do_login` 等 email 欄位出現就是
+        一秒三次）都會變成一個例外；釘之前則是每一次都往 `WEBRunner.log` 寫一筆
+        ERROR。與 selenium 變體的實作同一個形狀。
+        """
+        elements = wr.find_elements(TestObject(xpath, "xpath")) or []
+        return elements[0] if elements else None
 
     def ancestors(self, element, depth: int = 4):
         """Return [element, parent, …] up to `depth` ancestors via one
-        execute_script round-trip. Mirror of `webrunner_novelai.BrowserPort.
+        execute_script round-trip. Mirror of `webrunner_je_only.BrowserPort.
         ancestors` (which uses element-relative find_element) — both yield the
         same chain so `expand_character_section` lives in the shared module."""
         out = wr.execute_script(
@@ -188,13 +196,23 @@ class BrowserPort:
 
     # ---- interaction ----
     def click(self, element, pause: float = 0.15):
-        # je 既有風格：純 el.click()，失敗退回 JS click。刻意 NOT ActionChains
-        # ——那是 novelai 的反偵測 hover；兩變體的點選風格不同、不可抹平。
-        # `pause` 參數只為與 novelai port.click 簽章一致（shared 葉子會帶 pause
-        # 呼叫）；je 純 click 不需要 hover 停頓，故忽略此值。
+        """滑過去、停 `pause` 秒、再按（反偵測的節奏），失敗退回 JS 點選。
+
+        與 selenium 變體同一個動作序列（擁有者 2026-10-01 裁定移植，§8.222 G3）；`pause`
+        沿用各呼叫點原值（多數 0.15，少數 0.1 / 0.12）。在那之前這一側是純
+        `element.click()`——游標從不移動、點下去之前也沒有停頓。
+
+        能偵測到 ActionChains 失敗，前提是包裝層把失敗丟出來
+        （`_require_wrapper_contract` 開機時釘的政策）；在吞例外的政策下 `perform()` 失敗
+        只會回 None，JS 退路永遠不會被走到。
+        """
         try:
-            element.click()
+            wr.move_to_element(element)
+            wr.pause(pause)
+            wr.left_click()
+            wr.perform()
         except Exception:  # pylint: disable=broad-except
+            _drop_queued_actions()
             wr.execute_script("arguments[0].click();", element)
 
     def click_native(self, element):
@@ -214,13 +232,24 @@ class BrowserPort:
            它的後代」，不是就丟 `ElementClickInterceptedException`。在購買對話框上
            這個檢查就是安全性質本身（我們自己已經不再由 JS 決定點誰）；而那個例外
            連帶會指名蓋在上面的元素，正好是我們要的診斷。所以這一支**兩個變體實作
-           相同**，不像 `click` 那樣分成 ActionChains 與純 click 兩種風格。
+           相同**，而且跟 `click` 不一樣、不走 ActionChains。
         """
         element.click()
 
     def mouse_wiggle(self):
-        # je 的 login 從不做滑鼠抖動；保留 no-op 以與 novelai 介面對稱。
-        return None
+        """登入頁上隨機擺動兩三下滑鼠（§8.222 G4）。盡力而為：失敗就算了，不影響登入。
+
+        與 selenium 變體同一組數字（位移 ±60／±40、每段停 0.08～0.2 秒）。`move_by_offset`
+        從游標目前的位置算，剛開的頁面游標在左上角，負的位移可能超出視窗而失敗——兩邊都是
+        吞掉，這一側另外清掉排到一半的佇列（見 `_drop_queued_actions`）。
+        """
+        try:
+            for _ in range(random.randint(2, 3)):
+                wr.move_by_offset(random.randint(-60, 60), random.randint(-40, 40))
+                wr.pause(random.uniform(0.08, 0.2))
+            wr.perform()
+        except Exception:  # pylint: disable=broad-except
+            _drop_queued_actions()
 
     def press_enter(self, element):
         element.send_keys(Keys.ENTER)
@@ -228,10 +257,16 @@ class BrowserPort:
     def press_escape(self):
         """driver 層的真 Escape（`isTrusted` 的事件）。回是否送出去了。
 
-        鏡像 `webrunner_novelai.BrowserPort.press_escape`；差別是這一側**不用
-        ActionChains**（本變體刻意只用 `Keys` 常數、不碰 selenium 的驅動 API），
-        改成對焦點元素 send_keys。
+        鏡像 `webrunner_je_only.BrowserPort.press_escape`（§8.222 G5）：先送 ActionChains
+        的 Escape（打給目前有焦點的東西，跟人按鍵盤一樣），失敗才退回對焦點元素
+        `send_keys`。ActionChains 走包裝層的佇列，不碰 selenium 的驅動 API。
         """
+        try:
+            wr.send_keys([Keys.ESCAPE])
+            wr.perform()
+            return True
+        except Exception:  # pylint: disable=broad-except
+            _drop_queued_actions()
         try:
             element = wr.execute_script(
                 "return document.activeElement || document.body;")
@@ -250,7 +285,7 @@ class BrowserPort:
         return wr.get_current_url() or ""
 
     def get_title(self):
-        return wr.get_title()
+        return wr.get_title() or ""
 
     def refresh(self):
         wr.refresh()
@@ -264,7 +299,7 @@ class BrowserPort:
 port = BrowserPort()
 
 
-# ---------- config (must match webrunner_novelai.py) ------------------------
+# ---------- config (must match webrunner_je_only.py) ------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 AUTH_FILE = PROJECT_ROOT / "auth.md"  # main shell reads credentials before boot
@@ -277,7 +312,7 @@ AUTH_FILE = PROJECT_ROOT / "auth.md"  # main shell reads credentials before boot
 # （`OUTPUT_ROOT / "_verify"`，隔離驗證模式用）。
 EVENTS_FILE = PROJECT_ROOT / "events.ndjson"
 # DOM_REQUEST_FILE 已移入 _webrunner_shared（check_dom_request 一併搬走，C3）。
-# 單張生成請求 — 必須與 webrunner_novelai.py 完全對應。bot 寫請求進
+# 單張生成請求 — 必須與 webrunner_je_only.py 完全對應。bot 寫請求進
 # single_image_request.json，webrunner 啟動時（idle one-shot）或 iteration
 # 邊界（batch 進行中 in-band）poll 它，只產 1 張、結果走 events.ndjson 的
 # `single_image_done` event 回傳 bot。one-shot 圖一律存進
@@ -288,11 +323,22 @@ EVENTS_FILE = PROJECT_ROOT / "events.ndjson"
 # 請求檔推論（推論錯過一次，事故紀錄在 ws.RUN_MODE_BATCH 上面那一段）。
 CHROME_PROFILE_DIR = PROJECT_ROOT / ".chrome_profile"
 
+# ---- Opt-in isolated verification mode (default OFF; production unchanged) ----
+# `verify_browser.py --full --variant je` launches THIS script as a subprocess with
+# `NAI_VERIFY_MODE=setup`（2026-10-01 起，§8.222 G1）。本體與環境變數契約在
+# `_webrunner_shared`（`run_setup_verification`、`VERIFY_*_ENV`），與 selenium 變體
+# 共用；這裡只有 `_run_setup_verification` 那層薄殼與下面這個旗標。
+# 只有 `_run_setup_verification` 會把它設成 True，讓 `start_driver` 重試之間那次
+# `_kill_orphan_chrome()` 變成 no-op——一次驗證不得核彈式殺掉使用者自己的 Chrome 或
+# 同時在跑的正式批次的瀏覽器。正式路徑永遠是 False，掃描照舊；驗證那條路收尾時只外科式
+# 回收自己的 driver 行程樹。
+_SUPPRESS_ORPHAN_SWEEP = False
+
 
 def hide_chrome_window() -> bool:
     """確保瀏覽器視窗在螢幕外，回 True 表示找到視窗、而且沒有任何一個留在螢幕上。
 
-    與 `webrunner_novelai.hide_chrome_window` 同構，只差這支沒有 driver 參數
+    與 `webrunner_je_only.hide_chrome_window` 同構，只差這支沒有 driver 參數
     （這個變體的 driver 狀態在模組層）。實際動作在
     `_webrunner_shared.hide_browser_windows`，兩邊共用一份。**不再最小化**
     （2026-09-22）：理由見 `_webrunner_shared.OFFSCREEN_WINDOW_POSITION`。
@@ -343,7 +389,7 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
 
 
 # ---------- single-image (one-shot) request ---------------------------------
-# 跟 webrunner_novelai 對應函式 isomorphic、只差用 je_web_runner 的 module-level
+# 跟 webrunner_je_only 對應函式 isomorphic、只差用 je_web_runner 的 module-level
 # driver state（沒 driver arg）。詳見對應函式 docstring。
 
 
@@ -352,14 +398,22 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
 def wait_until(predicate, timeout: float = 30.0, poll: float = 0.3,
                description: str = "predicate") -> bool:
     """Poll-until-true with timeout. Returns True if predicate became truthy,
-    False on timeout. Swallows predicate exceptions (treated as falsey)."""
+    False on timeout. Swallows predicate exceptions (treated as falsey) —
+    except a browser that is gone for good, which re-raises.
+
+    那一個例外刻意往上丟：包裝層的失敗政策釘成丟例外之後（`_require_wrapper_contract`），
+    瀏覽器整個不見了也會丟進這裡，而那不是「還沒好」——再等滿 `timeout` 也不會好，只會
+    讓呼叫端（`with_retry`）把一個死掉的 session 誤當成登入慢。selenium 變體的
+    `WebDriverWait.until` 也只吞「找不到元素」，其餘一律往上丟。
+    """
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         try:
             if predicate():
                 return True
-        except Exception:  # pylint: disable=broad-except
-            pass
+        except Exception as error:  # pylint: disable=broad-except
+            if ws.is_browser_gone_error(error):
+                raise
         time.sleep(poll)
     print(f"  wait_until: timed out waiting for {description}")
     return False
@@ -393,100 +447,18 @@ _CHROME_LOCK_FILES = (
 )
 
 
-def _kill_orphan_chrome() -> int:
-    """Kill every leftover `chrome.exe` / `chromedriver.exe` before we spawn
-    our own. Mirrors `webrunner_novelai._kill_orphan_chrome` — see that
-    docstring for the full rationale (orphan renderer/GPU children survive a
-    crash-respawn cycle, pile up, and OOM the next Chrome — the "舊實例"
-    spiral). Two passes: psutil kill, then `taskkill /F /T` fallback for
-    survivors (AccessDenied, reparented children). msedge spared. Always
-    prints a summary so the log shows the sweep ran.
-
-    **本變體也是三個呼叫點，理由各自不同**（跟 selenium 變體一一對應）：
-    `main()` 開頭（我們的 driver 還不存在）、`_restart_chrome_session()`
-    （`wr.quit()` 之後，我們正要拆掉自己的 Chrome，殺掉它就是目的）、
-    `start_driver()` 的 spawn 重試之間（要釋放半死的 chrome.exe 佔住的記憶體，
-    否則低記憶體機器上重試也會 OOM）。後兩者發生在執行途中、而且是全機範圍的
-    掃描——使用者自己開的 Chrome 會一起被殺，沒有預告；`msedge.exe` 刻意放過就是
-    這個假設的另一半。完整的代價分析寫在 selenium 變體那份 docstring。
-
-    ⚠️ **但那份 docstring 的最後一段不適用於本變體。** 它講的是
-    `_SUPPRESS_ORPHAN_SWEEP`——`verify_browser.py --full` 在隔離環境裡跑時用來
-    關掉這個全機掃描的抑制開關，好讓一次驗證執行不會核彈式殺掉使用者自己的
-    Chrome。**本變體沒有那個旗標，也沒有隔離驗證的進入點**（`verify_browser`
-    目前接的是 selenium 變體），所以沒有東西需要被抑制。這不是漏掉的功能，是
-    範圍不同。
-
-    將來若要把驗證入口接到這個變體，這一段就是那時候要先處理的事：在跑
-    `main()` 之前必須有一個等價的抑制開關，否則一次「驗證」會把使用者桌面上
-    所有的 Chrome 一起關掉。"""
-    targets = {"chrome.exe", "chromedriver.exe"}
-    own_pid = os.getpid()
-    killed = 0
-    remaining = 0
-    psutil_note = ""
-    try:
-        import psutil  # type: ignore
-        for proc in psutil.process_iter(attrs=["pid", "name"]):
-            try:
-                if proc.info["pid"] == own_pid:
-                    continue
-                if (proc.info.get("name") or "").lower() not in targets:
-                    continue
-                proc.kill()
-                killed += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-                continue
-        # Recount survivors so we know whether the taskkill fallback is needed.
-        for proc in psutil.process_iter(attrs=["pid", "name"]):
-            try:
-                if (proc.info.get("name") or "").lower() in targets:
-                    remaining += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-    except ImportError:
-        # psutil unavailable → rely entirely on taskkill below.
-        remaining = -1
-        psutil_note = " (psutil unavailable → taskkill only)"
-    except Exception as error:  # pylint: disable=broad-except
-        # psutil 掃描自己炸掉 → **這正是後援存在的理由**。舊版在這裡只印一行
-        # 就讓 `remaining` 停在 0，於是底下的 `remaining != 0` 是 False、整段
-        # taskkill 被跳過，摘要還照樣印「killed 0 via psutil」——跟「這台機器
-        # 很乾淨」一字不差。孤兒行程原封不動留著，下一個 Chrome 照樣 OOM。
-        # psutil 出錯是「psutil 掃不到東西」最強的證據，不是跳過後援的理由。
-        print(f"orphan-chrome sweep: psutil pass errored: {error!r}",
-              file=sys.stderr)
-        remaining = -1
-        psutil_note = " (psutil pass failed → taskkill only)"
-    if os.name == "nt" and (remaining != 0):
-        import subprocess
-        for image in ("chrome.exe", "chromedriver.exe"):
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/IM", image],
-                    capture_output=True, timeout=20, check=False,
-                )
-            except Exception as error:  # pylint: disable=broad-except
-                # `!r` 刻意保留：`try` 裡只有 `subprocess.run(['taskkill', ...])`，
-                # 收到的是 `TimeoutExpired` / `OSError`，跟 selenium 無關。
-                print(f"orphan-chrome sweep: taskkill {image} failed: "
-                      f"{error!r}", file=sys.stderr)
-    print(f"orphan-chrome sweep: killed {killed} via psutil"
-          + (f", {remaining} survived → taskkill /T fallback"
-             if remaining > 0 else "")
-          + psutil_note)
-    if killed or remaining != 0:
-        time.sleep(2.0)  # let the OS release file handles / profile locks + RAM
-    return killed
+def _kill_orphan_chrome() -> None:
+    """過去的實例由工作物件回收；不再掃描或停止其他人的瀏覽器。"""
+    return None
 
 
-# Snapshot 設計：跟 webrunner_novelai 對稱 — 每次 spawn 前 copy
+# Snapshot 設計：跟 webrunner_je_only 對稱 — 每次 spawn 前 copy
 # .chrome_profile/ → .chrome_profile_snap/、Chrome 用 snapshot 完全避開
 # 原 profile 的 lockfile。跑完 _sync_chrome_profile_back 同步登入。
 CHROME_PROFILE_SNAPSHOT = PROJECT_ROOT / ".chrome_profile_snap"
 _CURRENT_SNAPSHOT_PROFILE: Path | None = None  # set by start_driver, read by main finally
 # cookie jar 在 `Default/Network/` 底下（Chrome 96 起），不是 `Default/`。
-# 為什麼舊路徑不留相容、以及那四個月的實測代價，見 webrunner_novelai 對應常數。
+# 為什麼舊路徑不留相容、以及那四個月的實測代價，見 webrunner_je_only 對應常數。
 _SESSION_CRITICAL = (
     "Default/Network/Cookies", "Default/Network/Cookies-journal",
     "Default/Login Data", "Default/Login Data-journal",
@@ -498,12 +470,12 @@ _SESSION_CRITICAL = (
 )
 # **登入態不在 cookie 裡，在 localStorage。** 完整的實測證據鏈（那個站只有三筆
 # cookie、全不是驗證用的；`session` key 在 leveldb；snapshot 有更新的一筆而來源
-# 停在 2026-05-20）寫在 webrunner_novelai 對應常數上方。
+# 停在 2026-05-20）寫在 webrunner_je_only 對應常數上方。
 _SESSION_CRITICAL_DIRS = (
     "Default/Local Storage/leveldb",
 )
 # LevelDB 目錄裡不帶走的檔名（lock ＋ leveldb 自己的除錯文字輸出）。理由見
-# webrunner_novelai 對應常數。
+# webrunner_je_only 對應常數。
 _LEVELDB_SKIP_NAMES = ("LOCK", "LOG", "LOG.old")
 _SNAPSHOT_IGNORE_NAMES = frozenset(
     _CHROME_LOCK_FILES + (
@@ -556,7 +528,7 @@ def _clear_snapshot_locks(snapshot: Path) -> None:
 def _leveldb_manifest_ok(dirpath: Path) -> bool:
     """`dirpath` 是不是一份自洽的 LevelDB（`CURRENT` 在、它指到的 MANIFEST 也
     在）。缺一個被 manifest 參照的檔案，Chrome 會安靜地丟掉整個 DB。詳見
-    webrunner_novelai 對應函式。"""
+    webrunner_je_only 對應函式。"""
     try:
         current = (dirpath / "CURRENT").read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
@@ -565,7 +537,7 @@ def _leveldb_manifest_ok(dirpath: Path) -> bool:
         return False
     # `startswith` 不是包含性檢查（`MANIFEST-` ＋ `../` 就能走出去）；今天無害的
     # 三個理由、以及「402 份真 LevelDB 抽樣 0 份誤擋」的實測，寫在
-    # `webrunner_novelai.py` 對應的那一段。
+    # `webrunner_je_only.py` 對應的那一段。
     if not _is_single_path_component(current):
         return False
     return (dirpath / current).is_file()
@@ -580,7 +552,7 @@ def _session_entry_present(base: Path, relpath: str) -> bool:
 
 def _reclaim_dir_sync_residue(dst: Path) -> None:
     """收掉上一次目錄交換的殘骸，並救回「死在兩個 rename 之間」那一刻。詳見
-    webrunner_novelai 對應函式。"""
+    webrunner_je_only 對應函式。"""
     import shutil
     tmp = dst.with_name(dst.name + ".sync.tmp")
     old = dst.with_name(dst.name + ".sync.old")
@@ -608,7 +580,7 @@ def _sync_profile_dir_back(snapshot: Path, relpath: str) -> tuple[bool, int]:
 
     為什麼要整組換而不能逐檔覆蓋、目錄級原子性的取捨怎麼選、為什麼一定要在
     `driver.quit()` 之後跑、為什麼不做選擇性複製——四段理由都寫在
-    webrunner_novelai 對應函式的 docstring 裡。"""
+    webrunner_je_only 對應函式的 docstring 裡。"""
     import shutil
     src = snapshot / relpath
     dst = CHROME_PROFILE_DIR / relpath
@@ -647,7 +619,7 @@ def _sync_profile_dir_back(snapshot: Path, relpath: str) -> tuple[bool, int]:
 
 def _snapshot_chrome_profile() -> Path:
     """Copy .chrome_profile/ → .chrome_profile_snap/、跳過 lock 檔跟 cache
-    dir。詳見 webrunner_novelai 對應函式。"""
+    dir。詳見 webrunner_je_only 對應函式。"""
     import shutil
     # 先砍舊 snapshot
     if CHROME_PROFILE_SNAPSHOT.exists():
@@ -699,7 +671,7 @@ def _snapshot_chrome_profile() -> Path:
              if skipped else ""))
     # 真正可行動的訊號：**snapshot 裡找不到**的 session-critical 檔案。判準刻意
     # 不要求來源存在——一個要求來源存在的檢查抓不到路徑寫錯（實測見
-    # webrunner_novelai 對應函式）。來源也沒有的那幾筆會被標出來。
+    # webrunner_je_only 對應函式）。來源也沒有的那幾筆會被標出來。
     # 目錄那幾筆的判準是「完整」不是「在」——`CURRENT` 指不到 MANIFEST 的目錄
     # 存在，但 Chrome 會把整個 DB 丟掉。
     entries = _SESSION_CRITICAL + _SESSION_CRITICAL_DIRS
@@ -718,7 +690,7 @@ def _snapshot_chrome_profile() -> Path:
 
 def _sync_chrome_profile_back(snapshot: Path) -> None:
     """Webrunner 結束時呼叫：把 snapshot 內的 session-critical 檔案
-    複製回 .chrome_profile/，保留登入。詳見 webrunner_novelai 對應函式——
+    複製回 .chrome_profile/，保留登入。詳見 webrunner_je_only 對應函式——
     摘要為什麼一定要帶分母、而且無條件印，以及為什麼單檔與目錄的分母刻意分成
     兩個不合併，都寫在那一邊的 docstring。"""
     import shutil
@@ -777,10 +749,65 @@ def _sync_chrome_profile_back(snapshot: Path) -> None:
 def _selenium_manager_binary() -> Path:
     """selenium 內附的 `selenium-manager` 執行檔（給 `ws.warm_up_selenium_manager`）。
 
-    詳見 `webrunner_novelai` 的同名函式；兩份逐字相同（鏡像對帳）。
+    詳見 `webrunner_je_only` 的同名函式；兩份逐字相同（鏡像對帳）。
     """
     from selenium.webdriver.common.selenium_manager import SeleniumManager
     return SeleniumManager._get_binary()  # pylint: disable=protected-access
+
+
+# 函式庫自己的 logger 名稱（`je_web_runner.utils.logging.loggin_instance`）。
+_WRAPPER_LOGGER_NAME = "WEBRunner"
+
+
+def _require_wrapper_contract() -> None:
+    """Pin je_web_runner to raise on failure and quiet its logger; raise
+    `RuntimeError` when the loaded library lacks an API this variant needs.
+
+    `start_driver` 的第一件事，所以三條開機路徑（`main()`、定期重啟、隔離驗證）都在開任何
+    瀏覽器、做任何快照之前先過這一關。冪等、作用於整個行程（函式庫的設定本來就是行程層級
+    的單例）。
+
+    本變體依賴的兩個 API 都比 `requirements.txt` 的下限（`je_web_runner>=0.0.88`）新，所以
+    當場查、**缺了就讓這次開機失敗**，不退回舊行為（擁有者 2026-10-01 的要求：缺 API 要在
+    開機時大聲失敗，不能安靜地降級）：
+
+    1. **`executor.set_raise_wrapper_errors(True)`——包裝層的失敗改成丟例外**（§8.222 G8）。
+       函式庫預設把每一個包裝層呼叫的例外吞掉、回 None／False：瀏覽器死掉時
+       `login_if_needed` 讀到空的網址而判成「session 還在」、`has_blocking_dialog` 的 None
+       被讀成「已經關掉」、`port.click` 的 JS 退路在死瀏覽器上「成功」，而
+       `port.TRANSPORT_ERRORS` 那整條分類鏈是死碼。改成丟例外之後，本變體走到的每一條共用
+       路徑就跟 selenium 變體同一種語意，而共用層本來就是照那種語意寫的。
+    2. **`set_driver(..., install_driver=False)`**（G10）。預設每次開瀏覽器前先跑一次
+       webdriver-manager 的 `install()`、再把結果丟掉（真正選 driver 的是 Selenium Manager，
+       §8.40），於是 driver 下載來源連不上時開機就失敗、還計入快速失敗。
+
+    另外把函式庫的 `WEBRunner` logger 調到只留 CRITICAL（G9）：它對每一次失敗都往自己的記錄檔
+    寫一筆帶整段 JS 的 ERROR，而那個檔就是 `webrunner.log`——舊版寫工作目錄的 `WEBRunner.log`
+    （正式環境的工作目錄是 repo 根目錄、磁碟不分大小寫），新版寫 `WEBRUNNER_LOG_PATH`，開頭的
+    `ws.put_webrunner_tree_first()` 把它指向同一個檔（2026-09-12 那一次 je 執行留下 146 筆，含亂碼）。
+    失敗改成丟例外之後由我們自己的格式器回報（`_short_error`／`full_error_detail`，會砍掉
+    `Stacktrace:`、有長度上限），那一筆只剩重複的雜訊。
+
+    訊息刻意不印函式庫的檔案位置：這一行會進 `webrunner.log`，而那個檔可以被送進對話平台。
+    """
+    setter = getattr(getattr(je_web_runner, "executor", None),
+                     "set_raise_wrapper_errors", None)
+    if not callable(setter):
+        raise RuntimeError(
+            "載入的 je_web_runner 沒有 executor.set_raise_wrapper_errors："
+            "本變體要求包裝層的失敗丟例外，不在會吞例外的版本上開機。"
+            "請更新 WebRunner 的開發簽出（或環境變數 WEBRUNNER_PATH／設定 webrunner_path 指到的那一份）。")
+    try:
+        parameters = inspect.signature(wr.set_driver).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "install_driver" not in parameters:
+        raise RuntimeError(
+            "載入的 je_web_runner 的 set_driver 沒有 install_driver 參數："
+            "本變體要跳過 webdriver-manager 的下載、讓 Selenium Manager 選 driver，"
+            "舊版會把這個參數轉給瀏覽器類別而開機失敗。請更新 WebRunner。")
+    setter(True)
+    logging.getLogger(_WRAPPER_LOGGER_NAME).setLevel(logging.CRITICAL)
 
 
 def start_driver() -> None:
@@ -788,11 +815,15 @@ def start_driver() -> None:
     profile（避開 .chrome_profile/ 可能被 Defender / OneDrive / Explorer
     抓住的 lockfile）。
 
+    **第一件事是 `_require_wrapper_contract()`**：函式庫缺本變體要的 API 就在這裡失敗，
+    還沒暖機、還沒快照、還沒開任何瀏覽器。
+
     **開機前先看 Selenium Manager 的解析紀錄，到期才暖機——這一側也需要。**
-    `wr.set_driver` 裡的 `ChromeDriverManager(...).install()` 回傳值被丟掉，真正送進
-    `webdriver.Chrome` 的是下面那個沒有 `executable_path` 的 `ChromeService`，所以
-    driver 跟 selenium 變體一樣由 Selenium Manager 解析（實測過），
-    到期時一樣要多花 1～3 分鐘重抓版本清單。
+    送進 `webdriver.Chrome` 的是下面那個沒有 `executable_path` 的 `ChromeService`，所以
+    driver 跟 selenium 變體一樣由 Selenium Manager 解析（`architecture.md`
+    §8.40 實測），到期時一樣要多花 1～3 分鐘重抓版本清單。`wr.set_driver` 預設還會先跑
+    一次 webdriver-manager 的 `install()` 再把結果丟掉，所以呼叫時帶
+    `install_driver=False` 把那一步關掉（§8.222 G10）。
 
     **chromedriver 的記錄檔在這一側也會產生（2026-09-09 接上）。** 在那之前這個
     變體完全沒有它，於是 spawn 失敗只留下本函式結尾那句猜測；而 `/run` 的預設變體
@@ -813,6 +844,9 @@ def start_driver() -> None:
     """
     from selenium.webdriver.chrome.service import Service as ChromeService
 
+    # 函式庫的契約排在一切之前：缺 API 時不該先花 1～3 分鐘暖機、也不該先碰 profile。
+    _require_wrapper_contract()
+
     # 與 selenium 變體同一個位置、同一個理由：最先做、只做一次、絕不丟例外。
     ws.warm_up_selenium_manager(_selenium_manager_binary)
 
@@ -821,7 +855,7 @@ def start_driver() -> None:
     snapshot = _snapshot_chrome_profile()
     _clear_snapshot_locks(snapshot)
 
-    # Memory-conservative flags — see webrunner_novelai._MEMORY_FLAGS for the
+    # Memory-conservative flags — see webrunner_je_only._MEMORY_FLAGS for the
     # rationale (cap caches + keep the minimized renderer active to reduce the
     # "Aw, Snap! Out of Memory" crash on long runs). GPU left ON so NovelAI's
     # canvas still paints (image-src detection depends on it).
@@ -870,9 +904,11 @@ def start_driver() -> None:
             service_args=["--log-level=INFO"],
         )
         try:
+            # `install_driver=False`：跳過 webdriver-manager 那次結果會被丟掉的下載
+            # （見本函式 docstring）。`_require_wrapper_contract` 已經確認過這個參數在。
             wr.set_driver("chrome", options=cli_args,
                           experimental_options=experimental,
-                          service=service)
+                          service=service, install_driver=False)
             ok = True
             break
         except Exception as err:  # pylint: disable=broad-except
@@ -904,10 +940,6 @@ def start_driver() -> None:
             f"mismatch — see chromedriver.log above). Last error: "
             f"{full_error_detail(last_err)}"
         ) from last_err
-    # 把 snapshot 路徑紀錄到 module 層級，main() 結束時拿來 sync back。
-    global _CURRENT_SNAPSHOT_PROFILE
-    _CURRENT_SNAPSHOT_PROFILE = snapshot
-
     # 與 selenium 變體同步：每次 spawn 記一行版本。`current_webdriver` 是包裝層
     # 底下那個真的 selenium driver。
     try:
@@ -917,11 +949,52 @@ def start_driver() -> None:
               file=sys.stderr)
 
     # Pre-document stealth — runs before any page script on every new document.
+    # 注入失敗＝這次開機失敗（擁有者 2026-10-01 裁定，§8.222 G2），見該函式。
+    _install_stealth_script()
+
+    # 整次開機都成功才記下 snapshot 路徑（main() 結束時拿來 sync back）。
+    global _CURRENT_SNAPSHOT_PROFILE
+    _CURRENT_SNAPSHOT_PROFILE = snapshot
+
+
+def _install_stealth_script() -> None:
+    """在每一個新文件的頁面腳本之前注入 `STEALTH_JS`；**沒有確定注入成功就讓這次開機失敗**。
+
+    擁有者 2026-10-01 裁定（§8.222 G2）：隱身腳本注入失敗時，je 變體原本記一行就**不帶
+    隱身照跑**——`navigator.webdriver` 等幾個站方會看的特徵就這樣露出來，而 log 裡只有
+    一行容易被捲走的警告。selenium 變體一直是直接開機失敗（`execute_cdp_cmd` 丟的例外
+    從 `build_stealth_driver` 往上丟），現在兩邊一樣是硬失敗。
+
+    「確定」的判準是 CDP 回了 script identifier：函式庫回 None 代表它沒拿到一個像樣的回應
+    （在會吞例外的失敗政策下，這就是唯一的失敗徵兆）。
+
+    失敗時先把剛開的瀏覽器收掉再丟例外，這一點比 selenium 變體多做：不收的話，`main()`
+    的開機失敗那條路直接 return 1、不經過收尾，留下一個用著正式 profile 快照的 Chrome，
+    要等下一輪開機的孤兒掃描才清得掉；隔離驗證那條路也會留下一個握著隔離目錄的瀏覽器，
+    讓清理刪不掉它。
+    """
     try:
-        wr.add_script_to_evaluate_on_new_document(STEALTH_JS)
+        identifier = wr.add_script_to_evaluate_on_new_document(STEALTH_JS)
     except Exception as error:  # pylint: disable=broad-except
-        print("add_script_to_evaluate_on_new_document failed: "
-              f"{full_error_detail(error)}", file=sys.stderr)
+        _quit_after_a_failed_boot()
+        raise RuntimeError(
+            f"stealth script injection failed: {full_error_detail(error)}"
+        ) from error
+    if not identifier:
+        _quit_after_a_failed_boot()
+        raise RuntimeError(
+            "stealth script injection was not confirmed (CDP returned no script "
+            f"identifier: {identifier!r}); refusing to run without it")
+
+
+def _quit_after_a_failed_boot() -> None:
+    """開機在 `set_driver` 之後失敗時收掉剛開的瀏覽器。盡力而為、永不 raise——它跑在
+    一條正要往上丟真正原因的路上，自己再丟一個會把那個原因蓋掉。"""
+    try:
+        wr.quit()
+    except Exception as error:  # pylint: disable=broad-except
+        print(f"quit after a failed boot failed: {full_error_detail(error)}",
+              file=sys.stderr)
 
 
 # ---------- login ------------------------------------------------------------
@@ -939,10 +1012,11 @@ def login_if_needed(email: str, password: str) -> bool:
 
     1. **裸的 `execute_script` 回傳值不可以直接當布林。** 頁面切換中或記憶體吃緊
        時它真的會回 `None`（不是丟例外），`None` 讀成 False ＝「沒登入」，於是
-       觸發一次多餘的完整登入流程。**je 那一側更絕對**：
+       觸發一次多餘的完整登入流程。**je 那一側在包裝層預設的失敗政策下更絕對**：
        `webdriver_wrapper.execute_script` 吞掉所有 driver 例外並回 `None`，所以
-       瀏覽器一死就必定判成「沒登入」。同一個形狀在 `set_variety_plus` /
-       `_has_rescale` 也有。
+       瀏覽器一死就必定判成「沒登入」（je 變體 2026-10-01 起在開機時把那個政策
+       釘成丟例外，見 `webrunner_je_only._require_wrapper_contract`）。同一個形狀在
+       `set_variety_plus` / `_has_rescale` 也有。
     2. **失敗的探測長得跟乾淨的探測一模一樣。** 三態（是／否／判斷不出來）被壓成
        兩態，呼叫端沒有辦法分辨「站方說沒登入」與「我根本讀不到」。本專案已經在
        `_find_all_chrome_processes` / `_load_pid` / `dashboard_server._read_pid`
@@ -975,6 +1049,8 @@ def _do_login(email: str, password: str) -> bool:
         port.get(LOGIN_URL)
         human_pause(1.5, 2.5)
     ws.reject_cookies(port, timeout=5.0)
+    # 與 selenium 變體同一個位置：關掉同意橫幅之後、碰任何欄位之前（§8.222 G4）。
+    port.mouse_wiggle()
     if not wait_until(
             lambda: port.find_element_xpath("//input[@type='email' or @name='email']") is not None,
             timeout=30, description="email field"):
@@ -1137,6 +1213,41 @@ def _restart_chrome_session(email: str, password: str) -> None:
     print("  [memory] Chrome restarted, re-set-up, ready to resume")
 
 
+# ---------- isolated verification mode (opt-in; default OFF) -----------------
+
+def _run_setup_verification() -> int:
+    """隔離、非正式的 setup 可達性驗證（`verify_browser.py --full --variant je`）。
+
+    只由 `NAI_VERIFY_MODE` 觸發（`ws.verify_mode_requested()`；正式啟動一律沒設，所以
+    `main()`／批次／單張／監督者都不受影響）。本體在
+    `_webrunner_shared.run_setup_verification`，與 selenium 變體共用；這層殼只做兩件
+    **必須在開 driver 之前成立、而且讀本模組全域**的事：
+
+      * 把 `CHROME_PROFILE_SNAPSHOT` 指到隔離目的地——`start_driver` 的
+        `_snapshot_chrome_profile()` 就會把登入 profile 複製到那裡（絕不是
+        `.chrome_profile_snap/`）；`hide_chrome_window` 讀同一個全域，所以移到螢幕外那
+        一步也跟著這個驗證用的 Chrome 走；
+      * 設 `_SUPPRESS_ORPHAN_SWEEP`——`start_driver` 重試之間的全機掃描變成 no-op。
+
+    開機走正式的 `start_driver()`，所以 `_require_wrapper_contract` 也在這條路上：函式庫
+    缺介面時這裡印 `VERIFY-SETUP: FAIL RuntimeError: …`、回 1，跟正式變體拒絕開機一致。
+    隔離保證與 selenium 變體相同：絕不 sync-back（這條路沒有呼叫它）、不寫
+    `webrunner.pid`（`__main__` 在 `run_with_liveness_signal(main)` 之前就分流到這裡）、
+    不碰佇列、圖只進隔離目錄、收尾只回收自己的 driver 行程樹。
+    """
+    global CHROME_PROFILE_SNAPSHOT, _SUPPRESS_ORPHAN_SWEEP
+    plan = ws.verify_plan()
+    CHROME_PROFILE_SNAPSHOT = plan.profile
+    _SUPPRESS_ORPHAN_SWEEP = True
+    return ws.run_setup_verification(
+        port, plan,
+        credentials=lambda: read_credentials(AUTH_FILE),
+        boot=start_driver,
+        service_pid=lambda: wr.current_webdriver.service.process.pid,
+        setup=_setup_session,
+        quit_driver=wr.quit)
+
+
 # ---------- main (thin shell — orchestration lives in ws.run_batch, P6 C6) --
 
 def main() -> int:
@@ -1145,6 +1256,8 @@ def main() -> int:
     # traceback 原始碼文字、以及回答「那個修正在這個行程裡生效了沒」的錨點——
     # 見 `ws.log_code_fingerprint`。必須在這裡呼叫、不能等要查時才算。
     ws.log_code_fingerprint()
+    # 函式庫從哪一層來、實際載入哪個檔、哪一版（見 `ws.log_webrunner_library`）。
+    ws.log_webrunner_library(WEBRUNNER_LIBRARY)
     try:
         email, password = read_credentials(AUTH_FILE)
     except FileNotFoundError:
@@ -1178,7 +1291,9 @@ def main() -> int:
         # `args` 非空、`!r` 讀得到訊息，所以現況不是活著的缺陷——但那是
         # `start_driver` **內部**的轉換，不是這裡的保證：迴圈外面任何一個
         # `wr.*` 呼叫漏出一個 selenium 例外，`!r` 就會把訊息整段丟掉。
-        print(f"set_driver failed: {full_error_detail(error)}", file=sys.stderr)
+        # 「start_driver」不是「set_driver」：失敗也可能發生在 set_driver 之前（函式庫缺
+        # API，`_require_wrapper_contract`）。
+        print(f"start_driver failed: {full_error_detail(error)}", file=sys.stderr)
         return 1
     try:
         return ws.run_batch(
@@ -1204,5 +1319,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if os.name == "nt" and not _JOB_GUARDED:
+        # 裸跑也由父行程持有工作物件；真正的腳本名稱與 PID 契約不變。
+        sys.exit(_job_popen([sys.executable, *sys.argv], guarded=True).wait())
+    # 隔離驗證模式（verify_browser.py --full --variant je）。正式啟動一律沒設，所以照舊
+    # 走 main()；驗證走這條**另外的**分支，所以它不會認領 webrunner.pid。
+    if ws.verify_mode_requested():
+        sys.exit(_run_setup_verification())
     # 裸跑時沒有父行程發布存活訊號——見 `ws.claim_liveness_signal`。
     sys.exit(ws.run_with_liveness_signal(main))

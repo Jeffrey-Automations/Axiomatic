@@ -38,10 +38,9 @@ if str(PKG_ROOT) not in sys.path:
 
 import _webrunner_shared as ws  # noqa: E402
 import webrunner_je_only as je  # noqa: E402
-import webrunner_novelai as wn  # noqa: E402
+import webrunner_je_only as wn  # noqa: E402
 
-_VARIANTS = {"webrunner_novelai.py": "build_stealth_driver",
-             "webrunner_je_only.py": "start_driver"}
+_VARIANTS = {"webrunner_je_only.py": "start_driver"}
 _NOW = 1_790_000_000          # 固定的「現在」（epoch 秒），與正式檔案同一個量級
 _MARGIN = ws._SELENIUM_MANAGER_WARMUP_MARGIN_SEC
 _FAKE_BINARY = Path("C:/fake/selenium-manager.exe")
@@ -75,6 +74,7 @@ class _Runner:
         return getattr(subprocess, name)
 
 
+
 class _Clock:
     """`_webrunner_shared.time` 的替身：牆鐘固定在 `_NOW`，單調時鐘每讀一次走 1.5 秒。"""
 
@@ -88,6 +88,7 @@ class _Clock:
     def monotonic(self):
         self.mono += 1.5
         return self.mono
+
 
 
 @pytest.fixture(autouse=True)
@@ -107,9 +108,11 @@ def env(monkeypatch, tmp_path):
     return ns
 
 
+
 def _driver(ttl, major="153", version="153.0.8010.52", name="chromedriver"):
     return {"major_browser_version": major, "driver_name": name,
             "driver_version": version, "driver_ttl": ttl}
+
 
 
 def _write_metadata(path: Path, drivers) -> None:
@@ -126,11 +129,13 @@ def _write_metadata(path: Path, drivers) -> None:
     }), encoding="utf-8")
 
 
+
 def _locate(env):
     def locate():
         env.located.append(True)
         return _FAKE_BINARY
     return locate
+
 
 
 def _extends_ttl(env, seconds=86399, rc=0):
@@ -143,6 +148,7 @@ def _extends_ttl(env, seconds=86399, rc=0):
     return outcome
 
 
+
 # ---------------------------------------------------------------------------
 # 一、讀 metadata：什麼時候信得過
 # ---------------------------------------------------------------------------
@@ -153,6 +159,7 @@ def test_the_real_file_shape_is_read_as_an_int_expiry(env):
     ttl, detail = ws.read_chromedriver_ttl(env.meta)
     assert ttl == _NOW + 100 and type(ttl) is int
     assert "153.0.8010.52" in detail and "153" in detail
+
 
 
 def test_the_newest_chrome_major_wins_and_other_drivers_are_ignored(env):
@@ -168,6 +175,7 @@ def test_the_newest_chrome_major_wins_and_other_drivers_are_ignored(env):
     ])
     ttl, detail = ws.read_chromedriver_ttl(env.meta)
     assert ttl == _NOW + 50, detail
+
 
 
 @pytest.mark.parametrize("label, bad_ttl", [
@@ -194,6 +202,7 @@ def test_a_non_integer_expiry_anywhere_makes_the_whole_file_untrusted(
     assert "driver_ttl" in detail
 
 
+
 @pytest.mark.parametrize("label, content", [
     ("not json", b"{not json"),
     ("not utf-8", b"\xff\xfe{}"),
@@ -211,9 +220,11 @@ def test_a_garbled_file_is_untrusted_and_says_why(env, label, content):
     assert detail, label
 
 
+
 def test_a_missing_file_is_untrusted(env):
     ttl, detail = ws.read_chromedriver_ttl(env.meta)
     assert ttl is None and "se-metadata.json" in detail
+
 
 
 def test_the_cache_dir_follows_se_cache_path_and_falls_back_to_home(
@@ -225,6 +236,7 @@ def test_the_cache_dir_follows_se_cache_path_and_falls_back_to_home(
     assert ws.selenium_manager_cache_dir() == Path.home() / ".cache" / "selenium"
     monkeypatch.delenv("SE_CACHE_PATH")
     assert ws.selenium_manager_cache_dir() == Path.home() / ".cache" / "selenium"
+
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +261,14 @@ def test_an_expired_record_runs_the_warmup_once_with_the_long_ttl(env, capsys):
     assert "warm-up done" in out and "24.0 h" in out, out
 
 
+
 def test_a_fresh_record_does_not_run_or_even_look_for_the_binary(env, capsys):
     """還沒到期 → 什麼都不跑，連 locator 都不叫。每次重啟都跑就等於沒省。"""
     _write_metadata(env.meta, [_driver(_NOW + 5 * 3600)])
     assert ws.warm_up_selenium_manager(_locate(env)) is True
     assert env.runner.calls == [] and env.located == []
     assert "expires in 5.0 h; no warm-up needed" in capsys.readouterr().out
+
 
 
 @pytest.mark.parametrize("offset, runs", [
@@ -276,6 +290,7 @@ def test_the_expiry_boundary_includes_the_safety_margin(env, offset, runs):
     assert (len(env.runner.calls) == 1) is runs, offset
 
 
+
 @pytest.mark.parametrize("label, content", [
     ("missing", None),
     ("garbled", b"{not json"),
@@ -290,6 +305,7 @@ def test_an_untrusted_record_runs_the_warmup(env, label, content):
     env.runner.outcome = _extends_ttl(env)
     assert ws.warm_up_selenium_manager(_locate(env)) is True, label
     assert len(env.runner.calls) == 1, label
+
 
 
 def test_the_warmup_never_writes_the_metadata_itself(env):
@@ -308,6 +324,7 @@ def test_the_warmup_never_writes_the_metadata_itself(env):
     assert env.meta.read_bytes() == before
 
 
+
 # ---------------------------------------------------------------------------
 # 三、失敗一律印一行、回 False、不往上丟
 # ---------------------------------------------------------------------------
@@ -318,9 +335,10 @@ def _raise(error):
     return outcome
 
 
+
 @pytest.mark.parametrize("label, outcome, expected", [
     ("timeout", _raise(subprocess.TimeoutExpired(["selenium-manager"], 180)),
-     "within 180 s"),
+     "did not finish within 180 s"),
     ("binary vanished", _raise(FileNotFoundError(2, "nope")),
      "could not be started (FileNotFoundError)"),
     ("permission", _raise(PermissionError(13, "denied")),
@@ -346,6 +364,7 @@ def test_every_failure_is_one_line_and_never_raises(env, capsys, label, outcome,
     assert "leaving resolution to Selenium Manager as usual" in err, label
 
 
+
 def test_the_failure_message_is_taken_from_the_json_result(env, capsys):
     _write_metadata(env.meta, [_driver(_NOW - 60)])
     env.runner.outcome = lambda argv, _kw: subprocess.CompletedProcess(
@@ -356,6 +375,7 @@ def test_the_failure_message_is_taken_from_the_json_result(env, capsys):
     ws.warm_up_selenium_manager(_locate(env))
     err = capsys.readouterr().err
     assert "error sending request" in err and "older warning" not in err
+
 
 
 def test_a_note_the_console_cannot_encode_does_not_crash_the_failure_line(
@@ -372,6 +392,7 @@ def test_a_note_the_console_cannot_encode_does_not_crash_the_failure_line(
     assert "\\u2603" in line
 
 
+
 def test_a_version_string_from_the_file_cannot_crash_the_fresh_line(env, capsys):
     """還新鮮的那一行也印了檔案裡的字串（driver 版本）。檔案是外部輸入，所以它一樣要在
     cp950 上印得出來——這一行每次開機都會印，壞掉的話就是每次開機都丟例外。"""
@@ -381,6 +402,7 @@ def test_a_version_string_from_the_file_cannot_crash_the_fresh_line(env, capsys)
     line = [ln for ln in capsys.readouterr().out.splitlines() if "no warm-up needed" in ln][0]
     line.encode("cp950")
     assert "153\\u2603" in line
+
 
 
 def test_a_locator_that_raises_is_reported_and_nothing_is_run(env, capsys):
@@ -397,13 +419,13 @@ def test_a_locator_that_raises_is_reported_and_nothing_is_run(env, capsys):
     assert ws.warm_up_selenium_manager(locate) is False
     assert env.runner.calls == []
     err = capsys.readouterr().err
-    assert ("the selenium-manager executable cannot be found" in err
-            and "DriverLibraryError" in err)
+    assert "selenium-manager executable cannot be found" in err and "DriverLibraryError" in err
+
 
 
 def test_a_run_that_left_the_record_expired_is_not_reported_as_success(
         env, capsys):
-    """**以結果為準**：回 0 卻沒有把期限寫新，就不能印「暖機完成」。"""
+    """**以結果為準**：回 0 卻沒有把期限寫新，就不能印「warm-up done」。"""
     _write_metadata(env.meta, [_driver(_NOW - 60)])
     env.runner.outcome = lambda argv, _kw: subprocess.CompletedProcess(
         argv, 0, stdout='{"logs": [], "result": {"code": 0}}', stderr="")
@@ -411,6 +433,7 @@ def test_a_run_that_left_the_record_expired_is_not_reported_as_success(
     captured = capsys.readouterr()
     assert "warm-up done" not in captured.out
     assert "still unusable" in captured.err
+
 
 
 def test_a_run_that_only_got_the_default_hour_says_so(env, capsys):
@@ -424,6 +447,7 @@ def test_a_run_that_only_got_the_default_hour_says_so(env, capsys):
     assert "`--ttl` may not have been honoured" in captured.err
 
 
+
 # ---------------------------------------------------------------------------
 # 四、接線：兩個變體都在開 Chrome 之前暖機一次，失敗也照樣開得起來
 # ---------------------------------------------------------------------------
@@ -431,6 +455,7 @@ def test_a_run_that_only_got_the_default_hour_says_so(env, capsys):
 class _FakeService:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+
 
 
 def _novelai_boot(monkeypatch, tmp_path, env):
@@ -467,6 +492,7 @@ def _novelai_boot(monkeypatch, tmp_path, env):
     return order
 
 
+
 def _je_boot(monkeypatch, tmp_path, env):
     order: list[str] = []
     real_run = env.runner.run
@@ -488,15 +514,20 @@ def _je_boot(monkeypatch, tmp_path, env):
     monkeypatch.setattr(je, "_selenium_manager_binary", lambda: _FAKE_BINARY)
     monkeypatch.setattr(ws, "log_driver_versions", lambda _caps: None)
     monkeypatch.setattr(je, "_CURRENT_SNAPSHOT_PROFILE", None)
+    # 函式庫的契約檢查（`_require_wrapper_contract`）有自己的測試（`test_je_start_driver`
+    # 第六節）。這裡換掉它：真的跑會去問這台機器載入的 je_web_runner，並改掉整個測試行程
+    # 的失敗政策——而這支只關心暖機排在哪裡。
+    monkeypatch.setattr(je, "_require_wrapper_contract", lambda: None)
     monkeypatch.setattr(je, "wr", types.SimpleNamespace(
         set_driver=lambda *_a, **_k: order.append("chrome"),
         current_webdriver=types.SimpleNamespace(capabilities={}),
-        add_script_to_evaluate_on_new_document=lambda _script: None))
+        # CDP 回的 script identifier；隱身腳本注入沒拿到它就算開機失敗。
+        add_script_to_evaluate_on_new_document=lambda _script: "1"))
     return order
 
 
+
 _BOOTS = {
-    "novelai": (_novelai_boot, lambda: wn.build_stealth_driver()),
     "je": (_je_boot, lambda: je.start_driver()),
 }
 
@@ -520,6 +551,7 @@ def test_a_failed_warmup_still_boots_chrome(env, monkeypatch, tmp_path, variant,
     assert order.index("warmup-run") < order.index("chrome"), order
 
 
+
 @pytest.mark.parametrize("variant", sorted(_BOOTS))
 def test_the_boot_warms_up_first_and_only_when_expired(env, monkeypatch,
                                                        tmp_path, variant):
@@ -537,11 +569,13 @@ def test_the_boot_warms_up_first_and_only_when_expired(env, monkeypatch,
     assert "warmup-run" not in order and order.count("chrome") == 1, order
 
 
+
 def _spawn_function(filename: str) -> ast.FunctionDef:
     tree = ast.parse((PKG_ROOT / filename).read_text(encoding="utf-8"), filename)
     return next(node for node in tree.body
                 if isinstance(node, ast.FunctionDef)
                 and node.name == _VARIANTS[filename])
+
 
 
 def _warmup_statements(func: ast.FunctionDef) -> list[tuple[int, bool]]:
@@ -555,6 +589,7 @@ def _warmup_statements(func: ast.FunctionDef) -> list[tuple[int, bool]]:
             assert args == ["_selenium_manager_binary"], args
             out.append((node.lineno, id(node) in top))
     return sorted(out)
+
 
 
 @pytest.mark.parametrize("filename", sorted(_VARIANTS))
@@ -578,6 +613,7 @@ def test_both_spawn_paths_warm_up_once_before_anything_else(filename):
     assert trims and line < min(trims), (filename, line, trims)
 
 
+
 def test_the_statement_scanner_sees_a_call_inside_a_loop():
     """正面對照：掃描器要分得出「頂層」與「迴圈裡」，否則上一支永遠綠。"""
     func = ast.parse(
@@ -586,6 +622,7 @@ def test_the_statement_scanner_sees_a_call_inside_a_loop():
         "        ws.warm_up_selenium_manager(_selenium_manager_binary)\n"
         "    ws.warm_up_selenium_manager(_selenium_manager_binary)\n").body[0]
     assert _warmup_statements(func) == [(3, False), (4, True)]
+
 
 
 # ---------------------------------------------------------------------------

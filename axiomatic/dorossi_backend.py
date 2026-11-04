@@ -40,6 +40,7 @@ invariants are all maintained here in the backend invocations.
 from __future__ import annotations
 
 import asyncio
+from _process_job import create_subprocess_exec as _spawn_backend
 import email.utils
 import hashlib
 import json as _json
@@ -61,6 +62,7 @@ except Exception:  # pragma: no cover - optional dependency
     anthropic = None
     AsyncAnthropic = None
 
+from _process_control import kill_child_process_tree as _dorossi_kill_backend_tree
 from _bot_config import load_bot_config
 # Externalised prompt-text loader (passive, stdlib-only). The long prompt strings
 # live under `bot_prompts/` in the repo root, read once at startup; a missing /
@@ -1413,15 +1415,12 @@ def _dorossi_parse_turn_flags(prompt: str) -> tuple:
 
 
 def _dorossi_apply_turn_tuning(sess: dict, effort, model_tier) -> bool:
-    """Apply the tuning commands parsed from this round to the session slot (in
-    place; session-level persistence). None = the command was not typed this round,
-    leave the stored value alone; DOROSSI_TUNE_DEFAULT = clear that override (back
-    to the default); anything else is an already-validated legal value (effort is
-    the effort word / model is an allowlist key of DOROSSI_MODEL_CHOICES; the key
-    is stored and looked up for the value when sending to the backend -- the reason
-    is in the table's comment). Returns "was any change attempted" (True whenever a
-    command was typed, so the caller can decide whether to mention it in the
-    confirmation message); pure function, never raises."""
+    """把本輪解析出的微調指令套用到 session slot（in place；session 級持久化）。
+    None ＝本輪沒打該指令、不動既存值；DOROSSI_TUNE_DEFAULT ＝清除該覆寫（回到
+    預設）；其餘為已驗證的合法值（effort 力度字／model 為 DOROSSI_MODEL_CHOICES
+    的 allowlist key，存 key、送後端時再查表取 value——理由見表的註解）。回傳
+    「是否有任何變動企圖」（有打指令就 True，供呼叫端決定要不要在確認訊息提一
+    句），純函式、永不 raise。"""
     changed = False
     if effort:
         if effort == DOROSSI_TUNE_DEFAULT:
@@ -1434,8 +1433,12 @@ def _dorossi_apply_turn_tuning(sess: dict, effort, model_tier) -> bool:
             sess.pop("tune_model", None)
         else:
             sess["tune_model"] = model_tier
+            provider = dorossi_model_provider(model_tier, dorossi_session_backend(sess))
+            if provider is not None:
+                sess["ai_provider"] = provider
         changed = True
     return changed
+
 
 
 def _dorossi_session_tuning(sess: dict, backend: str | None = None) -> tuple:
@@ -1487,30 +1490,7 @@ DOROSSI_LOOP_SENTINEL = "<<<DOROSSI-LOOP-DONE>>>"
 # the first round, later rounds could not read these rules and would slip back
 # into old habits (making excuses out of thin air, not actually verifying browser
 # changes).
-_DEFAULT_DOROSSI_LOOP_VERIFY_GUIDANCE = (
-    '\n\n[驗證守則] 一、若你要做的改動牽涉瀏覽器、driver 或 Selenium 啟動路徑'
-    '，不要因為「沒有瀏覽器、無法驗證」就跳過，或只憑空推論而不實際動手驗證。這個專案有一支獨立的'
-    '瀏覽器驗證入口 axiomatic/verify_browser.py，預設用 tempf'
-    'ile.mkdtemp() 開一個用完即丟的暫時 profile 跑煙霧驗證（headles'
-    's、不碰正式登入態、不需任何憑證），直接執行它就能實證你的改動是否讓瀏覽器仍正常啟動、dri'
-    'ver 仍解析得到。二、不要憑空假設限制；要主張某個限制存在，先在 repo 裡查證再下判斷'
-    '。這個專案沒有 CI。driver 怎麼來，**兩個變體不一樣**：selenium 變體（'
-    'webrunner_novelai.py）走 Selenium Manager（build_'
-    'stealth_driver 建立 ChromeService 時並沒有指定 executa'
-    'ble_path）；je 變體（webrunner_je_only.py）則是透過 je_w'
-    'eb_runner，而那個套件相依 webdriver-manager>=4.0.0、並實際'
-    '呼叫 ChromeDriverManager(...).install() 去取得 driv'
-    'er。所以別把其中一條路的前提套到另一條，也不要把 webdriver-manager 當成'
-    '這個專案沒有的東西。不要拿不存在的 CI 這類前提當理由推掉一個改動。三、需要更高的端到端把'
-    '握時，verify_browser.py --full 會在隔離環境裡做「登入＋導航＋確認產'
-    '圖介面可達」的完整驗證（用正式登入態的快照副本、跑完即清，不污染正式profile／不碰 t'
-    'odo／不寫 pid；加 --generate 還會在隔離目錄真的產一張用完即丟的圖再清掉）'
-    '。它透過跨行程鎖與正式作業序列化、偵測到正式作業在跑會自動讓位，目前接的是 selenium'
-    ' 變體。讓位時印的是 `VERIFY-BROWSER: SKIP …`（exit 3），那是'
-    '「這次什麼都沒驗到，晚點再來」，**不是**驗證失敗——真正的失敗才是 `FAIL`（exi'
-    't 1）；看到 SKIP 不要當成自己的改動把瀏覽器弄壞了，等正式作業告一段落再驗一次即可。'
-    '瀏覽器／driver 改動先用 smoke 快驗，要端到端確認再用 --full。'
-)
+_DEFAULT_DOROSSI_LOOP_VERIFY_GUIDANCE = '\n\n[驗證守則] 瀏覽器或 driver 改動先執行 `py -3 axiomatic/verify_browser.py`，以拋棄式 profile 驗證單一瀏覽器入口。完整登入與導航用 `--full`，隔離產圖再加 `--generate`；不碰正式佇列與登入態。單一入口透過函式庫呼叫 `set_driver(install_driver=False)`，driver 交給 Selenium Manager 解析。先查證實際來源與版本，再判斷限制。正式批次在跑時會讓位：SKIP（exit 3）表示這次未驗到，稍後再試；FAIL（exit 1）才是失敗。'
 DOROSSI_LOOP_VERIFY_GUIDANCE = load_prompt(
     "dorossi_loop_verify_guidance.md", _DEFAULT_DOROSSI_LOOP_VERIFY_GUIDANCE)
 # Shared "be self-sufficient with tools" guidance: like VERIFY_GUIDANCE, appended
@@ -4620,8 +4600,7 @@ def dorossi_local_usage_totals(now: float, path=DOROSSI_USAGE_FILE) -> dict:
     * `lifetime` -- the total over every valid row in the ledger.
 
     `now` is "now" in epoch seconds (injected from outside for testing). `tokens`
-    counts only `in` + `out` (consistent with the old chart's definition of `in` /
-    `out`, excluding cache); `usd` simply sums each row's `cost_usd` (= the
+    includes fresh input, cache reads, cache writes and output; `usd` simply sums each row's `cost_usd` (= the
     `total_cost_usd` the backend CLI reports; no home-grown price table).
 
     **Never raises, streams line by line**: a missing / unreadable file, and any
@@ -4665,8 +4644,8 @@ def dorossi_local_usage_totals(now: float, path=DOROSSI_USAGE_FILE) -> dict:
                 ts = _num(rec.get("ts"))
                 if ts is None:
                     continue
-                tok = (int(_num(rec.get("in")) or 0)
-                       + int(_num(rec.get("out")) or 0))
+                tok = sum(_dorossi_count(rec.get(key)) or 0
+                          for key in _ACCOUNT_TOKEN_KEYS)
                 cost = float(_num(rec.get("cost_usd")) or 0.0)
                 lifetime["tokens"] += tok
                 lifetime["usd"] += cost
@@ -5200,7 +5179,7 @@ async def _dorossi_reap_proc(proc, timeout: float | None = None) -> int | None:
                 # Really still alive. This is what the "unexpected exit path" should
                 # do: never leave a `full`-mode backend process running on the host.
                 try:
-                    proc.kill()
+                    _dorossi_kill_backend_tree(proc, raise_backend_error=True)
                 except ProcessLookupError:
                     pass
                 except Exception:  # pylint: disable=broad-except  # nosec B110
@@ -5271,131 +5250,16 @@ async def _dorossi_drain_stderr(task, timeout: float | None = None) -> str:
 # 得在起後端的那一刻就把它放進作業系統的工作物件（job object），那是另一件事。
 # ---------------------------------------------------------------------------
 
-def _dorossi_backend_descendants(psutil, root_pid: int) -> list:
-    """`root_pid`——**這個行程自己起的**後端——目前活著的子孫，父先於子。
-
-    回行程函式庫的行程物件（建立時記下了出生時間，`kill()` 靠它擋 pid 換人）。
-    丟例外＝這一次列不成，由呼叫端決定怎麼說；單一行程在列舉途中不見是常態，
-    跳過它（連同它底下的）就好。
-
-    三條規則，每一條擋的是不同的東西：
-
-    * **後端必須是這個行程的直接子行程**（對照表裡它的父 pid 是我們）。它是我們自己
-      起的，所以這一條成立；不成立就代表那個 pid 指的不是我們以為的行程。
-    * **每一條父子邊都要求「子不比父早出生」**。行程記著的父 pid 不會跟著父行程的
-      死活更新：別的行程留下的孤兒，它記的那個 pid 後來可能被我們的某個子孫拿去用，
-      在對照表上就成了那個子孫的「子行程」。孤兒一定比後來拿到那個 pid 的行程早
-      出生，所以逐邊比對就排除得掉；只拿整棵樹的根來比（函式庫自己的遞迴列舉是
-      這樣做的）排除不掉。
-    * **也不得比快照晚出生**。快照拍完到替某個 pid 建立行程物件之間，那個行程可能
-      已經結束、pid 被一個新行程拿走；新行程一定是在快照開始之後才出生的。
-    * **這個行程自己永遠不在名單上**，不論對照表怎麼說。
-
-    出生時間是牆上時鐘：系統時間被調動的那一刻有可能誤排除——方向是少砍。
-
-    讀不到出生時間的行程（權限不足）不列：證明不了它是後端起的。
-    """
-    root = psutil.Process(root_pid)
-    asked_at = time.time()
-    parent_of = psutil._ppid_map()  # 一次全系統快照；逐一問 ppid 是每個行程一次
-    own_pid = os.getpid()
-    if parent_of.get(root_pid) != own_pid:
-        raise LookupError("the backend is not a child of this process")
-    children_of: dict[int, list[int]] = {}
-    for pid, parent_pid in parent_of.items():
-        children_of.setdefault(parent_pid, []).append(pid)
-    found: list = []
-    stack = [(root_pid, root.create_time())]
-    while stack:
-        parent_pid, parent_born = stack.pop()
-        for pid in children_of.get(parent_pid, ()):
-            if pid == own_pid:
-                continue
-            try:
-                child = psutil.Process(pid)
-                born = child.create_time()
-            except psutil.Error:
-                continue
-            if not parent_born <= born <= asked_at:
-                continue
-            found.append(child)
-            stack.append((pid, born))
-    return found
 
 
-def _dorossi_started_by(proc) -> tuple[list, str | None]:
-    """回 `(後端的子孫, 列不成的原因)`；原因是 None 表示這份名單問得出來。永不 raise。
-
-    「沒有子孫」與「列不成」要分得開（後者只砍得到後端自己，得留一行），所以原因走在
-    回傳值上。後端剛好已經不在、或 `proc` 沒有可用的 pid（測試替身）都不算列不成。
-    """
-    pid = getattr(proc, "pid", None)
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return [], None
-    try:
-        import psutil  # type: ignore
-    except ImportError:
-        return [], "the process library is not installed"
-    try:
-        return _dorossi_backend_descendants(psutil, pid), None
-    except psutil.NoSuchProcess:
-        return [], None
-    except Exception as error:  # pylint: disable=broad-except
-        # 中止不得因為列舉失敗而失敗；只留型別名（stderr 有對話平台那個出口）。
-        return [], type(error).__name__
 
 
-def _dorossi_kill_started(started: list) -> int:
-    """照順序砍掉 `started`（`_dorossi_started_by` 給的行程物件），回沒砍掉的個數。
-
-    行程函式庫的 `kill()` 動手前會比對（pid, 出生時間），那個 pid 已經換人就丟
-    `NoSuchProcess`、不動手——從列出來到這裡之間的 pid 重用靠這一點擋；所以這裡
-    絕不拿裸 pid 去砍。行程已經不在也是 `NoSuchProcess`（後端一死，它底下的常常
-    自己就結束了），兩種都不算沒砍掉。永不 raise。
-    """
-    if not started:
-        return 0
-    import psutil  # type: ignore  # 名單非空＝剛剛匯入得到
-    refused = 0
-    for child in started:
-        try:
-            child.kill()
-        except psutil.NoSuchProcess:
-            continue
-        except Exception:  # pylint: disable=broad-except
-            refused += 1
-    return refused
 
 
-def _dorossi_kill_backend_tree(proc) -> None:
-    """`/dorossi abort` 的砍殺點：後端行程，連同它已經起、還活著的子孫。
 
-    **同步、不得 raise、不等任何行程收尾**——旗標由呼叫端先設，這裡回來時後端的
-    `kill()` 已經送出（單輪回合的收尾保證靠這一點）。`proc` 是 None 或結束碼已經
-    出來時什麼都不做：行程結束之後那個 pid 可能已經換人，連問都不問。
 
-    砍得到與砍不到的範圍、順序的理由、量到的成本見上面那段說明。少了行程函式庫或
-    列舉失敗時只砍後端自己並留一行；被砍掉的包含後端刻意放在背景的行程（擁有者
-    接受這一點）。stderr 那一行只有個數，沒有 pid 與行程名。
-    """
-    if proc is None or getattr(proc, "returncode", None) is not None:
-        return
-    started, problem = _dorossi_started_by(proc)
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        pass  # 剛好在這一刻結束：事件迴圈的子行程在收掉之後丟這個（Windows 上也是）
-    except Exception as error:  # pylint: disable=broad-except
-        print(f"[dorossi] abort: stopping the backend process failed "
-              f"({type(error).__name__})", file=sys.stderr)
-    refused = _dorossi_kill_started(started)
-    if problem is not None:
-        print(f"[dorossi] abort: could not list what the backend had started "
-              f"({problem}); only the backend process itself was stopped",
-              file=sys.stderr)
-    elif started:
-        print(f"[dorossi] abort: stopped the backend and {len(started) - refused} "
-              f"of the {len(started)} process(es) it had started", file=sys.stderr)
+
+
 
 
 def find_codex_executable() -> str | None:
@@ -5545,7 +5409,7 @@ async def _dorossi_probe_claude_family(exe: str, family: str, cwd: str,
     so this trip costs zero tokens. Any failure returns None.
     """
     args = _dorossi_model_probe_argv(exe, family)
-    proc = await asyncio.create_subprocess_exec(
+    proc = await _spawn_backend(
         *args, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -5581,7 +5445,7 @@ async def _dorossi_probe_claude_family(exe: str, family: str, cwd: str,
         return None
     finally:
         try:
-            proc.kill()
+            _dorossi_kill_backend_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass
         except Exception:  # pylint: disable=broad-except  # nosec B110
@@ -5615,7 +5479,7 @@ async def _dorossi_probe_codex_default(exe: str, cwd: str,
     """
     args = [exe, "exec", "--skip-git-repo-check", "-C", str(cwd),
             "-c", 'sandbox_mode="read-only"', "-"]
-    proc = await asyncio.create_subprocess_exec(
+    proc = await _spawn_backend(
         *args, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
@@ -5648,7 +5512,7 @@ async def _dorossi_probe_codex_default(exe: str, cwd: str,
         return None
     finally:
         try:
-            proc.kill()
+            _dorossi_kill_backend_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass
         except Exception:  # pylint: disable=broad-except  # nosec B110
@@ -5746,7 +5610,7 @@ async def _dorossi_probe_gemini_models(exe: str, cwd: str,
     after a kill, which waits for pipe EOF and never returns while a grandchild
     still holds the write end.
     """
-    proc = await asyncio.create_subprocess_exec(
+    proc = await _spawn_backend(
         exe, "models", stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL, cwd=cwd)
     try:
@@ -5766,7 +5630,7 @@ async def _dorossi_probe_gemini_models(exe: str, cwd: str,
         return {}
     finally:
         try:
-            proc.kill()
+            _dorossi_kill_backend_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass
         await _dorossi_reap_proc(proc)
@@ -6050,23 +5914,20 @@ def _dorossi_codex_argv(exe: str, *, session_id: str | None = None,
                         workdir: str | None = None,
                         extra_dir: str | None = None,
                         model: str | None = None,
+                        effort: str | None = None,
                         tools_mode: str | None = None) -> list:
-    """The argv (including `exe`) for `codex exec`. Pure function: touches no
-    files, starts no process, reads no environment.
+    """`codex exec` 的 argv（含 `exe`）。純函式：不碰檔案、不起行程、不讀環境。
 
-    Extracted from `_dorossi_via_codex` (2026-09-23, behaviour unchanged -- apart
-    from the newly added `-m`), for the same reason as `_dorossi_cc_argv`: the argv
-    is the only place on this path where "user input could become a CLI argument",
-    and only as a pure function can every combination be tested.
+    從 `_dorossi_via_codex` 抽出來（2026-09-23，行為不變——除了新增的 `-m`），理由
+    與 `_dorossi_cc_argv` 同一條：argv 是這條路上唯一「使用者輸入有機會變成 CLI 參數」
+    的地方，抽成純函式才測得動每一種組合。
 
-    `model` is the **full model id** the `dorossi_resolve_model` lookup hit; None =
-    no `-m`, use the CLI's own default. **User input never reaches here
-    verbatim** -- every possible value of this argument comes from the allowlist
-    lookup's result.
+    `model` 是 `dorossi_resolve_model` 查表命中的**完整 model id**；None ＝不帶
+    `-m`、用 CLI 自己的預設。**使用者輸入永不原樣走到這裡**——這個參數的每一個可能
+    值都來自 allowlist 查表的結果。
 
-    When `tools_mode` is omitted the module global `DOROSSI_CC_TOOLS` is read **at
-    call time** (as in `_dorossi_cc_argv`). The criterion is still "unlocks only
-    when exactly `full`"; anything else reasserts the read-only sandbox.
+    `tools_mode` 省略時在**呼叫當下**讀模組全域 `DOROSSI_CC_TOOLS`（同
+    `_dorossi_cc_argv`）。判準仍是「剛好等於 `full` 才解鎖」，其餘一律重申唯讀沙箱。
     """
     if tools_mode is None:
         tools_mode = DOROSSI_CC_TOOLS
@@ -6078,10 +5939,11 @@ def _dorossi_codex_argv(exe: str, *, session_id: str | None = None,
         if extra_dir:
             args += ["--add-dir", extra_dir]
     if model:
-        # The per-round `/model` override. Both `exec` and `exec resume` accept
-        # `-m/--model` (on 2026-09-23, both subcommands' help in CLI 0.145.0 listed
-        # it). Without it, the CLI default applies.
+        # 每輪 `/model` 覆蓋。`exec` 與 `exec resume` 都收 `-m/--model`（2026-09-23
+        # 在 CLI 0.145.0 實測兩個子指令的 help 都列著它）。不帶就是 CLI 預設。
         args += ["-m", model]
+    if effort in DOROSSI_EFFORT_LEVELS:
+        args += ["-c", f'model_reasoning_effort="{effort}"']
     if tools_mode == "full":
         args.append("--dangerously-bypass-approvals-and-sandbox")
     else:
@@ -6093,12 +5955,13 @@ def _dorossi_codex_argv(exe: str, *, session_id: str | None = None,
     return args
 
 
+
 async def _dorossi_via_codex(
         prompt: str, session_id: str | None, on_text=None,
         extra_dir: str | None = None, workdir: str | None = None,
         on_proc=None, abort_check=None, silence_limit: float | None = None,
         loop_system_guidance: str | None = None,
-        model: str | None = None) -> tuple:
+        model: str | None = None, effort: str | None = None) -> tuple:
     """Run one non-interactive Codex turn; return answer, thread id and usage.
 
     `model` = the full model id parsed from this round's `/model` (None = no
@@ -6126,7 +5989,7 @@ async def _dorossi_via_codex(
     # another copy here**.
     args = _dorossi_codex_argv(
         exe, session_id=session_id, workdir=effective_cwd,
-        extra_dir=extra_dir, model=model)
+        extra_dir=extra_dir, model=model, effort=effort)
     turn_prompt = prompt
     if loop_system_guidance:
         turn_prompt += "\n\n" + loop_system_guidance
@@ -6134,7 +5997,7 @@ async def _dorossi_via_codex(
         DOROSSI_SYSTEM_PROMPT + "\n\n使用者問題：\n" + turn_prompt)
 
     invocation_started_ns = time.time_ns()
-    proc = await asyncio.create_subprocess_exec(
+    proc = await _spawn_backend(
         *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, cwd=effective_cwd,
         limit=16 * 1024 * 1024)
@@ -6153,7 +6016,7 @@ async def _dorossi_via_codex(
     if abort_check is not None:
         try:
             if abort_check():
-                proc.kill()
+                _dorossi_kill_backend_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass
         except Exception:  # pylint: disable=broad-except  # nosec B110
@@ -6183,7 +6046,7 @@ async def _dorossi_via_codex(
         rc = await asyncio.wait_for(proc.wait(), timeout=wait_timeout)
     except (asyncio.TimeoutError, TimeoutError):
         try:
-            proc.kill()
+            _dorossi_kill_backend_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass
         # Reap with a bound (no bare `await proc.wait()`): if the pipes are still
@@ -6214,7 +6077,7 @@ async def _dorossi_via_codex(
         # path we are not guaranteed a chance to finish any await.
         if proc.returncode is None:
             try:
-                proc.kill()
+                _dorossi_kill_backend_tree(proc, raise_backend_error=True)
             except ProcessLookupError:
                 pass
             except Exception:  # pylint: disable=broad-except  # nosec B110
@@ -7271,7 +7134,7 @@ async def _dorossi_via_claude_code(
     # holding off the silence watchdog" can last; a round that keeps producing output
     # still has no wall-clock ceiling.
     hard_limit = _dorossi_cc_hard_limit_sec()
-    proc = await asyncio.create_subprocess_exec(
+    proc = await _spawn_backend(
         *args,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -7293,7 +7156,7 @@ async def _dorossi_via_claude_code(
     if abort_check is not None:
         try:
             if abort_check():
-                proc.kill()
+                _dorossi_kill_backend_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass
         except Exception:  # pylint: disable=broad-except  # nosec B110
@@ -7336,7 +7199,7 @@ async def _dorossi_via_claude_code(
                 if remaining <= 0:
                     state.kill_reason = "hard"
                     try:
-                        proc.kill()
+                        _dorossi_kill_backend_tree(proc, raise_backend_error=True)
                     except ProcessLookupError:
                         pass
                     break
@@ -7363,7 +7226,7 @@ async def _dorossi_via_claude_code(
                     # retry takes over.
                     state.kill_reason = "silence"
                     try:
-                        proc.kill()
+                        _dorossi_kill_backend_tree(proc, raise_backend_error=True)
                     except ProcessLookupError:
                         pass
                     break
@@ -7373,7 +7236,7 @@ async def _dorossi_via_claude_code(
                 if clock.now() >= deadline:
                     state.kill_reason = "hard"
                     try:
-                        proc.kill()
+                        _dorossi_kill_backend_tree(proc, raise_backend_error=True)
                     except ProcessLookupError:
                         pass
                     break
@@ -7387,7 +7250,7 @@ async def _dorossi_via_claude_code(
                     continue
                 state.kill_reason = "idle"
                 try:
-                    proc.kill()
+                    _dorossi_kill_backend_tree(proc, raise_backend_error=True)
                 except ProcessLookupError:
                     pass
                 break
@@ -7411,7 +7274,7 @@ async def _dorossi_via_claude_code(
         # process still gets the chance to leave properly on its own and is not
         # killed early.
         try:
-            proc.kill()
+            _dorossi_kill_backend_tree(proc, raise_backend_error=True)
         except ProcessLookupError:
             pass
         except Exception:  # pylint: disable=broad-except  # nosec B110
@@ -7468,3 +7331,13 @@ async def _dorossi_via_claude_code(
         cli_command=_dorossi_cli_command_of(prompt),
         resumed_id=session_id, sid=state.sid, cli_version=state.cli_version,
         baseline=usage_baseline)
+
+
+def dorossi_model_provider(key, backend: str | None = None) -> str | None:
+    """Resolve a validated alias to its provider, preferring the current backend."""
+    if dorossi_model_applies(backend, key):
+        return DOROSSI_MODEL_NAMESPACES.get(backend, "claude")
+    for candidate in ("claude_code", "codex", "gemini"):
+        if dorossi_model_applies(candidate, key):
+            return DOROSSI_MODEL_NAMESPACES[candidate]
+    return None
