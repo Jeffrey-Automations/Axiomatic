@@ -437,7 +437,9 @@ py -3 install_autostart.py --remove
 ## 批次行為
 
 1. **每次啟動一次完整 setup**（每次瀏覽器重啟也是）：登入、套用設定快照、確認頁面
-   在預期狀態。
+   在預期狀態。模型列的 Effort 會先設成 High：Medium 是另一個模型，Steps、取樣器與
+   Guidance Rescale 都不會出現。每次產圖前都會讀回 Effort、Transparent BG、Quality
+   Tags 與取樣器，任一項無法確認就不按下生成。
 2. **動態消耗佇列**：每個角色都重讀一次佇列，所以跑到一半做的編輯會在下一對生效，
    而不是下一輪。
 3. **逐對迴圈**：產到設定的張數為止，邊產邊下載。

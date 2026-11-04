@@ -480,6 +480,10 @@ On those platforms the command hints in the bot's replies are rewritten into the
 
 1. **One full setup per start** (and after every browser restart): log in,
    apply the settings snapshot, verify the page is in the expected state.
+   The model row's Effort is set to High first: Medium is a different model
+   that hides Steps, Sampler and Guidance Rescale. Before every generation the
+   batch reads back Effort, Transparent BG, Quality Tags and the sampler, and
+   does not press Generate when one of them cannot be confirmed.
 2. **Dynamic queue consumption**: the queues are re-read for every character,
    so an edit made while a run is in flight takes effect at the next pair
    rather than at the next run.

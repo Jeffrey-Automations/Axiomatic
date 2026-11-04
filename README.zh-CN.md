@@ -437,7 +437,9 @@ py -3 install_autostart.py --remove
 ## 批处理行为
 
 1. **每次启动一次完整 setup**（每次浏览器重启也是）：登录、套用配置快照、确认页面
-   在预期状态。
+   在预期状态。模型栏的 Effort 会先设为 High：Medium 是另一个模型，Steps、采样器与
+   Guidance Rescale 都不会出现。每次生成前都会读回 Effort、Transparent BG、Quality
+   Tags 与采样器，任一项无法确认就不按下生成。
 2. **动态消耗队列**：每个角色都重读一次队列，所以跑到一半做的编辑会在下一对生效，
    而不是下一轮。
 3. **逐对循环**：出到配置的张数为止，边出边下载。

@@ -5752,7 +5752,7 @@ def dump_advanced_labels(port) -> None:
           const t = (lab.innerText || '').trim();
           if (t.length === 0 || t.length > 80) continue;
           if (t.split('\\n').length > 1) continue;
-          if (/Prompt|Guidance|Step|Sampler|Seed|Rescale|Decrisper|SMEA|CFG|Variety|Noise/i.test(t)) {
+          if (/Prompt|Guidance|Step|Sampler|Seed|Rescale|Decrisper|SMEA|CFG|Variety|Noise|Effort|Advanced|AI Settings/i.test(t)) {
             out.push(t);
           }
         }
@@ -5760,6 +5760,18 @@ def dump_advanced_labels(port) -> None:
         """
     )
     print(f"  visible setting labels: {labels}")
+    # Effort decides whether Steps / Sampler / Rescale exist at all (see
+    # `TARGET_MODEL_EFFORT`). The log of the 2026-11-04 failure had only the line above: it
+    # showed the three controls missing but not that Effort was on Medium. Printing it next to
+    # the labels tells the two apart at a glance next time.
+    try:
+        effort = _model_effort_control(port)
+    except Exception as error:  # pylint: disable=broad-except
+        effort = f"<unreadable: {type(error).__name__}>"
+    if isinstance(effort, dict):
+        effort = {"options": effort.get("options"),
+                  f"{TARGET_MODEL_EFFORT}_selected": effort.get("selected")}
+    print(f"  effort control: {effort}")
     rescale = port.execute_script(
         """
         const out = [];
@@ -5845,8 +5857,14 @@ def ensure_rescale_visible(port, max_attempts: int = 6) -> bool:
             human_pause(0.9, 1.4)
             continue
         if expand_advanced_settings(port) is False:
+            # When all three are missing, the usual cause is not "hidden in some collapsed
+            # section" but the model row's Effort being on Medium -- that model does not
+            # render Steps / Sampler / Rescale at all (confirmed live 2026-11-04, see
+            # `TARGET_MODEL_EFFORT`).
             print(f"  neither Rescale nor the Advanced Settings row is "
-                  f"reachable (attempt {attempt})")
+                  f"reachable (attempt {attempt}); if Steps/Sampler are gone "
+                  f"too, check the model Effort tier (needs "
+                  f"{TARGET_MODEL_EFFORT!r})")
             break
         human_pause(0.9, 1.4)
     ok = _has_rescale(port)
@@ -6099,15 +6117,194 @@ def select_sampler(port, target: str = TARGET_SAMPLER,
     return False
 
 
+# The model row's "Effort" segmented control (confirmed on the live page 2026-11-04).
+# The site added a second model under V5 Full, `nai-diffusion-5-full-medium`, switched by
+# the Medium / High buttons labelled `Effort` in the model row
+# (`.image-gen-model-mode-row`). The model dropdown still reads `V5 Full`, so
+# `select_model` cannot tell the difference. In the site's model table Medium carries
+# `fixedSettings: {steps: 14, sampler: "k_euler_ancestral", ...}` and `cfgRescale: false`,
+# so the Steps, Sampler and Prompt Guidance Rescale controls are **not rendered at all**
+# (not collapsed) -- none of Steps=23, the sampler read-back or Rescale=0 is possible under
+# Medium. The choice is remembered by the browser profile, so every setup reads it back and
+# switches it when needed. High is the only behaviour that existed before the change.
+TARGET_MODEL_EFFORT = "High"
+
+_MODEL_EFFORT_JS = r"""
+const want = arguments[0];
+const transparent = (c) => !c || c === 'transparent' || /^rgba\(.*,\s*0\)$/.test(c);
+for (const lab of document.querySelectorAll('div, span, label')) {
+  if (lab.offsetParent === null) continue;
+  let own = '';
+  for (const n of lab.childNodes) if (n.nodeType === 3) own += n.textContent;
+  if (own.trim() !== 'Effort') continue;
+  let scope = lab.parentElement;
+  for (let i = 0; i < 3 && scope; i++, scope = scope.parentElement) {
+    const buttons = Array.from(scope.querySelectorAll('button'))
+      .filter(b => b.offsetParent !== null);
+    if (buttons.length === 0) continue;
+    const options = buttons.map(b => (b.innerText || '').trim());
+    const target = buttons.find(b => (b.innerText || '').trim() === want);
+    if (!target) return {element: null, selected: null, options};
+    // The segmented buttons carry no aria-pressed / aria-selected; the selected one differs
+    // only by its background (site source: selected ? bg3 : "transparent"). Undecidable -> null.
+    const peers = buttons.filter(b => b !== target && b.parentElement === target.parentElement);
+    const mine = transparent(getComputedStyle(target).backgroundColor);
+    const theirs = peers.map(b => transparent(getComputedStyle(b).backgroundColor));
+    let selected = null;
+    if (peers.length && !mine && theirs.every(t => t)) selected = true;
+    else if (peers.length && mine && theirs.some(t => !t)) selected = false;
+    return {element: target, selected, options};
+  }
+}
+return null;
+"""
+
+
+def _model_effort_control(port, target: str = TARGET_MODEL_EFFORT):
+    """Read the model row's Effort control. None = the page has no Effort control;
+    otherwise `{"element", "selected", "options"}` -- `element` is None when the label is
+    there but no option is called `target`; `selected` is True / False / None (undecidable).
+    Read-only."""
+    return port.execute_script(_MODEL_EFFORT_JS, target)
+
+
+def select_model_effort(port, target: str = TARGET_MODEL_EFFORT) -> bool:
+    """Make the model row's Effort equal `target` (High by default); goes by the read-back
+    and is safe to call repeatedly.
+
+    * No Effort control (another model, or the site before the change) -> not a failure, True.
+    * The label is there but has no `target` option -> the site renamed it; print the
+      options it has, snap, return False.
+    * Already selected -> no click, True.
+    * Otherwise click. The button's onClick *sets* the value rather than toggling, so a click
+      is safe even when the selection is undecidable (`selected is None`); after the click,
+      only an explicit "not selected" read-back is a failure, and an undecidable one is left
+      to the later Steps / Sampler read-backs as the final judge.
+
+    Why this step exists, and why it must run before `ensure_rescale_visible`: see the
+    comment above `TARGET_MODEL_EFFORT`.
+    """
+    control = _model_effort_control(port, target)
+    if not control:
+        return True
+    if control.get("element") is None:
+        print(f"  effort option {target!r} not found; visible options: "
+              f"{control.get('options')}")
+        snap(port, "effort_option_not_found")
+        return False
+    if control.get("selected") is True:
+        return True
+    robust_click(port, control["element"])
+    human_pause(0.8, 1.2)
+    after = _model_effort_control(port, target)
+    if after and after.get("selected") is False:
+        print(f"  effort verify failed: {target!r} still not selected "
+              f"(options {after.get('options')})")
+        snap(port, "effort_verify_failed")
+        return False
+    print(f"  effort -> {target!r}")
+    return True
+
+
+TARGET_QUALITY_TAGS = "Standard"
+
+
+def _transparent_background_control(port):
+    return port.execute_script(
+        """
+        for (const button of document.querySelectorAll('button[aria-pressed]')) {
+          if (button.offsetParent === null) continue;
+          if ((button.innerText || '').trim() === 'Transparent BG') {
+            return {element: button, checked: button.getAttribute('aria-pressed') === 'true'};
+          }
+        }
+        return null;
+        """
+    )
+
+
+def set_transparent_background(port) -> bool:
+    control = _transparent_background_control(port)
+    if not control:
+        return False
+    if control["checked"]:
+        return True
+    robust_click(port, control["element"])
+    human_pause(0.3, 0.5)
+    current = _transparent_background_control(port)
+    return bool(current and current["checked"])
+
+
+def _quality_tags_control(port):
+    return port.execute_script(
+        """
+        for (const input of document.querySelectorAll('input[aria-label="Quality Preset"]')) {
+          if (input.offsetParent === null) continue;
+          let scope = input.parentElement;
+          for (let i = 0; i < 3 && scope; i++, scope = scope.parentElement) {
+            const value = scope.querySelector('[class*="singleValue"]');
+            if (value) return {element: scope, value: (value.innerText || '').trim()};
+          }
+        }
+        return null;
+        """
+    )
+
+
+def select_quality_tags(port, timeout: float = 5.0) -> bool:
+    control = _quality_tags_control(port)
+    if not control:
+        return False
+    wanted = "Quality Tags: " + TARGET_QUALITY_TAGS
+    if control["value"] in (TARGET_QUALITY_TAGS, wanted):
+        return True
+    robust_click(port, control["element"])
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        option = _find_sampler_option(port, TARGET_QUALITY_TAGS)
+        if option is not None:
+            robust_click(port, option)
+            human_pause(0.3, 0.5)
+            current = _quality_tags_control(port)
+            return bool(current and current["value"] in (TARGET_QUALITY_TAGS, wanted))
+        time.sleep(0.2)
+    return False
+
+
+def ensure_generation_options(port) -> bool:
+    """Read back the required options before every generation; a failed setting must not
+    press Generate.
+
+    Effort goes first: it decides whether the Sampler control exists at all (under Medium
+    the sampler is not rendered)."""
+    for label, configure in (
+        ("Effort", select_model_effort),
+        ("Transparent BG", set_transparent_background),
+        ("Quality Tags", select_quality_tags),
+        ("Sampler", select_sampler),
+    ):
+        if not configure(port):
+            print(f"generation setting verification failed: {label}")
+            snap(port, "generation_settings_failed")
+            return False
+    return True
+
+
 def configure_sampler_settings(port) -> bool:
     # Hand it straight to `ensure_rescale_visible()`: it goes by the result, tries both
     # expansion paths, and is safe to call repeatedly. **Do not** call
     # `expand_advanced_settings()` unconditionally here first — it is a toggle, and in the
     # "panel already open" starting state it would collapse it instead (the actual failure on
     # 2026-08-22).
+    #
+    # But first switch Effort to High: Medium is a different model whose Steps / Sampler /
+    # Rescale controls are never rendered, so no amount of expanding finds them (the reason
+    # one host failed every setup with rc=2 on 2026-11-04; see `TARGET_MODEL_EFFORT`).
+    effort_ok = select_model_effort(port)
     all_ok = with_retry("ensure_rescale_visible",
                         lambda: ensure_rescale_visible(port),
                         max_attempts=3, sleep_range=(1, 2))
+    all_ok = effort_ok and all_ok
     dump_advanced_labels(port)
     # Switch the sampler first, then set the numbers. The order is intentional: when the
     # sampler changes, the site may reset Steps / Guidance to that sampler's defaults, and
@@ -6116,9 +6313,9 @@ def configure_sampler_settings(port) -> bool:
     # makes `_setup_session` return False as a whole); it is not optional decoration —
     # images made with the wrong sampler look "about the same", which makes it the hardest
     # to notice.
-    sampler_ok = select_sampler(port, TARGET_SAMPLER)
-    print(f"setting Sampler={TARGET_SAMPLER} final -> {sampler_ok}")
-    all_ok = sampler_ok and all_ok
+    options_ok = ensure_generation_options(port)
+    print(f"generation options verified -> {options_ok}")
+    all_ok = options_ok and all_ok
     human_pause(0.5, 1.0)
     # Each group is "the label spellings of the same setting under different site layouts".
     # This used to say "the collapsed and expanded views have different labels" — **that
@@ -6470,6 +6667,12 @@ def click_generate(port, timeout: float = GENERATE_CLICK_TIMEOUT_SEC) -> bool:
     # wall clock jumping back turns a DOM timeout of a few seconds into a stall of hours —
     # **getting stuck is harder to diagnose than failing**, since the supervisor sees a
     # process that is alive yet doing nothing; jumping forward degrades it into a single try.
+    try:
+        if not ensure_generation_options(port):
+            return False
+    except port.TRANSPORT_ERRORS as error:
+        _note_transport_error("generation_settings", error)
+        return False
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         btn = find_generate_button(port)

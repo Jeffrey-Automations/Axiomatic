@@ -750,6 +750,12 @@ class FakeBrowserPort:
     # ---- JS ----
     def execute_script(self, script, *args):
         s = script
+        if "button[aria-pressed]" in s and "Transparent BG" in s:
+            return {"element": _FakeElement("BUTTON"), "checked": True}
+        if 'input[aria-label="Quality Preset"]' in s:
+            return {"element": _FakeElement("DIV"), "value": "Quality Tags: Standard"}
+        if "return pick(document.body)" in s:
+            return "Euler Ancestral"
         # 存活探針（_abort_if_browser_gone）。假 port 對未知 script 一律回 None，
         # 而「回 None」正是探針判定「瀏覽器沒了」的依據——不回 token 的話，
         # 每一個跑到失敗分支的測試都會被誤判成 BrowserGoneError。
@@ -1923,7 +1929,7 @@ def test_configure_sampler_settings_reports_partial_failure():
     print("test_configure_sampler_settings_reports_partial_failure")
     names = ("expand_advanced_settings", "ensure_rescale_visible",
              "dump_advanced_labels", "set_numeric_setting_verified",
-             "set_variety_plus", "human_pause")
+             "set_variety_plus", "_has_variety_plus", "human_pause")
     saved = {name: getattr(ws, name) for name in names}
     try:
         ws.expand_advanced_settings = lambda _port: True
@@ -1931,6 +1937,7 @@ def test_configure_sampler_settings_reports_partial_failure():
         ws.dump_advanced_labels = lambda _port: None
         ws.set_numeric_setting_verified = lambda *_a, **_k: True
         ws.set_variety_plus = lambda *_a, **_k: False
+        ws._has_variety_plus = lambda _port: True
         ws.human_pause = lambda *_a, **_k: None
         ok = ws.configure_sampler_settings(FakeBrowserPort())
     finally:
@@ -3130,7 +3137,7 @@ def _case_click_generate(hits):
         hits.append(1)
         return None
 
-    with _ws_patched(find_generate_button=_no_button):
+    with _ws_patched(find_generate_button=_no_button, ensure_generation_options=lambda _p: True):
         return ws.click_generate(port, timeout=15.0)
 
 
@@ -7984,12 +7991,21 @@ def _run_all():
     import inspect as _inspect
     import tempfile as _tempfile
 
+    # `monkeypatch` 用 pytest 公開的 `MonkeyPatch`，每支測試跑完一定 `undo()`
+    # ——漏掉還原等於把替身留給下一支測試（2026-11-04：10-30 起檔尾那批產圖選項
+    # 測試全都收 `monkeypatch`，這條路從那天起就跑不完）。
+    patches = []
+
     def _fixtures_for(func):
         params = list(_inspect.signature(func).parameters)
         supplied = []
         for name in params:
             if name == "tmp_path":
                 supplied.append(Path(_tempfile.mkdtemp(prefix="selfrun_")))
+            elif name == "monkeypatch":
+                import pytest as _pytest
+                patches.append(_pytest.MonkeyPatch())
+                supplied.append(patches[-1])
             else:
                 raise SystemExit(
                     f"{func.__name__} 收了一個這條路餵不出來的 fixture："
@@ -8000,7 +8016,11 @@ def _run_all():
         return supplied
 
     for t in tests:
-        t(*_fixtures_for(t))
+        try:
+            t(*_fixtures_for(t))
+        finally:
+            while patches:
+                patches.pop().undo()
     print(f"ALL {len(tests)} TEST GROUPS PASSED")
 
 
@@ -8053,7 +8073,7 @@ def _drive_settings(layout):
     names = ("expand_advanced_settings", "ensure_rescale_visible",
              "dump_advanced_labels", "read_numeric_setting",
              "set_numeric_setting_verified", "set_variety_plus",
-             "_has_variety_plus", "select_sampler", "human_pause")
+             "_has_variety_plus", "select_sampler", "ensure_generation_options", "human_pause")
     saved = {name: getattr(ws, name) for name in names}
     tried = []
     try:
@@ -8063,6 +8083,7 @@ def _drive_settings(layout):
         ws._has_variety_plus = lambda _port: False
         ws.set_variety_plus = lambda *_a, **_k: True
         ws.select_sampler = lambda *_a, **_k: True
+        ws.ensure_generation_options = lambda *_a, **_k: True
         ws.human_pause = lambda *_a, **_k: None
         ws.read_numeric_setting = lambda _port, label: layout.get(label)
 
@@ -8153,7 +8174,7 @@ def test_a_probe_that_finds_nothing_leaves_the_old_ordered_loop_intact():
     names = ("expand_advanced_settings", "ensure_rescale_visible",
              "dump_advanced_labels", "read_numeric_setting",
              "set_numeric_setting_verified", "set_variety_plus",
-             "_has_variety_plus", "select_sampler", "human_pause")
+             "_has_variety_plus", "select_sampler", "ensure_generation_options", "human_pause")
     saved = {name: getattr(ws, name) for name in names}
     tried = []
     try:
@@ -8163,6 +8184,7 @@ def test_a_probe_that_finds_nothing_leaves_the_old_ordered_loop_intact():
         ws._has_variety_plus = lambda _port: False
         ws.set_variety_plus = lambda *_a, **_k: True
         ws.select_sampler = lambda *_a, **_k: True
+        ws.ensure_generation_options = lambda *_a, **_k: True
         ws.human_pause = lambda *_a, **_k: None
         ws.read_numeric_setting = lambda *_a, **_k: None      # 探測全空
         ws.set_numeric_setting_verified = (
@@ -10477,6 +10499,214 @@ def test_neither_variant_keeps_its_own_copy_of_the_request_file_constant():
     assert "SINGLE_IMAGE_REQUEST_FILE" in shared, (
         "共用層把它一起刪掉了——帶內服務會整個壞掉")
     print("  PASS\n")
+
+
+def test_transparent_background_only_clicks_when_unchecked(monkeypatch):
+    state = {"element": object(), "checked": False}
+    clicks = []
+    monkeypatch.setattr(ws, "_transparent_background_control", lambda _p: state.copy())
+    def click(_p, element):
+        clicks.append(element)
+        state["checked"] = True
+    monkeypatch.setattr(ws, "robust_click", click)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a: None)
+    assert ws.set_transparent_background(None)
+    assert ws.set_transparent_background(None)
+    assert clicks == [state["element"]]
+
+
+def test_quality_tags_reads_back_selection_and_is_repeatable(monkeypatch):
+    state = {"element": object(), "value": "Quality Tags: None"}
+    option = object()
+    clicks = []
+    monkeypatch.setattr(ws, "_quality_tags_control", lambda _p: state.copy())
+    monkeypatch.setattr(ws, "_find_sampler_option", lambda _p, target: option if target == "Standard" else None)
+    def click(_p, element):
+        clicks.append(element)
+        if element is option:
+            state["value"] = "Quality Tags: Standard"
+    monkeypatch.setattr(ws, "robust_click", click)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a: None)
+    assert ws.select_quality_tags(None)
+    assert ws.select_quality_tags(None)
+    assert clicks == [state["element"], option]
+
+
+def test_generation_setting_failed_readback_stops_generate(monkeypatch):
+    monkeypatch.setattr(ws, "_transparent_background_control", lambda _p: {"element": object(), "checked": False})
+    monkeypatch.setattr(ws, "robust_click", lambda *_a: True)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a: None)
+    monkeypatch.setattr(ws, "snap", lambda *_a: None)
+    def forbidden(_p):
+        raise AssertionError("Generate must not be located after failed setting verification")
+    monkeypatch.setattr(ws, "find_generate_button", forbidden)
+    assert ws.click_generate(FakeBrowserPort()) is False
+
+
+def test_generation_settings_all_checked_before_generate(monkeypatch):
+    actions = []
+    for name in ("select_model_effort", "set_transparent_background",
+                 "select_quality_tags", "select_sampler"):
+        monkeypatch.setattr(ws, name, lambda _p, name=name: actions.append(name) or True)
+    class Button:
+        def click(self):
+            actions.append("generate")
+    monkeypatch.setattr(ws, "find_generate_button", lambda _p: Button())
+    monkeypatch.setattr(ws, "human_pause", lambda *_a: None)
+    assert ws.click_generate(FakeBrowserPort())
+    # Effort 排第一：Medium 底下取樣器控制項根本不存在，先讀取樣器只會失敗。
+    assert actions == ["select_model_effort", "set_transparent_background",
+                       "select_quality_tags", "select_sampler", "generate"]
+
+
+def test_quality_tags_failed_readback_is_not_success(monkeypatch):
+    monkeypatch.setattr(ws, "_quality_tags_control", lambda _p: {"element": object(), "value": "Quality Tags: None"})
+    monkeypatch.setattr(ws, "_find_sampler_option", lambda *_a: object())
+    monkeypatch.setattr(ws, "robust_click", lambda *_a: True)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a: None)
+    assert not ws.select_quality_tags(None)
+
+
+# ---- 模型列的 Effort（Medium／High）——2026-11-04 另一台主機每次 setup rc=2 的原因 ----
+# Medium 是另一個模型（帶 fixedSettings、沒有 cfgRescale），Steps／Sampler／Rescale
+# 三個控制項整個不渲染。實機證據與站方原始碼節錄見 architecture_explore.md 的 §8 條目。
+
+def _effort_harness(monkeypatch, readings):
+    """`readings`：`_model_effort_control` 依序回的值（最後一個重複用）。回點選紀錄。"""
+    seq = list(readings)
+    clicks = []
+
+    def control(_port, _target=ws.TARGET_MODEL_EFFORT):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    monkeypatch.setattr(ws, "_model_effort_control", control)
+    monkeypatch.setattr(ws, "robust_click", lambda _p, el: clicks.append(el) or True)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a: None)
+    monkeypatch.setattr(ws, "snap", lambda *_a: None)
+    return clicks
+
+
+def test_model_effort_switches_medium_back_to_high(monkeypatch):
+    high = object()
+    clicks = _effort_harness(monkeypatch, [
+        {"element": high, "selected": False, "options": ["Medium", "High"]},
+        {"element": high, "selected": True, "options": ["Medium", "High"]},
+    ])
+    assert ws.select_model_effort(None) is True
+    assert clicks == [high]
+
+
+def test_model_effort_already_high_is_left_alone(monkeypatch):
+    # must-allow：改版前、以及這台主機現況（profile 本來就是 High）——不准多點。
+    clicks = _effort_harness(monkeypatch, [
+        {"element": object(), "selected": True, "options": ["Medium", "High"]}])
+    assert ws.select_model_effort(None) is True
+    assert ws.select_model_effort(None) is True
+    assert clicks == []
+
+
+def test_a_page_without_the_effort_control_is_not_a_failure(monkeypatch):
+    # must-allow：別的模型（沒有 Effort 分段鈕）或改版前的站方。
+    clicks = _effort_harness(monkeypatch, [None])
+    assert ws.select_model_effort(None) is True
+    assert clicks == []
+
+
+def test_a_renamed_effort_option_fails_loudly(monkeypatch):
+    clicks = _effort_harness(monkeypatch, [
+        {"element": None, "selected": None, "options": ["Fast", "Quality"]}])
+    assert ws.select_model_effort(None) is False
+    assert clicks == []
+
+
+def test_an_effort_click_that_did_not_take_is_a_failure(monkeypatch):
+    high = object()
+    clicks = _effort_harness(monkeypatch, [
+        {"element": high, "selected": False, "options": ["Medium", "High"]}])
+    assert ws.select_model_effort(None) is False
+    assert clicks == [high]
+
+
+def test_an_undecidable_effort_selection_clicks_once_and_defers(monkeypatch):
+    # 分段鈕的 onClick 是「設成這個值」不是切換，所以判不出選中狀態時點一次是安全的；
+    # 最終判準交給後面 Steps／Sampler 的讀回驗證。
+    high = object()
+    clicks = _effort_harness(monkeypatch, [
+        {"element": high, "selected": None, "options": ["Medium", "High"]}])
+    assert ws.select_model_effort(None) is True
+    assert clicks == [high]
+
+
+def test_configure_sets_effort_before_revealing_rescale(monkeypatch):
+    order = []
+    monkeypatch.setattr(ws, "select_model_effort",
+                        lambda _p: order.append("effort") or True)
+    monkeypatch.setattr(ws, "ensure_rescale_visible",
+                        lambda _p: order.append("rescale") or True)
+    monkeypatch.setattr(ws, "dump_advanced_labels", lambda _p: None)
+    monkeypatch.setattr(ws, "ensure_generation_options", lambda _p: True)
+    monkeypatch.setattr(ws, "first_present_numeric_label", lambda *_a: None)
+    monkeypatch.setattr(ws, "set_numeric_setting_verified", lambda *_a, **_k: True)
+    monkeypatch.setattr(ws, "_has_variety_plus", lambda _p: False)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a, **_k: None)
+    assert ws.configure_sampler_settings(FakeBrowserPort()) is True
+    assert order[:2] == ["effort", "rescale"]
+
+
+def test_configure_fails_when_effort_cannot_be_set(monkeypatch):
+    monkeypatch.setattr(ws, "select_model_effort", lambda _p: False)
+    monkeypatch.setattr(ws, "ensure_rescale_visible", lambda _p: True)
+    monkeypatch.setattr(ws, "dump_advanced_labels", lambda _p: None)
+    monkeypatch.setattr(ws, "ensure_generation_options", lambda _p: True)
+    monkeypatch.setattr(ws, "first_present_numeric_label", lambda *_a: None)
+    monkeypatch.setattr(ws, "set_numeric_setting_verified", lambda *_a, **_k: True)
+    monkeypatch.setattr(ws, "_has_variety_plus", lambda _p: False)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a, **_k: None)
+    assert ws.configure_sampler_settings(FakeBrowserPort()) is False
+
+
+class _ScriptRecorder:
+    """記下送出的 script，`execute_script` 一律回 `answer`。"""
+    TRANSPORT_ERRORS = ()
+
+    def __init__(self, answer=None):
+        self.answer = answer
+        self.scripts = []
+
+    def execute_script(self, script, *args):
+        self.scripts.append((script, args))
+        return self.answer
+
+
+def test_the_effort_probe_asks_for_the_effort_label_and_the_target_option():
+    port = _ScriptRecorder()
+    assert ws._model_effort_control(port) is None
+    script, args = port.scripts[0]
+    assert args == (ws.TARGET_MODEL_EFFORT,) and ws.TARGET_MODEL_EFFORT == "High"
+    # 標籤字面與「選中」的判準（只差背景色；站方沒給 aria 屬性）。
+    assert "own.trim() !== 'Effort'" in script
+    assert "backgroundColor" in script
+    # 不能撞上假 port 的子字串分類器（那會讓別的測試拿到錯型別的回傳值）。
+    for marker in ("Generate", "scrollIntoView", "naturalWidth", "blob:", "trash"):
+        assert marker not in script, marker
+
+
+def test_the_label_dump_names_the_effort_and_section_headers():
+    """`dump_advanced_labels` 的標籤過濾要放行 Effort 與兩個區段標題。
+
+    2026-11-04 那次故障的 log 只印得出「Steps／Sampler 不見了」，看不出 Effort 停在
+    Medium、也看不出 Advanced Settings 標題根本沒渲染——過濾式把那三個字擋掉了。
+    同時保留 must-allow：改版前的標籤照樣要印得出來。"""
+    port = _ScriptRecorder(answer=[])
+    ws.dump_advanced_labels(port)
+    label_js = port.scripts[0][0]
+    m = re.search(r"if \(/(.+?)/i\.test\(t\)\)", label_js)
+    assert m, "找不到 dump_advanced_labels 的標籤過濾式"
+    rx = re.compile(m.group(1), re.IGNORECASE)
+    for wanted in ("Effort", "AI Settings", "Advanced Settings",
+                   "Steps", "Sampler", "Prompt Guidance Rescale", "Seed"):
+        assert rx.search(wanted), wanted
+    assert not rx.search("Character 1")  # 對照組：過濾式不是全放行
 
 
 if __name__ == "__main__":

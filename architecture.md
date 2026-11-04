@@ -101,7 +101,12 @@
    寫 `webrunner.pid`、放鎖 → `_watch_for_fallback` 監督 → webrunner `main()` →
    `run_preflight` → 建立 driver、登入與設定 → `ws.run_batch`：每個角色重讀四條佇列 →
    `_queue_consume.decide` → `generate_loop` → 達門檻才 pop 佇列 → `emit_event` 寫
-   `events.ndjson` → bot `_event_watcher` / `_handle_event` 回報頻道。
+   `events.ndjson` → bot `_event_watcher` / `_handle_event` 回報頻道。設定階段的
+   `configure_sampler_settings` 先以 `select_model_effort` 把模型列的 Effort 設成
+   `TARGET_MODEL_EFFORT`（High）——Medium 是另一個模型，Steps／Sampler／Guidance Rescale 根本
+   不渲染，怎麼展開都找不到。`ensure_generation_options`（Effort、Transparent BG、Quality
+   Tags、Sampler）在設定時與 `click_generate` 每次產圖前都會讀回，任一項失敗就不按生成；
+   批次、插播與單圖路徑共用這一條規則。
 2. **單張產圖（`/gen image`）**：bot 以記憶體 FIFO 序列化請求 → 寫 `single_image_request.json`
    （單槽）→ 正在跑的批次帶內服務、既有單圖伺服器接手，或 bot 以
    `SINGLE_IMAGE_SERVER_FLAG` spawn 新的單圖伺服器 → 發 `single_image_done` 並刪除請求檔 →
