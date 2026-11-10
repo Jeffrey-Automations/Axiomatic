@@ -208,6 +208,12 @@ py -3 install_autostart.py --remove     # 移除
 拿到的環境和登入自動啟動那一份一樣。只要平台那幾筆就加 `--bot-only`，只要批次那一筆
 就加 `--batch-only`。
 
+要選擇產圖設定，可先執行 `py -3 wake_autostart.py --list-profiles`，再執行
+`py -3 wake_autostart.py --profile v4_5`。`--profile` 可與 `--bot-only` 或
+`--batch-only` 一起使用。切換前須停止所有平台的 bot、批次及其監督者。
+選擇會寫回 `generation_config.json` 的 `active_profile`，之後登入自動啟動也沿用。
+`--list-profiles` 只列出設定，不會叫醒工作；不帶新選項時維持原本行為。
+
 ## 建置本文件（選用）
 
 ```powershell

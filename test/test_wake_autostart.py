@@ -14,6 +14,8 @@ bot 的工作是一個平台一筆，而它們共用同一個腳本檔名，所�
 from __future__ import annotations
 
 import subprocess
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -194,3 +196,204 @@ def test_the_running_probe_is_asked_about_this_platform_only():
     batch = _Launchers([1234])
     wa.wake(ia.BATCH_TASK[0], run=_Scheduler(), running=batch)
     assert batch.filters == [None], batch.filters
+
+
+@pytest.fixture
+def profile_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(ia, "registered_tasks", lambda: list(_REGISTERED))
+    path = tmp_path / "generation_config.json"
+    data = {"active_profile": "v5", "profiles": {
+        "v5": {"settings": {"steps": 23}},
+        "v4_5": {"settings": {"steps": 28}, "todo": {"prompt": "other/todo.md"}},
+    }}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(wa, "GENERATION_CONFIG_FILE", path)
+    monkeypatch.setattr(wa, "_profile_processes", lambda: ([], True))
+    return path, data
+
+
+def test_list_profiles_never_touches_scheduler(profile_config, monkeypatch, capsys):
+    path, _data = profile_config
+    original = path.read_bytes()
+    monkeypatch.setattr(wa, "_schtasks", lambda *_a: pytest.fail("listing must not query scheduler"))
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("listing must not wake"))
+    assert wa.main(["--list-profiles"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["* v5", "  v4_5"]
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("scope, expected", [
+    ([], _REGISTERED), (["--bot-only"], _REGISTERED[:2]),
+    (["--batch-only"], _REGISTERED[2:]), (["--presence-only"], [BOT_TASK]),
+])
+def test_profile_is_saved_before_selected_tasks_wake(profile_config, monkeypatch, scope, expected):
+    path, data = profile_config
+    scheduler = _Scheduler()
+    monkeypatch.setattr(wa, "_schtasks", scheduler)
+    monkeypatch.setattr(wa, "_registered_presence_only", lambda: True)
+    woken = []
+    def wake(key):
+        assert json.loads(path.read_text(encoding="utf-8"))["active_profile"] == "v4_5"
+        woken.append(key)
+        return 0
+    monkeypatch.setattr(wa, "wake", wake)
+    assert wa.main([*scope, "--profile", "v4_5"]) == 0
+    assert woken == expected
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == {**data, "active_profile": "v4_5"}
+    assert scheduler.calls == [("/Query", "/TN", name) for name in expected]
+    assert not list(path.parent.glob(".generation-selection-*.tmp"))
+
+
+def test_same_profile_keeps_bytes_and_does_not_require_idle(profile_config, monkeypatch):
+    path, _data = profile_config
+    original = path.read_bytes()
+    monkeypatch.setattr(wa, "_profile_processes", lambda: pytest.fail("not switching"))
+    monkeypatch.setattr(wa, "wake", lambda *_a: 0)
+    assert wa.main(["--profile", "v5"]) == 0
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("processes", [([123], True), ([], False)])
+def test_busy_or_unknown_process_state_blocks_switch(profile_config, monkeypatch, processes):
+    path, _data = profile_config
+    original = path.read_bytes()
+    monkeypatch.setattr(wa, "_profile_processes", lambda: processes)
+    monkeypatch.setattr(wa, "_schtasks", lambda *_a: pytest.fail("must not query or run"))
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
+    assert wa.main(["--profile", "v4_5"]) == 1
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("name, invalid", [("absent", False), ("v4_5", True)])
+def test_invalid_selection_does_not_modify_or_wake(profile_config, monkeypatch, name, invalid):
+    path, data = profile_config
+    if invalid:
+        data["profiles"]["v4_5"]["settings"]["steps"] = 0
+        path.write_text(json.dumps(data), encoding="utf-8")
+    original = path.read_bytes()
+    monkeypatch.setattr(wa, "_profile_processes", lambda: pytest.fail("must validate first"))
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
+    assert wa.main(["--profile", name]) == 1
+    assert path.read_bytes() == original
+
+
+def test_unregistered_task_keeps_profile(profile_config, monkeypatch):
+    path, _data = profile_config
+    original = path.read_bytes()
+    monkeypatch.setattr(wa, "_schtasks", _Scheduler(registered=False))
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
+    assert wa.main(["--profile", "v4_5"]) == 1
+    assert path.read_bytes() == original
+
+
+def test_failed_atomic_replace_keeps_original_and_removes_temp(profile_config, monkeypatch):
+    path, _data = profile_config
+    original = path.read_bytes()
+    monkeypatch.setattr(wa, "_schtasks", _Scheduler())
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
+    def denied(*_a):
+        raise PermissionError("denied")
+    monkeypatch.setattr(wa.os, "replace", denied)
+    assert wa.main(["--profile", "v4_5"]) == 1
+    assert path.read_bytes() == original
+    assert not list(path.parent.glob(".generation-selection-*.tmp"))
+
+
+def test_concurrent_config_edit_is_not_overwritten(profile_config, monkeypatch):
+    path, data = profile_config
+    changed = {**data, "active_profile": "another edit"}
+    def query(*args):
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(wa, "_schtasks", query)
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
+    assert wa.main(["--profile", "v4_5"]) == 1
+    assert json.loads(path.read_text(encoding="utf-8")) == changed
+
+
+class _ProfileProcess:
+    def __init__(self, pid, script, cwd):
+        self.info = {"pid": pid, "name": "python.exe"}
+        self.script = script
+        self.directory = cwd
+
+    def cmdline(self):
+        if isinstance(self.script, Exception):
+            raise self.script
+        if isinstance(self.script, list):
+            return self.script
+        return ["python.exe", str(self.script)]
+
+    def cwd(self):
+        return str(self.directory)
+
+
+@pytest.mark.parametrize("relative", [True, False])
+def test_process_scan_matches_this_checkout_only(tmp_path, monkeypatch, relative):
+    import psutil
+    target = tmp_path / "ours" / "discord_bot.py"
+    own = _ProfileProcess(os.getpid() + 100, target.name if relative else target, target.parent)
+    other = _ProfileProcess(os.getpid() + 200, tmp_path / "other" / target.name, tmp_path)
+    monkeypatch.setattr(wa, "_PROFILE_PROCESS_PATHS", (target,))
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([own, other]))
+    assert wa._profile_processes() == ([own.info["pid"]], True)
+
+
+def test_inaccessible_python_process_makes_scan_unknown(monkeypatch):
+    import psutil
+    proc = _ProfileProcess(os.getpid() + 100, psutil.AccessDenied(123), Path.cwd())
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([proc]))
+    assert wa._profile_processes() == ([], False)
+
+
+def test_disappearing_process_does_not_block_scan(monkeypatch):
+    import psutil
+    proc = _ProfileProcess(os.getpid() + 100, psutil.NoSuchProcess(123), Path.cwd())
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([proc]))
+    assert wa._profile_processes() == ([], True)
+
+
+def test_own_interpreter_redirector_does_not_block_selection(monkeypatch):
+    import psutil
+    parent = _ProfileProcess(os.getppid(), Path(wa.__file__), Path.cwd())
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([parent]))
+    assert wa._profile_processes() == ([], True)
+
+
+def test_another_wake_process_still_blocks_selection(monkeypatch):
+    import psutil
+    parent = _ProfileProcess(os.getppid(), Path(wa.__file__), Path.cwd())
+    other = _ProfileProcess(os.getpid() + 100, Path(wa.__file__), Path.cwd())
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([parent, other]))
+    assert wa._profile_processes() == ([other.info["pid"]], True)
+
+
+@pytest.mark.parametrize("module, relative", [
+    ("start_discord_bot", "start_discord_bot.py"),
+    ("discord_bot", "discord_bot.py"),
+    ("axiomatic.discord_bot", "axiomatic/discord_bot.py"),
+])
+def test_module_launches_are_detected(tmp_path, monkeypatch, module, relative):
+    import psutil
+    target = tmp_path / relative
+    proc = _ProfileProcess(os.getpid() + 100, ["python.exe", "-m", module], tmp_path)
+    monkeypatch.setattr(wa, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(wa, "_PROFILE_PROCESS_PATHS", (target,))
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([proc]))
+    assert wa._profile_processes() == ([proc.info["pid"]], True)
+
+
+def test_formatter_module_argument_is_not_a_running_bot(monkeypatch):
+    import psutil
+    proc = _ProfileProcess(os.getpid() + 100,
+                           ["python.exe", "-m", "black", "axiomatic/discord_bot.py"], Path.cwd())
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([proc]))
+    assert wa._profile_processes() == ([], True)
+
+
+def test_known_module_with_unresolved_location_is_unknown(tmp_path, monkeypatch):
+    import psutil
+    proc = _ProfileProcess(os.getpid() + 100, ["python.exe", "-m", "discord_bot"], tmp_path)
+    monkeypatch.setattr(psutil, "process_iter", lambda **_k: iter([proc]))
+    assert wa._profile_processes() == ([], False)

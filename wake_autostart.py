@@ -5,6 +5,8 @@
     py -3 wake_autostart.py                  # 全部叫醒（已經在跑的略過）
     py -3 wake_autostart.py --bot-only       # 只叫醒平台的監督者（每個平台一支）
     py -3 wake_autostart.py --batch-only     # 只叫醒批次的監督者（會開始產圖）
+    py -3 wake_autostart.py --list-profiles  # 列出生成設定，不啟動工作
+    py -3 wake_autostart.py --profile v4_5   # 選定生成設定後叫醒已註冊工作
 
 **叫醒的是排程器裡現在真的有的工作**，不是設定檔算出來的那一份。bot 的工作是
 **一個平台一筆**（`\\Axiomatic\\Bot-<平台>`），而剛被關掉的平台，它的工作仍然留在
@@ -31,6 +33,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import tempfile
+from pathlib import Path
 import os
 import shlex
 from xml.etree import ElementTree
@@ -40,6 +45,20 @@ import time
 from install_autostart import (BATCH_TASK, bot_task, _schtasks,
                                _wanted_task_names)
 from axiomatic._supervisor import other_launcher_pids
+from axiomatic._process_control import (
+    cmdline_runs_script, looks_like_python_process, python_script_argument,
+)
+
+REPO_ROOT = Path(__file__).resolve().parent
+GENERATION_CONFIG_FILE = REPO_ROOT / "generation_config.json"
+_PROFILE_PROCESS_PATHS = (
+    REPO_ROOT / "start_discord_bot.py", REPO_ROOT / "start_webrunner.py",
+    REPO_ROOT / "run_batch.py", REPO_ROOT / "wake_autostart.py",
+    REPO_ROOT / "start_platforms.py",
+    REPO_ROOT / "axiomatic" / "discord_bot.py",
+    REPO_ROOT / "axiomatic" / "webrunner_je_only.py",
+)
+
 
 # 叫醒之後等啟動器出現在行程表的上限與輪詢間隔（秒）。排程器接受 `/Run` 之後，
 # 啟動器通常一兩秒內就看得到；等不到不算失敗（可能只是慢，或被單一實例鎖擋掉），
@@ -115,6 +134,122 @@ def _registered_presence_only() -> bool:
         return False
 
 
+def _read_profile_config() -> tuple[bytes, dict]:
+    raw = GENERATION_CONFIG_FILE.read_bytes()
+    data = json.loads(raw.decode("utf-8-sig"))
+    if (not isinstance(data, dict) or not isinstance(data.get("profiles"), dict)
+            or not data["profiles"]):
+        raise ValueError("generation_config.json 必須包含非空的 profiles 物件。")
+    return raw, data
+
+
+def _profile_processes() -> tuple[list[int], bool]:
+    try:
+        import psutil
+    except ImportError:
+        return [], False
+    pids = []
+    complete = True
+    targets = {path.resolve() for path in _PROFILE_PROCESS_PATHS}
+    names = tuple(path.name for path in targets)
+    try:
+        for proc in psutil.process_iter(attrs=["pid", "name"]):
+            if proc.info.get("pid") == os.getpid():
+                continue
+            try:
+                name = proc.info.get("name")
+                if name is None:
+                    complete = False
+                    continue
+                if not looks_like_python_process(name):
+                    continue
+                cmdline = proc.cmdline()
+                if not cmdline:
+                    complete = False
+                    continue
+                if cmdline_runs_script(cmdline, names):
+                    script = Path(python_script_argument(cmdline).strip('"'))
+                    if not script.is_absolute():
+                        script = Path(proc.cwd()) / script
+                else:
+                    module = _python_module_argument(cmdline)
+                    known_modules = {path.stem for path in targets}
+                    known_modules.update(".".join(path.relative_to(REPO_ROOT).with_suffix("").parts)
+                                         for path in targets if path.is_relative_to(REPO_ROOT))
+                    if module not in known_modules:
+                        continue
+                    script = Path(proc.cwd()).joinpath(*module.split(".")).with_suffix(".py")
+                    if script.resolve() not in targets and not script.is_file():
+                        complete = False
+                        continue
+                script = script.resolve()
+                if (proc.info["pid"] == os.getppid()
+                        and script == Path(__file__).resolve()):
+                    continue
+                if script in targets:
+                    pids.append(proc.info["pid"])
+            except psutil.NoSuchProcess:
+                continue
+            except (psutil.AccessDenied, OSError, ValueError):
+                complete = False
+    except (psutil.Error, OSError):
+        complete = False
+    return pids, complete
+
+
+def _python_module_argument(cmdline: list[str]) -> str | None:
+    index = 1
+    while index < len(cmdline):
+        argument = cmdline[index]
+        if not isinstance(argument, str) or not argument.startswith("-") or argument == "-":
+            return None
+        if argument in {"-X", "-W", "--check-hash-based-pycs"}:
+            index += 2
+            continue
+        if not argument.startswith("--"):
+            for offset, flag in enumerate(argument[1:], 2):
+                if flag == "c":
+                    return None
+                if flag == "m":
+                    return argument[offset:] or (cmdline[index + 1] if index + 1 < len(cmdline) else None)
+                if flag in "XW":
+                    break
+        index += 1
+    return None
+
+
+def _select_profile(name: str, targets: list[str]) -> None:
+    raw, data = _read_profile_config()
+    if name not in data["profiles"]:
+        raise ValueError(f"找不到 profile {name!r}；請用 --list-profiles 查看名稱。")
+    from axiomatic._generation_config import parse_generation_profile
+    candidate = {**data, "active_profile": name}
+    parse_generation_profile(candidate, GENERATION_CONFIG_FILE.parent)
+    if data.get("active_profile") == name:
+        print(f"生成 profile 已是 {name}，沿用目前設定。")
+        return
+    pids, complete = _profile_processes()
+    if pids or not complete:
+        raise RuntimeError("無法切換生成 profile：請先停止本專案的 bot、批次及監督者，"
+                           "並確認行程掃描權限後重試。")
+    for task_name in targets:
+        if _schtasks("/Query", "/TN", task_name).returncode != 0:
+            raise RuntimeError("要叫醒的工作尚未註冊或無法查詢，生成設定未變更。")
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                                     dir=GENERATION_CONFIG_FILE.parent,
+                                     prefix=".generation-selection-", suffix=".tmp") as handle:
+        temporary = Path(handle.name)
+        json.dump(candidate, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    try:
+        if GENERATION_CONFIG_FILE.read_bytes() != raw:
+            raise RuntimeError("生成設定已被其他程序修改，請重新選擇。")
+        os.replace(temporary, GENERATION_CONFIG_FILE)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print(f"生成 profile 已切換為 {name}；之後的啟動也會沿用此設定。")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="直接叫醒工作排程器裡的監督者（預設全部叫醒）。")
@@ -125,8 +260,23 @@ def main(argv: list[str] | None = None) -> int:
                        help="只叫醒批次的監督者（會開始產圖）")
     scope.add_argument("--presence-only", action="store_true",
                        help="只叫醒已註冊為僅狀態模式的 discord 工作")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--profile", metavar="NAME",
+                           help="先將 generation_config.json 的 active_profile 改為 NAME")
+    selection.add_argument("--list-profiles", action="store_true",
+                           help="列出生成 profile 與目前選擇，不啟動工作")
     args = parser.parse_args(argv or [])
 
+    if args.list_profiles:
+        try:
+            _raw, config = _read_profile_config()
+            for name in config["profiles"]:
+                marker = "*" if name == config.get("active_profile") else " "
+                print(f"{marker} {name}")
+            return 0
+        except (OSError, ValueError) as error:
+            print(f"無法讀取生成設定：{error}", file=sys.stderr)
+            return 1
     if os.name != "nt":
         print("這支腳本只支援 Windows 工作排程器。", file=sys.stderr)
         return 1
@@ -146,6 +296,12 @@ def main(argv: list[str] | None = None) -> int:
         print("`\\Axiomatic\\` 底下沒有符合的工作。先執行 "
               "py -3 install_autostart.py --install", file=sys.stderr)
         return 1
+    if args.profile is not None:
+        try:
+            _select_profile(args.profile, targets)
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"無法選擇生成設定：{error}", file=sys.stderr)
+            return 1
     rc = 0
     for task_name in targets:
         rc |= wake(task_name)

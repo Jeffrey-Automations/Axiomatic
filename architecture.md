@@ -108,6 +108,9 @@
    續跑檢查點包含模型、設定及路徑的識別值，避免混用不同設定的圖片。設定變更後須先停止
    批次並重啟所有平台行程及批次入口；程序間的預期識別與 `webrunner_generation.json`
    防止新舊設定合作。明確無效的設定停止啟動，缺檔則沿用預設。
+   `wake_autostart.py --profile` 驗證指定的 profile 與已註冊工作，確認本專案的 bot、
+   批次與監督者已停止，再原子更新 `active_profile` 並叫醒所選工作。排程器不繼承呼叫端
+   環境，所以選擇存於設定檔，後續登入啟動也沿用。`--list-profiles` 只讀取設定。
 2. **單張產圖（`/gen image`）**：bot 以記憶體 FIFO 序列化請求 → 寫 `single_image_request.json`
    （單槽）→ 正在跑的批次帶內服務、既有單圖伺服器接手，或 bot 以
    `SINGLE_IMAGE_SERVER_FLAG` spawn 新的單圖伺服器 → 發 `single_image_done` 並刪除請求檔 →
@@ -174,7 +177,7 @@
 - 操作主機的指令只限擁有者，以群組制 `_OWNER_ONLY_GROUPS` 在派發前把關（「Host control is owner-only」）。
 - 送往對話平台的字串不得含外部服務名、主機路徑、PID 或原始例外文字；擁有者例外走
   `_owner_detail` 單一決策點；憑證值在任何表面都不得送出（「Secrecy」）。
-- 所有中文使用台灣繁體詞彙，由 `test/test_language.py` 守門（「Language」）。
+- 所有中文使用台灣繁體詞彙，由 `test/test_language.py` 守門（「Language」）。各生成 profile 的佇列與備援提示詞是使用者資料，掃描時依 `generation_config.json` 與範例設定排除其路徑，包含尚未啟用的 profile。
 - Windows 上不得用 `os.kill(pid, 0)` 判斷行程存活（「Windows PID liveness」）。
 - 跨行程檔案一律同目錄暫存檔 → `os.replace` 原子寫入，todo 佇列是刻意的例外（「Atomic writes for cross-process files」）。
 - 文字 I/O 一律明寫 `encoding="utf-8"`，產生 Python 子行程時同時設定 `PYTHONIOENCODING`（「Text I/O always names its encoding」）。

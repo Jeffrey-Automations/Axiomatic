@@ -126,6 +126,11 @@ def load_generation_profile(path: Path = GENERATION_CONFIG_FILE) -> GenerationPr
             data = json.loads(text)
         except (ValueError, UnicodeError) as error:
             raise ValueError("generation config: invalid JSON") from error
+    return parse_generation_profile(data, path.parent)
+
+
+def parse_generation_profile(data: object, root: Path) -> GenerationProfile:
+    """Validate an in-memory config before publishing a profile selection."""
     data = _object(data, "root", {"active_profile", "profiles"})
     if not data:
         name, profile = "legacy", {}
@@ -141,8 +146,8 @@ def load_generation_profile(path: Path = GENERATION_CONFIG_FILE) -> GenerationPr
         if not isinstance(candidates, list) or not candidates:
             raise ValueError("generation config: model_candidates must be a nonempty list")
         candidates = tuple(_text(value, "model_candidates") for value in candidates)
-    todo = _paths(profile.get("todo", {}), path.parent, todo=True)
-    fallback = _paths(profile.get("fallback", {}), path.parent, todo=False)
+    todo = _paths(profile.get("todo", {}), root, todo=True)
+    fallback = _paths(profile.get("fallback", {}), root, todo=False)
     if set(asdict(todo).values()) & set(asdict(fallback).values()):
         raise ValueError("generation config: todo paths cannot overwrite fallback files")
     return GenerationProfile(name, candidates, _settings(profile.get("settings", {})),

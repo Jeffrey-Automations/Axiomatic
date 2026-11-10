@@ -317,6 +317,8 @@ boot: the batch needs a real interactive desktop for the browser.
 
 Copy `generation_config.example.json` to `generation_config.json`. Its `active_profile` selects the generation version; each profile defines `model_candidates`, `settings`, four `todo` files and their `fallback` files. The `v5` example keeps existing queues, while `v4_5` uses separate filenames. Stop the batch before editing, then restart every enabled platform process, the webrunner and any standalone dashboard. See the [configuration reference](docs/config.md) for fields and examples.
 
+Run `py -3 wake_autostart.py --list-profiles` to list profiles, or `py -3 wake_autostart.py --profile v4_5` to select one and wake scheduled tasks. Selection updates `active_profile` for future automatic starts too. Stop every platform bot, the batch and their supervisors before switching.
+
 | File | What it holds | Tracked? |
 |---|---|---|
 | `batch_config.json` | Batch generation parameters: images per pair, waits, work/rest hours, periodic browser restart | Yes |

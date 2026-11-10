@@ -37,6 +37,12 @@ ID、帳號 ID、主機路徑與本機應用程式清單）。repo 帶的是 `*.
 3. 重新啟動所有啟用的平台行程，再用 `/run` 開始。若使用本機入口，重新啟動該入口。
 4. 另行執行的看板也要重啟，讓佇列數量對應新的 profile。
 
+也可用叫醒腳本選擇版本。先用 `py -3 wake_autostart.py --list-profiles` 列出設定，
+停止所有平台的 bot、批次及其監督者後，再用 `py -3 wake_autostart.py --profile v4_5`
+選擇並叫醒已註冊的工作。選擇會原子寫回 `active_profile`，保留其他設定，往後自動啟動
+也使用這個版本。可加 `--bot-only` 或 `--batch-only` 限定叫醒範圍。
+名稱不存在、設定無效、工作未註冊，或無法確認舊程序已停止時，不會切換。
+
 | profile 欄位 | 說明 |
 |---|---|
 | `model_candidates` | 依序嘗試的模型選單字面。`null` 或省略時，取啟動當下 `batch_config.json` 的同名欄位 |

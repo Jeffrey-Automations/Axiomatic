@@ -27,6 +27,7 @@
 下一個人就會把整支測試關掉——那比沒有守門更糟。要抓那三個要靠人讀。
 """
 import ast
+import json
 import os
 import sys
 from pathlib import Path
@@ -96,6 +97,22 @@ _DATA_MARKDOWN = {
 }
 
 
+def _data_markdown_paths() -> set[Path]:
+    """各版本佇列與備援提示詞都是使用者資料，包含尚未啟用的版本。"""
+    paths = {(REPO_ROOT / name).resolve() for name in _DATA_MARKDOWN}
+    for name in ("generation_config.json", "generation_config.example.json"):
+        config = REPO_ROOT / name
+        if not config.exists():
+            continue
+        data = json.loads(config.read_text(encoding="utf-8-sig"))
+        for profile in data.get("profiles", {}).values():
+            for section in ("todo", "fallback"):
+                for value in profile.get(section, {}).values():
+                    if isinstance(value, str) and value.strip():
+                        paths.add((config.parent / value).resolve())
+    return paths
+
+
 def _sources() -> list[Path]:
     """要掃的檔案。
 
@@ -115,11 +132,36 @@ def _sources() -> list[Path]:
     found += sorted((REPO_ROOT / "test").glob("*.py"))
     found += sorted(REPO_ROOT.glob("*.py"))
     found += sorted((REPO_ROOT / "docs").glob("*.py"))
-    found += [p for p in sorted(REPO_ROOT.glob("*.md"))
-              if p.name not in _DATA_MARKDOWN]
+    found += sorted(REPO_ROOT.glob("*.md"))
     for folder in ("docs", "commands", "bot_prompts"):
         found += sorted((REPO_ROOT / folder).glob("*.md"))
-    return found
+    data_paths = _data_markdown_paths()
+    return [path for path in found if path.resolve() not in data_paths]
+
+
+@pytest.mark.parametrize("config_name", [
+    "generation_config.json", "generation_config.example.json", None,
+])
+def test_sources_exclude_all_configured_profile_data(monkeypatch, tmp_path, config_name):
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "PKG_ROOT", tmp_path / "axiomatic")
+    for name in ("README.md", "custom_queue.md", "inactive_fallback.md", "prompt.md"):
+        (tmp_path / name).write_text("user\u00a0text", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "setup.md").write_text("project prose", encoding="utf-8")
+    if config_name:
+        (tmp_path / config_name).write_text(json.dumps({
+            "active_profile": "current",
+            "profiles": {
+                "current": {"todo": {"prompt": "custom_queue.md"}},
+                "inactive": {"fallback": {"prompt": "inactive_fallback.md"}},
+            },
+        }), encoding="utf-8")
+    sources = {path.relative_to(tmp_path).as_posix() for path in _sources()}
+    assert {"README.md", "docs/setup.md"} <= sources
+    assert "prompt.md" not in sources
+    assert ("custom_queue.md" in sources) == (config_name is None)
+    assert ("inactive_fallback.md" in sources) == (config_name is None)
 
 
 def _zh_cn_line_ranges(path: Path) -> list[tuple[int, int]]:
