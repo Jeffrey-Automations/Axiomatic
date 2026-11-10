@@ -6,6 +6,12 @@
 
 ## 四個待辦佇列
 
+這一節的檔名是預設路徑。實際讀取 `generation_config.json` 中
+`profiles[active_profile].todo` 與 `fallback` 指定的檔案。例如選擇內附的 `v4_5`
+時，主 prompt 佇列為 `todo_prompt_v4_5.md`，空佇列的備援為 `prompt_v4_5.md`。
+下文的配對、消耗與 `end` 規則都套用到選定的檔案；切換版本不會搬移或合併佇列。
+自訂路徑及切換步驟見 {doc}`config`。
+
 | 檔案 | 用途 | 為空時的 fallback |
 |---|---|---|
 | `todo_prompt.md` | 主 prompt 佇列 | `prompt.md` |
@@ -14,7 +20,8 @@
 | `todo_undesired.md` | 負向 prompt 佇列 | `undesired.md` |
 
 每個檔案**一行一筆 entry**，只用換行切分；entry 內可含任意字元（含 `,` /
-`，` / `::` / 括號）。空白行會被略過，NBSP（`\xa0`）會被正規化成一般空白。
+`，` / `::` / 括號）。除了 Character 2 保留空白列表示該筆不使用第二個角色，其他
+佇列的空白行會被略過。NBSP（`\xa0`）會被正規化成一般空白。
 檔頭的 UTF-8 BOM（記事本、Windows PowerShell 5.1 存檔時會加）不算第一筆；fallback
 檔與範本也一樣，下一次改寫佇列時就會拿掉。
 

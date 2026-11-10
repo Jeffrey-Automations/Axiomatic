@@ -317,6 +317,15 @@ py -3 install_autostart.py --remove
 
 `py -3 wake_autostart.py --list-profiles` で一覧を表示し、`py -3 wake_autostart.py --profile v4_5` で選択してスケジュール済みタスクを起動できます。選択は `active_profile` に保存され、次回の自動起動にも使われます。切り替える前に全プラットフォームの bot、バッチとそれぞれの監視プロセスを停止してください。
 
+プロジェクトのルートで次のコマンドを実行します。プロファイルを切り替える前に bot、バッチ、監視プロセスを停止してください。最後のコマンドは画像生成を開始します。`--profile` を省略すると、メニューを表示せず保存済みの選択を使います。
+
+```powershell
+py -3 wake_autostart.py --list-profiles
+py -3 wake_autostart.py --profile v4_5 --bot-only
+py -3 wake_autostart.py --profile v4_5 --batch-only
+```
+
+
 | ファイル | 中身 | 追跡する？ |
 |---|---|---|
 | `batch_config.json` | バッチ生成のパラメータ：1 ペアあたりの枚数、待ち時間、稼働／休止の時間帯、ブラウザの定期再起動 | する |

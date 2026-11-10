@@ -319,6 +319,15 @@ Copy `generation_config.example.json` to `generation_config.json`. Its `active_p
 
 Run `py -3 wake_autostart.py --list-profiles` to list profiles, or `py -3 wake_autostart.py --profile v4_5` to select one and wake scheduled tasks. Selection updates `active_profile` for future automatic starts too. Stop every platform bot, the batch and their supervisors before switching.
 
+Run these commands from the project root. Stop the bot, batch, and supervisors before switching profiles; the last command starts image generation. Without `--profile`, the saved selection is used without a menu.
+
+```powershell
+py -3 wake_autostart.py --list-profiles
+py -3 wake_autostart.py --profile v4_5 --bot-only
+py -3 wake_autostart.py --profile v4_5 --batch-only
+```
+
+
 | File | What it holds | Tracked? |
 |---|---|---|
 | `batch_config.json` | Batch generation parameters: images per pair, waits, work/rest hours, periodic browser restart | Yes |

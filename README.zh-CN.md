@@ -296,6 +296,15 @@ py -3 install_autostart.py --remove
 
 用 `py -3 wake_autostart.py --list-profiles` 列出版本，再用 `py -3 wake_autostart.py --profile v4_5` 选择并唤醒计划任务。选择会写回 `active_profile`，后续自动启动也沿用。切换前须停止所有平台的 bot、批次及其监控进程。
 
+在项目根目录运行以下命令。切换版本前先停止 bot、批次及监控进程；最后一行会开始生成图片。不指定 `--profile` 时沿用已保存的选择，不显示菜单。
+
+```powershell
+py -3 wake_autostart.py --list-profiles
+py -3 wake_autostart.py --profile v4_5 --bot-only
+py -3 wake_autostart.py --profile v4_5 --batch-only
+```
+
+
 | 文件 | 装什么 | 进版本库？ |
 |---|---|---|
 | `batch_config.json` | 批处理出图参数：每对几张、等待时间、工作／休息时段、浏览器定期重启 | 是 |

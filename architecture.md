@@ -210,3 +210,5 @@ Windows 子行程由 `_process_job.py` 的工作物件管理，先指派、再�
 ### Presence-only startup
 
 `--presence-only` is a process startup mode for Discord. The supervisor forwards it to every child restart. The bot reuses its presence initialization and probe loop, including local RPC, and blocks command and reaction entry points except the commands in `_PRESENCE_ONLY_COMMANDS` (today only `/3d`, which posts a 3D model link); before the presence start it trims the command tree to that set and syncs it through `_sync_slash_commands`, the same helper the full start uses. Ready and resumed events cannot restore batch or conversation jobs in this mode. Registration enables only the Discord task and disables the other existing application tasks without ending running processes. Wake validates the stored mode before requesting the Discord task. Full registration restores the configured tasks.
+
+產圖設定範例見 `docs/config.md`；分段啟動指令見 `docs/setup.md`。`docs/workflow.md` 的預設佇列名稱對應目前 profile 的 todo 與 fallback 路徑。四語 README 提供相同啟動指令。

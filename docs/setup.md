@@ -214,6 +214,19 @@ py -3 install_autostart.py --remove     # 移除
 選擇會寫回 `generation_config.json` 的 `active_profile`，之後登入自動啟動也沿用。
 `--list-profiles` 只列出設定，不會叫醒工作；不帶新選項時維持原本行為。
 
+先只叫醒 bot、稍後再開始產圖時，可依序執行：
+
+```powershell
+py -3 wake_autostart.py --list-profiles
+py -3 wake_autostart.py --profile v4_5 --bot-only
+py -3 wake_autostart.py --profile v4_5 --batch-only
+```
+
+第一行只顯示版本，`*` 是目前選擇。第二行切換版本並啟動已註冊的平台 bot，第三行
+沿用相同版本啟動批次並開始產圖。若要改成其他版本，須再次停止所有平台 bot、批次
+及監督者。`--list-profiles` 與 `--profile` 不能同時使用。列出名稱成功只表示設定
+可列舉，不代表排程已註冊、提示詞已備妥或網站支援所有設定。
+
 ## 建置本文件（選用）
 
 ```powershell

@@ -54,5 +54,5 @@ troubleshooting
 - 本機唯讀狀態儀表板 → {doc}`dashboard`
 - 桌面自動化（滑鼠鍵盤、視窗、截圖、定位）與巨集語法 → {doc}`desktop`
 - Dorossi 問答、工作階段、自走任務與用量上限 → {doc}`dorossi`
-- `batch_config.json` / `bot_config.json` / presence 設定 → {doc}`config`
+- 產圖版本、版本專用 todo、`generation_config.json` 與其他設定 → {doc}`config`
 - 跑批卡住、Chrome 崩潰、登入失敗怎麼查 → {doc}`troubleshooting`

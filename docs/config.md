@@ -84,6 +84,54 @@ bot 的佇列編輯、預覽與批次消耗使用同一組路徑。執行期間�
 
 設定檔與佇列內容屬於本機資料，不加入版本庫。未建立設定檔時沿用既有預設。
 
+
+### 自訂版本與佇列範例
+
+以下是可獨立使用的設定範例。若已有其他 profile，只把 `profiles.v4_5` 合併到既有的
+`profiles` 物件，保留其他版本。`v4_5` 是自訂名稱，不會自動推算模型或 todo 檔名。
+
+```json
+{
+  "active_profile": "v4_5",
+  "profiles": {
+    "v4_5": {
+      "model_candidates": [
+        "NAI Diffusion V4.5 Full"
+      ],
+      "settings": {
+        "effort": null,
+        "transparent_background": null,
+        "quality_tags": null,
+        "steps": 23,
+        "guidance": 6,
+        "guidance_rescale": 0
+      },
+      "todo": {
+        "prompt": "todo_prompt_v4_5.md",
+        "character1": "todo_character1_v4_5.md",
+        "character2": "todo_character2_v4_5.md",
+        "undesired": "todo_undesired_v4_5.md"
+      },
+      "fallback": {
+        "prompt": "prompt_v4_5.md",
+        "character1": "character1_v4_5.md",
+        "character2": "character2_v4_5.md",
+        "undesired": "undesired_v4_5.md"
+      }
+    }
+  }
+}
+```
+
+依 `todo` 與 `fallback` 指定的路徑準備 UTF-8 檔案。選擇 profile 不會建立、複製或
+搬移提示詞檔案。若要沿用提示詞，先自行把內容放到對應檔案；不要只改檔名尾碼，
+卻沒有更新設定中的路徑。缺少 todo 時會讀取該 profile 的 fallback，不會搜尋其他版本的 todo。
+Character 2 的空白列要保留，代表該筆不使用第二個角色。
+
+`settings` 中的 `null` 代表不操作控制項，省略則使用預設值。上例保留共用的解析度、
+方向、取樣器與多樣性預設；若目標版本沒有某個可選控制項，依欄位表設為 `null`。
+修改後先停止並重啟相關程序，再開始產圖。
+
 ## batch_config.json
 
 產圖批次參數。可用 `/config show` 檢視、`/config set` / `/config reset` 改
