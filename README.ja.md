@@ -313,6 +313,8 @@ py -3 install_autostart.py --remove
 <!-- section: configuration-files -->
 ## 設定ファイル
 
+`generation_config.example.json` を `generation_config.json` にコピーしてください。`active_profile` で生成バージョンを選び、各 profile に `model_candidates`、`settings`、4 つの `todo` ファイルと `fallback` ファイルを指定します。`v5` の例は既存のキューを使い、`v4_5` は別のファイル名を使います。編集前にバッチを停止し、編集後に有効な全プラットフォームのプロセス、webrunner、独立したダッシュボードを再起動してください。項目と例は[設定リファレンス](docs/config.md)を参照してください。
+
 | ファイル | 中身 | 追跡する？ |
 |---|---|---|
 | `batch_config.json` | バッチ生成のパラメータ：1 ペアあたりの枚数、待ち時間、稼働／休止の時間帯、ブラウザの定期再起動 | する |

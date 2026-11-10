@@ -5791,7 +5791,7 @@ def test_the_bot_and_the_webrunners_never_import_each_other():
 # `test_the_permitted_channel_sentence_counts_its_own_list` 把兩個數字都從「那個括號
 # 裡的清單」與本常數推導出來。**清單本身仍然刻意不對帳**（理由見上）；被查的只有
 # 「那句話自己算得對不對」。
-_SHARED_CHANNELS_IN_USE = frozenset({"_webrunner_shared", "_process_job"})
+_SHARED_CHANNELS_IN_USE = frozenset({"_webrunner_shared", "_process_job", "_generation_config"})
 
 
 def _permitted_channel_claim(text: str) -> tuple[set[str], int | None, int | None]:
@@ -12268,6 +12268,10 @@ _JOIN_SITE_FLOOR = 40
 # 2026-09-10 新增的例外**各自還有一支前提測試**——CLAUDE.md 對 `_OWNER_ONLY_SLASH`
 # 寫得很清楚：一筆沒有人驗前提的例外，活得比它的理由久。
 _JOIN_GUARD_EXEMPT = {
+    ("_generation_config.py", "_paths"):
+        (1, "路徑只來自擁有者編輯的本機生成設定，明確支援絕對路徑與相對子目錄；"
+         "不接受對話指令或附件檔名。這是選擇佇列檔的位置，不是限制在產出目錄內的檔名。"
+         "解析器會正規化並拒絕佇列互相重疊或覆寫 fallback；設定測試驗證外部路徑可被選取。"),
     ("discord_bot.py", "_count_folder_images"):
         (1,
          "收的是 bot 自己從事件與佇列算出來的角色名，或 `/gen progress`、"
@@ -21018,7 +21022,7 @@ def test_the_reconnect_filter_matches_the_library_contract():
             "the library no longer logs the reconnect with this message")
 
 
-def test_main_installs_the_reconnect_filter_before_connecting(monkeypatch):
+def test_main_installs_the_reconnect_filter_before_connecting(monkeypatch, tmp_path):
     """過濾器要在 `client.run` 之前掛上——之後才掛，第一段斷線照樣整段印。"""
     import logging
 
@@ -21045,6 +21049,7 @@ def test_main_installs_the_reconnect_filter_before_connecting(monkeypatch):
         # 換掉。不換的話，一份沒有 `bot_config.json` 的工作目錄會讓 `main()` 在讀
         # token 之前就回 `RC_SETUP_INCOMPLETE`，而這支測試會報一個跟它無關的原因。
         monkeypatch.setattr(b, "check_setup", lambda: None)
+        monkeypatch.setattr(b._platform_runtime, "STATE_ROOT", tmp_path / "state")
         monkeypatch.setattr(b, "read_token", lambda _p: "token")
         monkeypatch.setattr(b.client, "run", _run)
         monkeypatch.setattr(b._gui, "job_stop_all", lambda: 0)

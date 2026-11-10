@@ -166,12 +166,14 @@ Every change MUST satisfy these before commit:
 files on disk**. Never introduce `from webrunner_novelai import X` in the bot
 or vice versa — cross-process state stays on disk so a restart is harmless.
 
-**Permitted third channel:** passive shared modules (`_batch_config`,
+**Permitted third channel:** passive shared modules (`_generation_config`, `_batch_config`,
 `_bot_config`, `_bot_prompts`, `_queue_consume`, `_webrunner_shared`,
 `_run_progress`, `_supervisor`, `_chrome_slot`, `_process_control`,
 `presence_probe`, `_code_fingerprint`, `_warn_dedup`, `_power_request`,
 `_connectivity`, `_process_job`, `_webrunner_location`) — separate stdlib-only / driver-agnostic modules both sides may
-import. That is not a bot↔webrunner import. The last two were added 2026-09-22:
+import. That is not a bot↔webrunner import. `_generation_config` validates the shared
+generation profile, resolves its queue paths and checks process identity without a driver.
+The last two were added 2026-09-22:
 `_power_request` is the one reference-counted power-request implementation (the
 bot holds it while supervising a batch; the batch's `StayAwake` delegates to
 it) — its only state is a process-local counter, never shared across processes;
@@ -253,7 +255,7 @@ reason*. Forcing that step is the entire point.
 
 Note what is deliberately **not** checked: the Permitted-third-channel list
 above is a **permission** list, not an as-built one, so "listed but not
-currently shared" is the normal state (14 of its 16 names are not shared right
+currently shared" is the normal state (14 of its 17 names are not shared right
 now). Comparing it by equality would pressure someone into rewriting it as
 as-built, which would **delete** permission information. Only the undeclared
 direction is worth a gate. **Those two numbers used to read "16 of its 18" and

@@ -1,0 +1,46 @@
+{
+  "active_profile": "v5",
+  "profiles": {
+    "v5": {
+      "model_candidates": null,
+      "settings": {
+        "resolution": "Normal",
+        "orientation": "Landscape",
+        "effort": "High",
+        "sampler": "Euler Ancestral",
+        "steps": 23,
+        "guidance": 6,
+        "guidance_rescale": 0,
+        "transparent_background": true,
+        "quality_tags": "Standard",
+        "variety_plus": true
+      },
+      "todo": {
+        "prompt": "todo_prompt.md",
+        "character1": "todo_character1.md",
+        "character2": "todo_character2.md",
+        "undesired": "todo_undesired.md"
+      }
+    },
+    "v4_5": {
+      "model_candidates": ["NAI Diffusion V4.5 Full"],
+      "settings": {
+        "effort": null,
+        "transparent_background": null,
+        "quality_tags": null
+      },
+      "todo": {
+        "prompt": "todo_prompt_v4_5.md",
+        "character1": "todo_character1_v4_5.md",
+        "character2": "todo_character2_v4_5.md",
+        "undesired": "todo_undesired_v4_5.md"
+      },
+      "fallback": {
+        "prompt": "prompt_v4_5.md",
+        "character1": "character1_v4_5.md",
+        "character2": "character2_v4_5.md",
+        "undesired": "undesired_v4_5.md"
+      }
+    }
+  }
+}

@@ -53,6 +53,7 @@ cov*.json
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.audit/
 cover/
 
 # Translations
@@ -223,6 +224,15 @@ network_resume.json.tmp
 # batch_config.json 本身是**追蹤的專案資產**（不可 ignore），但它是原子寫入的
 # （_batch_config._atomic_write_config），所以只有它的 .tmp 殘留要 ignore。
 batch_config.json.tmp
+generation_config.json
+generation_config.json.tmp
+webrunner_generation.json
+.generation-*.tmp
+todo_*_v*.md
+prompt_v*.md
+character1_v*.md
+character2_v*.md
+undesired_v*.md
 
 # `!macro` 的巨集庫。內容是使用者自己的桌面操作腳本（含視窗標題片段、貼上的
 # 文字），屬本機資料而非專案資產。

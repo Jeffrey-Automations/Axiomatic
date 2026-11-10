@@ -32,6 +32,7 @@ from urllib3.exceptions import (  # noqa: E402
 # name so existing call sites stay byte-identical; `ws.*` reaches the rest
 # (the bulk now lives in the shared module after C1–C6).
 import _webrunner_shared as ws  # noqa: E402
+from _generation_config import GENERATION_PROFILE  # noqa: E402
 
 # `je_web_runner` 從哪裡載入：環境變數 `WEBRUNNER_PATH` → `bot_config.json` 的
 # `webrunner_path` → repo 旁邊的同層資料夾 → 已安裝的套件（規則只有一份，在
@@ -1159,14 +1160,16 @@ def _setup_session(email: str, password: str) -> bool:
     ws.reject_cookies(port)
     if not with_retry("select_model",
                       lambda: ws.select_model(
-                          port, ws.load_batch_config()["model_candidates"]),
+                          port, ws.GENERATION_MODELS),
                       max_attempts=3, sleep_range=(2, 4)):
         return False
     if not ensure_two_characters():
         print("character slot setup failed")
         return False
     if not with_retry("select_resolution",
-                      lambda: ws.select_resolution(port, "Normal", "Landscape"),
+                      lambda: ws.select_resolution(
+                          port, GENERATION_PROFILE.settings.resolution,
+                          GENERATION_PROFILE.settings.orientation),
                       max_attempts=3, sleep_range=(2, 4)):
         return False
     if not ws.configure_sampler_settings(port):
@@ -1236,6 +1239,8 @@ def _run_setup_verification() -> int:
     不碰佇列、圖只進隔離目錄、收尾只回收自己的 driver 行程樹。
     """
     global CHROME_PROFILE_SNAPSHOT, _SUPPRESS_ORPHAN_SWEEP
+    ws.require_current_profile(ws.GENERATION_PROFILE)
+    ws.require_expected_profile(ws.GENERATION_IDENTITY)
     plan = ws.verify_plan()
     CHROME_PROFILE_SNAPSHOT = plan.profile
     _SUPPRESS_ORPHAN_SWEEP = True
@@ -1251,6 +1256,13 @@ def _run_setup_verification() -> int:
 # ---------- main (thin shell — orchestration lives in ws.run_batch, P6 C6) --
 
 def main() -> int:
+    try:
+        ws.require_current_profile(ws.GENERATION_PROFILE)
+        ws.require_expected_profile(ws.GENERATION_IDENTITY)
+        ws.publish_generation_identity(ws.GENERATION_IDENTITY)
+    except (OSError, ValueError, ws.GenerationProfileChanged) as error:
+        print(f"generation profile unavailable: {error}", file=sys.stderr)
+        return ws.RC_GENERATION_BLOCKED
     print("===== webrunner_je_only — pure je_web_runner driver =====")
     # 啟動當下的程式碼指紋，凍在這裡（import 都跑完了）。這一行是事後判讀
     # traceback 原始碼文字、以及回答「那個修正在這個行程裡生效了沒」的錨點——

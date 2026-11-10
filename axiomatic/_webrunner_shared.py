@@ -49,6 +49,10 @@ from collections.abc import Callable, Container
 from pathlib import Path, PureWindowsPath
 
 from _batch_config import load_batch_config  # permitted passive shared loader
+from _generation_config import (
+    GENERATION_PROFILE, GenerationSettings, require_current_profile,
+    require_expected_profile, GenerationProfileChanged, publish_generation_identity,
+)
 import _run_progress  # permitted passive shared module (resume checkpoint)
 import _queue_consume  # permitted passive shared module (dynamic-consume decisions)
 import _code_fingerprint  # permitted passive shared module (startup code fingerprint)
@@ -125,14 +129,17 @@ WEBRUNNER_PAUSE_FILE = PROJECT_ROOT / "webrunner.pause"
 # Queue / fallback files (read_queues + run_batch pop, C6). Newline-only,
 # NBSP-normalised, trailing-newline-iff-nonempty contract lives in CLAUDE.md.
 # `AUTH_FILE` stays per-variant (main shell reads credentials before boot).
-TODO_PROMPT_FILE = PROJECT_ROOT / "todo_prompt.md"
-TODO_FILE_1 = PROJECT_ROOT / "todo_character1.md"
-TODO_FILE_2 = PROJECT_ROOT / "todo_character2.md"
-TODO_UNDESIRED_FILE = PROJECT_ROOT / "todo_undesired.md"
-PROMPT_FILE = PROJECT_ROOT / "prompt.md"               # main-prompt fallback
-CHARACTER1_FALLBACK_FILE = PROJECT_ROOT / "character1.md"  # char1 fallback
-CHARACTER2_FALLBACK_FILE = PROJECT_ROOT / "character2.md"  # char2 fallback
-UNDESIRED_FILE = PROJECT_ROOT / "undesired.md"         # undesired fallback
+TODO_PROMPT_FILE = GENERATION_PROFILE.todo.prompt
+TODO_FILE_1 = GENERATION_PROFILE.todo.character1
+TODO_FILE_2 = GENERATION_PROFILE.todo.character2
+TODO_UNDESIRED_FILE = GENERATION_PROFILE.todo.undesired
+PROMPT_FILE = GENERATION_PROFILE.fallback.prompt
+CHARACTER1_FALLBACK_FILE = GENERATION_PROFILE.fallback.character1
+CHARACTER2_FALLBACK_FILE = GENERATION_PROFILE.fallback.character2
+UNDESIRED_FILE = GENERATION_PROFILE.fallback.undesired
+GENERATION_MODELS = (GENERATION_PROFILE.model_candidates
+                     or tuple(load_batch_config()["model_candidates"]))
+GENERATION_IDENTITY = GENERATION_PROFILE.identity(GENERATION_MODELS)
 SINGLE_IMAGE_OUTPUT_ROOT = OUTPUT_ROOT / "_oneshot"
 
 # ---------- Is this run a "batch" or a "single-image server": declared, not inferred ----------
@@ -2371,6 +2378,7 @@ def write_todo_characters(path: Path, entries: list[str]) -> None:
     What it writes is UTF-8 **without** a BOM: the readers drop a leading BOM, so one pop also
     removes a BOM the user saved in — that is deliberate, do not make this preserve it."""
     text = "\n".join(entries)
+    require_current_profile(GENERATION_PROFILE)
     path.write_text(text + ("\n" if entries else ""), encoding="utf-8")
 
 
@@ -6223,16 +6231,16 @@ def _transparent_background_control(port):
     )
 
 
-def set_transparent_background(port) -> bool:
+def set_transparent_background(port, enabled: bool = True) -> bool:
     control = _transparent_background_control(port)
     if not control:
         return False
-    if control["checked"]:
+    if control["checked"] == enabled:
         return True
     robust_click(port, control["element"])
     human_pause(0.3, 0.5)
     current = _transparent_background_control(port)
-    return bool(current and current["checked"])
+    return bool(current and current["checked"] == enabled)
 
 
 def _quality_tags_control(port):
@@ -6251,46 +6259,50 @@ def _quality_tags_control(port):
     )
 
 
-def select_quality_tags(port, timeout: float = 5.0) -> bool:
+def select_quality_tags(port, timeout: float = 5.0,
+                        *, target: str = TARGET_QUALITY_TAGS) -> bool:
     control = _quality_tags_control(port)
     if not control:
         return False
-    wanted = "Quality Tags: " + TARGET_QUALITY_TAGS
-    if control["value"] in (TARGET_QUALITY_TAGS, wanted):
+    wanted = "Quality Tags: " + target
+    if control["value"] in (target, wanted):
         return True
     robust_click(port, control["element"])
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        option = _find_sampler_option(port, TARGET_QUALITY_TAGS)
+        option = _find_sampler_option(port, target)
         if option is not None:
             robust_click(port, option)
             human_pause(0.3, 0.5)
             current = _quality_tags_control(port)
-            return bool(current and current["value"] in (TARGET_QUALITY_TAGS, wanted))
+            return bool(current and current["value"] in (target, wanted))
         time.sleep(0.2)
     return False
 
 
-def ensure_generation_options(port) -> bool:
+def ensure_generation_options(port, settings: GenerationSettings | None = None) -> bool:
     """Read back the required options before every generation; a failed setting must not
     press Generate.
 
     Effort goes first: it decides whether the Sampler control exists at all (under Medium
     the sampler is not rendered)."""
-    for label, configure in (
-        ("Effort", select_model_effort),
-        ("Transparent BG", set_transparent_background),
-        ("Quality Tags", select_quality_tags),
-        ("Sampler", select_sampler),
+    settings = settings or GENERATION_PROFILE.settings
+    for label, value, configure in (
+        ("Effort", settings.effort, lambda: select_model_effort(port, settings.effort)),
+        ("Transparent BG", settings.transparent_background,
+         lambda: set_transparent_background(port, settings.transparent_background)),
+        ("Quality Tags", settings.quality_tags,
+         lambda: select_quality_tags(port, target=settings.quality_tags)),
+        ("Sampler", settings.sampler, lambda: select_sampler(port, settings.sampler)),
     ):
-        if not configure(port):
+        if value is not None and not configure():
             print(f"generation setting verification failed: {label}")
             snap(port, "generation_settings_failed")
             return False
     return True
 
 
-def configure_sampler_settings(port) -> bool:
+def configure_sampler_settings(port, settings: GenerationSettings | None = None) -> bool:
     # Hand it straight to `ensure_rescale_visible()`: it goes by the result, tries both
     # expansion paths, and is safe to call repeatedly. **Do not** call
     # `expand_advanced_settings()` unconditionally here first — it is a toggle, and in the
@@ -6300,8 +6312,10 @@ def configure_sampler_settings(port) -> bool:
     # But first switch Effort to High: Medium is a different model whose Steps / Sampler /
     # Rescale controls are never rendered, so no amount of expanding finds them (the reason
     # one host failed every setup with rc=2 on 2026-11-04; see `TARGET_MODEL_EFFORT`).
-    effort_ok = select_model_effort(port)
-    all_ok = with_retry("ensure_rescale_visible",
+    settings = settings or GENERATION_PROFILE.settings
+    effort_ok = (settings.effort is None
+                 or select_model_effort(port, settings.effort))
+    all_ok = settings.guidance_rescale is None or with_retry("ensure_rescale_visible",
                         lambda: ensure_rescale_visible(port),
                         max_attempts=3, sleep_range=(1, 2))
     all_ok = effort_ok and all_ok
@@ -6313,7 +6327,7 @@ def configure_sampler_settings(port) -> bool:
     # makes `_setup_session` return False as a whole); it is not optional decoration —
     # images made with the wrong sampler look "about the same", which makes it the hardest
     # to notice.
-    options_ok = ensure_generation_options(port)
+    options_ok = ensure_generation_options(port, settings)
     print(f"generation options verified -> {options_ok}")
     all_ok = options_ok and all_ok
     human_pause(0.5, 1.0)
@@ -6327,13 +6341,10 @@ def configure_sampler_settings(port) -> bool:
     # (Read straight off the `visible setting labels:` of 11 setups on 2026-08-30.)
     # Both spellings are still alive, so neither can be deleted; the order is left to
     # `first_present_numeric_label` asking the page on the spot, not fixed here.
-    setting_targets = [
-        (("Steps:", "Steps"), 23),
-        (("Prompt Guidance:", "Prompt Guidance", "Guidance:", "Guidance"), 6),
-        (("Prompt Guidance Rescale:", "Prompt Guidance Rescale",
-          "Guidance Rescale:", "Guidance Rescale", "Rescale:", "Rescale"), 0),
-    ]
+    setting_targets = generation_numeric_targets(settings)
     for labels, value in setting_targets:
+        if value is None:
+            continue
         # First ask the page "which candidate really exists", then start writing. The
         # candidate list mixes the label spellings of two site layouts, and any fixed order
         # is bound to spin for nothing on one side every time — for the reasoning and the
@@ -6367,14 +6378,36 @@ def configure_sampler_settings(port) -> bool:
     # returning False makes `_setup_session` return False as a whole, and the supervisor would
     # respawn the browser endlessly.
     # Only "present but will not toggle" counts as a real failure.
-    if _has_variety_plus(port):
-        variety_ok = set_variety_plus(port, enable=True)
-        print("Variety+ -> ON" if variety_ok
+    if settings.variety_plus is not None and _has_variety_plus(port):
+        variety_ok = set_variety_plus(port, enable=settings.variety_plus)
+        print(f"Variety+ -> {settings.variety_plus}" if variety_ok
               else "WARN: could not toggle Variety+")
     else:
         variety_ok = True
         print("Variety+ control not present (removed in V5); skipping")
     return variety_ok and all_ok
+
+
+def generation_numeric_targets(settings: GenerationSettings):
+    return (
+        (("Steps:", "Steps"), settings.steps),
+        (("Prompt Guidance:", "Prompt Guidance", "Guidance:", "Guidance"), settings.guidance),
+        (("Prompt Guidance Rescale:", "Prompt Guidance Rescale",
+          "Guidance Rescale:", "Guidance Rescale", "Rescale:", "Rescale"), settings.guidance_rescale),
+    )
+
+
+def verify_generation_numbers(port) -> bool:
+    for labels, target in generation_numeric_targets(GENERATION_PROFILE.settings):
+        if target is None:
+            continue
+        label = first_present_numeric_label(port, labels)
+        if label is None:
+            return False
+        actual = read_numeric_setting(port, label)
+        if actual != target and not set_numeric_setting_verified(port, label, target):
+            return False
+    return True
 
 
 def find_generate_button(port):
@@ -6667,8 +6700,10 @@ def click_generate(port, timeout: float = GENERATE_CLICK_TIMEOUT_SEC) -> bool:
     # wall clock jumping back turns a DOM timeout of a few seconds into a stall of hours —
     # **getting stuck is harder to diagnose than failing**, since the supervisor sees a
     # process that is alive yet doing nothing; jumping forward degrades it into a single try.
+    require_current_profile(GENERATION_PROFILE)
+    require_expected_profile(GENERATION_IDENTITY)
     try:
-        if not ensure_generation_options(port):
+        if not ensure_generation_options(port) or not verify_generation_numbers(port):
             return False
     except port.TRANSPORT_ERRORS as error:
         _note_transport_error("generation_settings", error)
@@ -6919,6 +6954,10 @@ def serve_single_image_request(port, req: dict, in_band: bool = False) -> None:
     char2 = req.get("char2") or ""
     undesired = req.get("undesired") or ""
     try:
+        if req.get("generation", GENERATION_IDENTITY) != GENERATION_IDENTITY:
+            emit_event("single_image_done", request_id=request_id, ok=False,
+                       error="generation settings changed; restart the generator")
+            return
         if not prompt.strip():
             emit_event("single_image_done", request_id=request_id, ok=False,
                        error="empty prompt")
@@ -7102,6 +7141,10 @@ def serve_single_image_request(port, req: dict, in_band: bool = False) -> None:
         emit_event("single_image_done", request_id=request_id, ok=True,
                    path=rel)
         print(f"serve_single_image_request: done -> {rel}")
+    except GenerationProfileChanged:
+        emit_event("single_image_done", request_id=request_id, ok=False,
+                   error="generation settings changed; restart the generator")
+        raise
     except GenerationBlockedError as error:
         # The batch can close the dialog and wait patiently for the quota to refill; a single
         # image cannot: the user is waiting for a reply. But the dialog **must be closed** —
@@ -7841,6 +7884,8 @@ def generate_loop(port, character_name: str, batch_cfg: dict,
 
 
 def read_queues():
+    require_current_profile(GENERATION_PROFILE)
+    require_expected_profile(GENERATION_IDENTITY)
     real_p = read_todo_characters(TODO_PROMPT_FILE)
     eff_p, fb_p = list(real_p), False
     if not real_p:
@@ -8341,14 +8386,16 @@ def run_batch(port, email, password, *, setup_fn, minimize_fn,
                     print(f"  resume: no checkpoint on disk; starting "
                           f"`{char_name}` from image 1")
                 elif not _run_progress.matches(prog, prompt_entry, entry1,
-                                               entry2, undesired_entry):
+                                               entry2, undesired_entry,
+                                               generation=GENERATION_IDENTITY):
                     # Checkpoint exists but the first pair changed — DIAGNOSTIC.
                     # Don't resume (a different pair into the same folder would
                     # mix prompts), but log exactly WHICH field diverged so the
                     # real cause (queue edit / fallback flip / whitespace) is
                     # visible in the user's webrunner.log.
                     diffs = _run_progress.diagnose_mismatch(
-                        prog, prompt_entry, entry1, entry2, undesired_entry)
+                        prog, prompt_entry, entry1, entry2, undesired_entry,
+                        generation=GENERATION_IDENTITY)
                     print(f"  resume: checkpoint for {prog.get('folder')!r} "
                           f"does NOT match first pair `{char_name}`; starting "
                           f"fresh. Diverging fields:")
@@ -8366,7 +8413,7 @@ def run_batch(port, email, password, *, setup_fn, minimize_fn,
                         folder=prog.get("folder"),
                         fields=_run_progress.mismatch_fields(
                             prog, prompt_entry, entry1, entry2,
-                            undesired_entry))
+                            undesired_entry, generation=GENERATION_IDENTITY))
                 elif cand is None:
                     # The identity fields match but `folder` is unusable = the checkpoint was
                     # corrupted or overwritten by something else. Starting over from image 1
@@ -8426,7 +8473,7 @@ def run_batch(port, email, password, *, setup_fn, minimize_fn,
             # tracks how many are done. Cleared on a successful pop below.
             _run_progress.write_progress(prompt_entry, entry1, entry2,
                                          undesired_entry, out_dir.name,
-                                         target_count)
+                                         target_count, generation=GENERATION_IDENTITY)
             saved = generate_loop(port, char_name, batch_cfg,
                                      iter_batch_start, out_dir=out_dir,
                                      resume_count=resume_count,
@@ -8698,7 +8745,7 @@ def run_batch(port, email, password, *, setup_fn, minimize_fn,
                        total_pairs=last_pairs_len,
                        elapsed_sec=round(
                            time.monotonic() - schedule_start_mono, 1))
-    except GenerationBlockedError as error:
+    except (GenerationBlockedError, GenerationProfileChanged) as error:
         # The site blocks generation and retrying will get nowhere → stop cleanly, and do
         # **not** let the supervisor respawn.
         # The event deliberately does not carry the dialog's raw text: that is the site's raw

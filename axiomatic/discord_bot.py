@@ -86,6 +86,9 @@ from _batch_config import (
     save_batch_config,
 )
 from _bot_config import BOT_CONFIG_FILE, load_bot_config
+from _generation_config import (
+    GENERATION_PROFILE, require_current_profile, generation_process_matches,
+)
 from _webrunner_location import (WEBRUNNER_SOURCE_ENV, WEBRUNNER_SOURCE_CONFIG,
     WEBRUNNER_SOURCE_INSTALLED, WEBRUNNER_SOURCE_SIBLING, resolve_webrunner_path)
 # 外部化的 prompt 文字載入器（passive、stdlib-only，同 _bot_config 類）。開機時把
@@ -395,6 +398,9 @@ _METRICS_ERRORS: int = 0
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+GENERATION_MODELS = (GENERATION_PROFILE.model_candidates
+                     or tuple(load_batch_config()["model_candidates"]))
+GENERATION_IDENTITY = GENERATION_PROFILE.identity(GENERATION_MODELS)
 
 # ---------- 這個行程服務哪一個平台 -----------------------------------------
 #
@@ -419,19 +425,19 @@ BOT_LOCK_FILE = _platform_state(PROJECT_ROOT / ".discord_bot.lock")
 # 「誰在監督它」的唯一答案。拿不到＝另一個平台的行程正在監督，本行程對批次控制
 # 指令讓位（`batch_supervision_denied_notice()`），而不是 spawn 第二個監督者。
 BATCH_SUPERVISOR_LOCK_FILE = PROJECT_ROOT / ".batch_supervisor.lock"
-PROMPT_FILE = PROJECT_ROOT / "prompt.md"
+PROMPT_FILE = GENERATION_PROFILE.fallback.prompt
 DEFAULT_PROMPT_FILE = PROJECT_ROOT / "default_prompt.md"
-CHARACTER1_FILE = PROJECT_ROOT / "character1.md"
-CHARACTER2_FILE = PROJECT_ROOT / "character2.md"
-TODO_PROMPT_FILE = PROJECT_ROOT / "todo_prompt.md"
-TODO_FILE_1 = PROJECT_ROOT / "todo_character1.md"
-TODO_FILE_2 = PROJECT_ROOT / "todo_character2.md"
+CHARACTER1_FILE = GENERATION_PROFILE.fallback.character1
+CHARACTER2_FILE = GENERATION_PROFILE.fallback.character2
+TODO_PROMPT_FILE = GENERATION_PROFILE.todo.prompt
+TODO_FILE_1 = GENERATION_PROFILE.todo.character1
+TODO_FILE_2 = GENERATION_PROFILE.todo.character2
 # Negative / undesired prompt. `undesired.md` is the fallback default used
 # when `todo_undesired.md` queue is empty (跟 prompt.md / character2.md 一樣
 # 的 fallback 設計）。Webrunner 會在每個三元組開始前把當前 entry 填進 NovelAI
 # 的 "Undesired Content" textarea。
-UNDESIRED_FILE = PROJECT_ROOT / "undesired.md"
-TODO_UNDESIRED_FILE = PROJECT_ROOT / "todo_undesired.md"
+UNDESIRED_FILE = GENERATION_PROFILE.fallback.undesired
+TODO_UNDESIRED_FILE = GENERATION_PROFILE.todo.undesired
 # 使用者自訂的 prompt 範本目錄。`/todo prompt template <名稱>` 會把
 # `templates/<名稱>.md` 整檔當作一筆 entry append 進 todo_prompt.md。
 # 跟 `prompt.md` / `default_prompt.md` 一樣是純文字，沒有 schema。
@@ -1083,6 +1089,7 @@ def read_todo_entries(path: Path, *, preserve_blank: bool | None = None) -> list
     ——只改一邊，預覽（`/gen plan`、`/queue`）與實際產圖就會對同一個檔給出不同的
     答案。寫入端不寫 BOM，所以任何一次改寫都會把它拿掉。
     """
+    require_current_profile(GENERATION_PROFILE)
     if not path.exists():
         return []   # 佇列沒建立過 ＝ 空佇列，這個空值是對的
     try:
@@ -1118,6 +1125,7 @@ def _todo_line_break(entry: str) -> str | None:
 
 
 def write_todo_entries(path: Path, entries: list[str]) -> None:
+    require_current_profile(GENERATION_PROFILE)
     # 寫入端保證 read(write(x)) 的**筆數**不變：含換行的一筆會被讀回成好幾筆，
     # 而角色2 佇列是位置式的，多一筆就讓後面每一對都配到錯的角色，而且沒有任何
     # 錯誤訊息。所以在碰磁碟**之前**整批檢查，有一筆不合格就整個拒絕（原檔與
@@ -1414,6 +1422,9 @@ def _safe_write(path: Path, content: str, *, encoding: str = "utf-8") -> None:
 
     順帶一提，讀不到 `prior` 也就無從判斷 no-op，所以那條捷徑本來就不成立。
     """
+    if path in (TODO_PROMPT_FILE, TODO_FILE_1, TODO_FILE_2, TODO_UNDESIRED_FILE,
+                PROMPT_FILE, CHARACTER1_FILE, CHARACTER2_FILE, UNDESIRED_FILE):
+        require_current_profile(GENERATION_PROFILE)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     if path.exists():
         try:
@@ -12489,11 +12500,12 @@ async def _generate_pump() -> None:
         req = _generate_queue[0]
         # 寫請求檔（temp + replace，避免 webrunner poll 讀到半寫檔）。
         try:
+            require_current_profile(GENERATION_PROFILE)
             tmp = SINGLE_IMAGE_REQUEST_FILE.with_suffix(".json.tmp")
-            tmp.write_text(_json.dumps(req.payload, ensure_ascii=False),
+            tmp.write_text(_json.dumps({**req.payload, "generation": GENERATION_IDENTITY}, ensure_ascii=False),
                            encoding="utf-8")
             os.replace(tmp, SINGLE_IMAGE_REQUEST_FILE)
-        except OSError as error:
+        except (OSError, ValueError, RuntimeError) as error:
             print(f"generate pump write failed (request_id="
                   f"{req.request_id!r}): {error!r}", file=sys.stderr)
             # 這筆寫不出去 → 丟棄、回覆使用者、繼續下一筆，避免卡死佇列。
@@ -15033,6 +15045,10 @@ def _spawn_webrunner(*,
     global _webrunner_proc, _webrunner_pid, _webrunner_log_handle
     global _webrunner_variant, _event_offset, _webrunner_spawned_mono
     global _webrunner_oneshot
+    try:
+        require_current_profile(GENERATION_PROFILE)
+    except (OSError, ValueError, RuntimeError):
+        return False, "產圖設定已變更或無效，請停止批次並重新啟動機器人。"
     if _webrunner_stop_requested:
         return False, "spawn refused: stop is in progress"
     script = WEBRUNNER_SCRIPT
@@ -15098,7 +15114,8 @@ def _spawn_webrunner(*,
         cwd=str(PROJECT_ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        env={**os.environ, "PYTHONIOENCODING": "utf-8",
+             "WEBRUNNER_GENERATION_IDENTITY": GENERATION_IDENTITY},
     )
     start_log_pump(getattr(_webrunner_proc, "stdout", None), WEBRUNNER_LOG)
     _webrunner_pid = _webrunner_proc.pid
@@ -15412,6 +15429,10 @@ async def _reattach_adopted_batch_once(pid: int) -> None:
         if variant is None:
             print("adopt: the adopted process is not a batch run; "
                   "leaving it unsupervised", file=sys.stderr)
+            return
+        if not generation_process_matches(pid, GENERATION_IDENTITY):
+            print("adopt: generation profile is unknown or differs; stop the batch before restarting",
+                  file=sys.stderr)
             return
         started_mono = None
         if created is not None:

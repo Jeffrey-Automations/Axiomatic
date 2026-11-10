@@ -292,6 +292,8 @@ py -3 install_autostart.py --remove
 <!-- section: configuration-files -->
 ## 設定檔
 
+先把 `generation_config.example.json` 複製為 `generation_config.json`。`active_profile` 選擇產圖版本，每個 profile 可指定 `model_candidates`、`settings`、四個 `todo` 檔案及其 `fallback` 檔案。`v5` 範例保留既有佇列，`v4_5` 使用獨立檔名。修改前先停止批次，修改後重啟所有啟用的平台行程、webrunner 與獨立看板。完整欄位及範例見[設定說明](docs/config.md)。
+
 | 檔案 | 裝什麼 | 進版本庫？ |
 |---|---|---|
 | `batch_config.json` | 批次產圖參數：每對幾張、等待時間、工作／休息時段、瀏覽器定期重啟 | 是 |

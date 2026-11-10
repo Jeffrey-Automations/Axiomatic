@@ -756,6 +756,9 @@ class FakeBrowserPort:
             return {"element": _FakeElement("DIV"), "value": "Quality Tags: Standard"}
         if "return pick(document.body)" in s:
             return "Euler Ancestral"
+        if "return parseFloat(inp.value)" in s:
+            return {"Steps:": 23, "Prompt Guidance:": 6,
+                    "Prompt Guidance Rescale:": 0}.get(args[0])
         # 存活探針（_abort_if_browser_gone）。假 port 對未知 script 一律回 None，
         # 而「回 None」正是探針判定「瀏覽器沒了」的依據——不回 token 的話，
         # 每一個跑到失敗分支的測試都會被誤判成 BrowserGoneError。
@@ -1996,7 +1999,7 @@ def test_model_candidates_is_config_driven_in_both_variants():
             assert banned not in src, (
                 f"{name} 又長回模組常數 {banned!r}——模型候選的唯一來源是 "
                 f"batch_config.json 的 model_candidates，兩個變體都得從那裡讀")
-        assert 'ws.load_batch_config()["model_candidates"]' in src, (
+        assert 'ws.GENERATION_MODELS' in src, (
             f"{name} 沒有從設定讀模型候選")
     # 預設值要維持現狀（換模型是使用者的畫質決定，不是這支測試能替他做的）。
     assert bc._DEFAULT_BATCH_CONFIG["model_candidates"][0] == (
@@ -2172,7 +2175,8 @@ def test_run_batch_resume_from_checkpoint():
         folder.mkdir(parents=True)
         for i in (1, 2):                # 2 of 5 already on disk
             (folder / f"a_{i:04d}_20260101_000000.png").write_bytes(b"x")
-        _rp.write_progress("P", "a", "", "", "a", 5)   # matching checkpoint
+        _rp.write_progress("P", "a", "", "", "a", 5,
+                           generation=ws.GENERATION_IDENTITY)
         rc = _run_batch(FakeBrowserPort())
         gen = list(h.gen_calls)
     assert rc == 0, rc
@@ -2206,6 +2210,7 @@ def test_run_batch_survives_a_checkpoint_whose_folder_is_corrupt():
             payload = {"prompt": "P", "char1": "a", "char2": "",
                        "undesired": "", "target": 5, "saved": 3}
             payload["folder"] = bad_folder
+            payload["generation"] = ws.GENERATION_IDENTITY
             _rp._atomic_write(payload)
             rc = _run_batch(FakeBrowserPort())
             gen = list(h.gen_calls)
@@ -2224,7 +2229,8 @@ def test_run_batch_survives_a_checkpoint_whose_folder_is_corrupt():
         h.write_queue("todo_prompt.md", ["P"])
         h.write_queue("todo_character1.md", ["a"])
         _rp._atomic_write({"prompt": "P", "char1": "a", "char2": "",
-                           "undesired": "", "target": 5, "saved": 3})
+                           "undesired": "", "target": 5, "saved": 3,
+                           "generation": ws.GENERATION_IDENTITY})
         rc = _run_batch(FakeBrowserPort())
         gen = list(h.gen_calls)
         bad = h.events_of("resume_unusable")
@@ -2247,7 +2253,8 @@ def test_run_batch_reports_a_checkpoint_folder_that_vanished():
         h.write_queue("todo_prompt.md", ["P"])
         h.write_queue("todo_character1.md", ["a"])
         # 資料夾名合法，但沒有真的建出來。
-        _rp.write_progress("P", "a", "", "", "a_2", 5)
+        _rp.write_progress("P", "a", "", "", "a_2", 5,
+                           generation=ws.GENERATION_IDENTITY)
         _rp.update_saved(3)
         rc = _run_batch(FakeBrowserPort())
         gen = list(h.gen_calls)
@@ -2388,7 +2395,7 @@ def _rests_for(durations_h, limit_h, *, prompts=None, images=None,
             for i in range(1, resume_existing + 1):
                 (folder / f"c0_{i:04d}_20260101_000000.png").write_bytes(b"x")
             _rp.write_progress((prompts or ["P"])[0], "c0", "", "", "c0",
-                               images)
+                               images, generation=ws.GENERATION_IDENTITY)
         with _fake_clock() as clk:
             spent = iter(durations_h)
 
@@ -3137,7 +3144,8 @@ def _case_click_generate(hits):
         hits.append(1)
         return None
 
-    with _ws_patched(find_generate_button=_no_button, ensure_generation_options=lambda _p: True):
+    with _ws_patched(find_generate_button=_no_button, ensure_generation_options=lambda _p: True,
+                     verify_generation_numbers=lambda _p: True):
         return ws.click_generate(port, timeout=15.0)
 
 
@@ -3545,7 +3553,8 @@ def test_run_batch_resume_mismatch_emits_event():
         for i in (1, 2):
             (folder / f"a_{i:04d}_20260101_000000.png").write_bytes(b"x")
         # 檢查點記的角色一是舊的（＝佇列被改過）→ 四欄不再全等。
-        _rp.write_progress("P", "OLD-CHARACTER", "", "", "a", 5)
+        _rp.write_progress("P", "OLD-CHARACTER", "", "", "a", 5,
+                           generation=ws.GENERATION_IDENTITY)
         rc = _run_batch(FakeBrowserPort())
         gen = list(h.gen_calls)
         events = list(h.events)
@@ -8050,19 +8059,7 @@ def _setting_targets_from_source():
 
     不用字串比對、也不抄一份到測試裡：候選表是**資料**，抄了就會各自漂移。
     """
-    import ast
-    import inspect
-    import textwrap
-    tree = ast.parse(textwrap.dedent(inspect.getsource(
-        ws.configure_sampler_settings)))
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "setting_targets"
-                        for t in node.targets)):
-            return ast.literal_eval(node.value)
-    raise AssertionError(
-        "`configure_sampler_settings` 裡找不到 `setting_targets` 的字面指派——"
-        "改寫過的話這幾支測試要跟著改，否則它們會安靜地失去意義。")
+    return ws.generation_numeric_targets(ws.GENERATION_PROFILE.settings)
 
 
 def _drive_settings(layout):
@@ -10545,9 +10542,10 @@ def test_generation_setting_failed_readback_stops_generate(monkeypatch):
 
 def test_generation_settings_all_checked_before_generate(monkeypatch):
     actions = []
+    monkeypatch.setattr(ws, "verify_generation_numbers", lambda _p: True)
     for name in ("select_model_effort", "set_transparent_background",
                  "select_quality_tags", "select_sampler"):
-        monkeypatch.setattr(ws, name, lambda _p, name=name: actions.append(name) or True)
+        monkeypatch.setattr(ws, name, lambda _p, *args, name=name, **kwargs: actions.append(name) or True)
     class Button:
         def click(self):
             actions.append("generate")
@@ -10640,11 +10638,11 @@ def test_an_undecidable_effort_selection_clicks_once_and_defers(monkeypatch):
 def test_configure_sets_effort_before_revealing_rescale(monkeypatch):
     order = []
     monkeypatch.setattr(ws, "select_model_effort",
-                        lambda _p: order.append("effort") or True)
+                        lambda _p, _target: order.append("effort") or True)
     monkeypatch.setattr(ws, "ensure_rescale_visible",
                         lambda _p: order.append("rescale") or True)
     monkeypatch.setattr(ws, "dump_advanced_labels", lambda _p: None)
-    monkeypatch.setattr(ws, "ensure_generation_options", lambda _p: True)
+    monkeypatch.setattr(ws, "ensure_generation_options", lambda *_a: True)
     monkeypatch.setattr(ws, "first_present_numeric_label", lambda *_a: None)
     monkeypatch.setattr(ws, "set_numeric_setting_verified", lambda *_a, **_k: True)
     monkeypatch.setattr(ws, "_has_variety_plus", lambda _p: False)
@@ -10654,10 +10652,10 @@ def test_configure_sets_effort_before_revealing_rescale(monkeypatch):
 
 
 def test_configure_fails_when_effort_cannot_be_set(monkeypatch):
-    monkeypatch.setattr(ws, "select_model_effort", lambda _p: False)
+    monkeypatch.setattr(ws, "select_model_effort", lambda *_a: False)
     monkeypatch.setattr(ws, "ensure_rescale_visible", lambda _p: True)
     monkeypatch.setattr(ws, "dump_advanced_labels", lambda _p: None)
-    monkeypatch.setattr(ws, "ensure_generation_options", lambda _p: True)
+    monkeypatch.setattr(ws, "ensure_generation_options", lambda *_a: True)
     monkeypatch.setattr(ws, "first_present_numeric_label", lambda *_a: None)
     monkeypatch.setattr(ws, "set_numeric_setting_verified", lambda *_a, **_k: True)
     monkeypatch.setattr(ws, "_has_variety_plus", lambda _p: False)

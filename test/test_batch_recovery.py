@@ -941,6 +941,7 @@ def _reattach_env(monkeypatch, *, launchers=([], True), inspected=("je", 1000.0)
 
     monkeypatch.setattr(b, "_launcher_scan", _scan)
     monkeypatch.setattr(b, "_inspect_adopted_webrunner", lambda _pid: inspected)
+    monkeypatch.setattr(b, "generation_process_matches", lambda *_a: True)
     monkeypatch.setattr(b, "_open_adopted_webrunner",
                         lambda _pid, *, started_mono=None: adopted)
     monkeypatch.setattr(b, "_resolve_origin_channel", _resolve)

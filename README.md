@@ -315,6 +315,8 @@ boot: the batch needs a real interactive desktop for the browser.
 <!-- section: configuration-files -->
 ## Configuration files
 
+Copy `generation_config.example.json` to `generation_config.json`. Its `active_profile` selects the generation version; each profile defines `model_candidates`, `settings`, four `todo` files and their `fallback` files. The `v5` example keeps existing queues, while `v4_5` uses separate filenames. Stop the batch before editing, then restart every enabled platform process, the webrunner and any standalone dashboard. See the [configuration reference](docs/config.md) for fields and examples.
+
 | File | What it holds | Tracked? |
 |---|---|---|
 | `batch_config.json` | Batch generation parameters: images per pair, waits, work/rest hours, periodic browser restart | Yes |

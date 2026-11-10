@@ -39,7 +39,7 @@
 | --- | --- |
 | `axiomatic/discord_bot.py` | 意圖層（模組名是歷史遺留，它不綁任何平台）：指令樹與文字相容層、身分閘、佇列編輯、webrunner 監督、單張產圖佇列、Dorossi 編排、presence 與背景任務 |
 | `axiomatic/_webrunner_shared.py` | 瀏覽器流程核心，不 import 任何 driver：DOM 操作、佇列 I/O、輸出資料夾分配、產圖迴圈、單圖服務、`run_batch` |
-| `axiomatic/_batch_config.py`、`_bot_config.py`、`_queue_consume.py`、`_run_progress.py`、`_supervisor.py`、`_chrome_slot.py`、`_code_fingerprint.py`、`_warn_dedup.py`、`_process_job.py`、`_webrunner_location.py` | 無狀態的共用模組：設定載入、佇列消耗決策、續跑檢查點、退避與單一實例鎖、跨行程瀏覽器槽鎖、程式碼指紋、警告去重（允許當第三通道的完整清單以 `CLAUDE.md`「Module boundaries」為準） |
+| `axiomatic/_generation_config.py`、`axiomatic/_batch_config.py`、`_bot_config.py`、`_queue_consume.py`、`_run_progress.py`、`_supervisor.py`、`_chrome_slot.py`、`_code_fingerprint.py`、`_warn_dedup.py`、`_process_job.py`、`_webrunner_location.py` | 無狀態的共用模組：設定載入、佇列消耗決策、續跑檢查點、退避與單一實例鎖、跨行程瀏覽器槽鎖、程式碼指紋、警告去重（允許當第三通道的完整清單以 `CLAUDE.md`「Module boundaries」為準） |
 | `axiomatic/_process_control.py`、`_gui_control.py`、`_external_apis.py`、`_help_strings.py`、`_bot_prompts.py`、`dorossi_backend.py`、`_dorossi_gemini.py`、`presence_probe.py`、`discord_rpc.py`、`_resource_report.py`、`_reply_card.py`、`_reply_pager.py`、`_reply_confirm.py`、`_deepseek_chat.py` | bot 專屬模組：行程探查與終止、桌面自動化門面、外部圖庫／web API、說明文字資料、外部化 prompt 載入、Dorossi 後端與工作階段、Gemini CLI 串流與用量解析、本機狀態探測、本機 Rich Presence、依角色分組的行程數與資源占用（`/proc usage`，只讀作業系統行程表，只回數字與角色代號、不組送出字串）、回覆的卡片原語與分頁回覆（見 §4「回覆版面」）、獨立的單輪公開聊天與附圖驗證（見 §4「公開聊天」） |
 | `axiomatic/_chat_platform.py`、`_telegram_transport.py`、`_platform_runtime.py` | bot 專屬的對話平台層：介接接縫（身分映射、能力旗標——含 `slash_commands` 與 `buttons`，每個 transport 都明寫——、送出引數正規化與嵌入訊息攤平、沒有斜線選單時的指令提示改寫、transport 註冊表）、逐平台 transport（一個平台一個 `_*_transport.py`）、行程的平台身分與它自己的狀態／鎖／記錄檔位置 |
 | `start_platforms.py`、`start_discord_bot.py`、`start_webrunner.py`、`run_batch.py`、`install_autostart.py`、`wake_autostart.py` | repo 根目錄的啟動器：把每個開著的平台各起一個受監督行程、單一平台的監督迴圈（`--platform`）、批次監督迴圈、一鍵批次入口、Windows 工作排程器自動啟動的註冊與手動叫醒 |
@@ -47,7 +47,7 @@
 | `axiomatic/gen_command_docs.py`、`audit_dependencies.py`、`audit_simplified_chars.py`、`mutation_harness.py` | 文件產生、相依與字形稽核、變異測試骨架 |
 | `test/test_*.py`、`test/conftest.py`、`test/_test_*.py`；`axiomatic/_browser_killguard.py`；`pytest.ini` | pytest 測試（大量是把硬規則變成靜態守門）、全套共用的守門夾具與兩支手動 e2e；防止測試誤殺正式瀏覽器的執行期防線（留在套件裡，repo 外的探針也要 import 它）；`testpaths = test`、`pythonpath = axiomatic .` 讓測試照舊用頂層名字匯入正式模組 |
 | `todo_prompt.md`、`todo_character1.md`、`todo_character2.md`、`todo_undesired.md`；`prompt.md`、`character1.md`、`character2.md`、`undesired.md`；`default_prompt.md` | 四條佇列、各自的 fallback 提示詞、主提示詞範本（bot 寫、webrunner 讀）。全部是**使用者內容**：repo 只帶 `*.example.md` 範本，實際檔案 gitignored |
-| `batch_config.json`（追蹤）、`bot_config.example.json`、`presence_*.example.json`、`bot_prompts/` | 設定檔與外部化 prompt 文字。帶 `.example` 的要先複製成同名的正式檔再填 |
+| `generation_config.example.json`、`batch_config.json`（追蹤）、`bot_config.example.json`、`presence_*.example.json`、`bot_prompts/` | 設定檔與外部化 prompt 文字。帶 `.example` 的要先複製成同名的正式檔再填 |
 | `auth.md`、`discord_bot_token.md` | 憑證，**永不追蹤**（`.gitignore`）；範本是 `*.example.md` |
 | `README.md`、`README.zh-TW.md`、`README.zh-CN.md`、`README.ja.md`、`COMMANDS.md`、`commands/`、`docs/` | 使用者文件。README 是**四種語言的同一份文件**（英文為主，其餘三份由語言切換器互連），章節結構與指令表由 `test/test_readme_parity.py` 兩向對帳；`commands/*.md` 由指令樹產生，`docs/` 是 Sphinx 原始碼 |
 | `CLAUDE.md`、`architecture.md` | 常駐硬規則與本檔 |
@@ -74,7 +74,7 @@
   `/dorossi ask`；沒有斜線選單的平台上，不是指令的文字就是提問。
 - **磁碟契約**：四條佇列檔（換行分隔，格式見 `CLAUDE.md`「todo file format」）、`single_image_request.json`、
   `dom_request.json`、`webrunner.pause`、`webrunner.pid`、`events.ndjson`、
-  `webrunner_progress.json`。
+  `webrunner_progress.json`、`webrunner_generation.json`。
 - **webrunner 回傳碼**：`0` 乾淨收工、`1` 無事可做、`2` session setup 失敗、`3` 零產出
   （`RC_ZERO_PROGRESS`）、`4` 被擋住不重生（`RC_GENERATION_BLOCKED`）、`5` 設定／憑證
   還沒填（`RC_SETUP_INCOMPLETE`，同樣不重生）、`6` 單圖伺服器收工（`RC_SERVED_ONESHOT`，批次監督者重生並計入零產出閘）。常數在 `_supervisor.py`。
@@ -102,11 +102,12 @@
    `run_preflight` → 建立 driver、登入與設定 → `ws.run_batch`：每個角色重讀四條佇列 →
    `_queue_consume.decide` → `generate_loop` → 達門檻才 pop 佇列 → `emit_event` 寫
    `events.ndjson` → bot `_event_watcher` / `_handle_event` 回報頻道。設定階段的
-   `configure_sampler_settings` 先以 `select_model_effort` 把模型列的 Effort 設成
-   `TARGET_MODEL_EFFORT`（High）——Medium 是另一個模型，Steps／Sampler／Guidance Rescale 根本
-   不渲染，怎麼展開都找不到。`ensure_generation_options`（Effort、Transparent BG、Quality
-   Tags、Sampler）在設定時與 `click_generate` 每次產圖前都會讀回，任一項失敗就不按生成；
-   批次、插播與單圖路徑共用這一條規則。
+   `configure_sampler_settings` 套用啟動時載入的 `GenerationProfile`。
+   `generation_config.json` 以 `active_profile` 選擇模型候選、產圖設定、todo 與 fallback 路徑，
+   所有平台與批次共用同一份設定。`ensure_generation_options` 與數值讀回在每次產圖前驗證；
+   續跑檢查點包含模型、設定及路徑的識別值，避免混用不同設定的圖片。設定變更後須先停止
+   批次並重啟所有平台行程及批次入口；程序間的預期識別與 `webrunner_generation.json`
+   防止新舊設定合作。明確無效的設定停止啟動，缺檔則沿用預設。
 2. **單張產圖（`/gen image`）**：bot 以記憶體 FIFO 序列化請求 → 寫 `single_image_request.json`
    （單槽）→ 正在跑的批次帶內服務、既有單圖伺服器接手，或 bot 以
    `SINGLE_IMAGE_SERVER_FLAG` spawn 新的單圖伺服器 → 發 `single_image_done` 並刪除請求檔 →

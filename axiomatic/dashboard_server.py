@@ -24,6 +24,7 @@ try:
         STATE_ROOT, active_platform, normalise_platform,
         platform_file as _platform_state)
     from _run_progress import read_progress
+    from _generation_config import GENERATION_PROFILE, require_current_profile
 except ImportError:
     from axiomatic._bot_config import load_bot_config  # type: ignore
     from axiomatic._process_control import _pid_alive  # type: ignore
@@ -31,6 +32,7 @@ except ImportError:
         STATE_ROOT, active_platform, normalise_platform,
         platform_file as _platform_state)
     from axiomatic._run_progress import read_progress  # type: ignore
+    from axiomatic._generation_config import GENERATION_PROFILE, require_current_profile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -52,10 +54,10 @@ OUTPUT_ROOT = PROJECT_ROOT / "output"
 # 批次的四個佇列檔。角色二是**位置對應**的：空行代表「這一對拿掉角色二」，所以算行數、
 # 不略過空行；另外三個空行不算一筆（與 `read_todo_entries` 同一套規則）。
 QUEUE_FILES = {
-    "prompt": (PROJECT_ROOT / "todo_prompt.md", False),
-    "char1": (PROJECT_ROOT / "todo_character1.md", False),
-    "char2": (PROJECT_ROOT / "todo_character2.md", True),
-    "undesired": (PROJECT_ROOT / "todo_undesired.md", False),
+    "prompt": (GENERATION_PROFILE.todo.prompt, False),
+    "char1": (GENERATION_PROFILE.todo.character1, False),
+    "char2": (GENERATION_PROFILE.todo.character2, True),
+    "undesired": (GENERATION_PROFILE.todo.undesired, False),
 }
 
 
@@ -319,6 +321,11 @@ def _platform_files(platform: str) -> dict:
 
 def build_status(platform: str | None = None) -> dict:
     """儀表板的狀態。`platform` 只換「每個平台各一份」的那幾塊；批次全機一份，不跟著換。"""
+    try:
+        require_current_profile(GENERATION_PROFILE)
+        profile_current = True
+    except (OSError, ValueError, RuntimeError):
+        profile_current = False
     platforms = known_platforms()
     chosen = platform if platform in platforms else active_platform()
     files = _platform_files(chosen)
@@ -352,7 +359,8 @@ def build_status(platform: str | None = None) -> dict:
         "events": _read_ndjson_tail(EVENTS_FILE, 10),
         "output_images": _dir_image_count(OUTPUT_ROOT),
         "progress": _progress_summary(),
-        "queues": {name: _queue_depth(path, positional)
+        "generation_profile_current": profile_current,
+        "queues": {name: _queue_depth(path, positional) if profile_current else None
                    for name, (path, positional) in QUEUE_FILES.items()},
         "system": _system_summary(),
         # 這一份狀態讀的是哪一個平台；`platforms` 是頁首下拉選單的選項。

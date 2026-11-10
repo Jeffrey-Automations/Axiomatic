@@ -440,7 +440,8 @@ def _checkpoint(folder_name, saved, target, *, prompt="P1", char1="a",
     一字不差，否則接不上。
     """
     import _run_progress as rp
-    rp.write_progress(prompt, char1, char2, undesired, folder_name, target)
+    rp.write_progress(prompt, char1, char2, undesired, folder_name, target,
+                      generation=ws.GENERATION_IDENTITY)
     if saved:
         rp.update_saved(saved)
 

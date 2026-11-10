@@ -117,6 +117,8 @@ _TRACKED_ASSETS = frozenset({
 # fallback 提示詞。repo 只帶 `*.example.*` 範本；真檔一律不追蹤，因為一次手滑的
 # `git add` 就等於把 token 或私人內容推上去，而那是不可逆的。
 _IGNORED_RUNTIME = frozenset({
+    "generation_config.json",
+    "webrunner_generation.json",
     "auth.md",                       # 出圖服務帳密（範本：auth.example.md）
     "discord_bot_token.md",          # Discord bot token（範本同上）
     # 第二個對話平台的 token（範本：telegram_bot_token.example.md）。與上面兩個

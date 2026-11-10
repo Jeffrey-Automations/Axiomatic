@@ -1,8 +1,7 @@
 # 設定檔
 
-可調行為都放在 repo 根目錄的 JSON，不寫死在 Python 常數裡。所有載入器共用
-同一個形狀：缺檔 / 解析錯 / 型別錯都回退到內建預設、**永不拋例外**——一個會讓
-bot 因打錯字而崩潰的設定檔就是 regression。
+可調行為放在 repo 根目錄的 JSON。一般設定載入失敗時退回內建預設。
+`generation_config.json` 的明確錯誤會停止啟動，避免跑錯模型或消耗錯誤佇列。
 
 ```{important}
 除了 `batch_config.json` 以外，**這些檔案都不在版本庫裡**（它們裝的是你的頻道
@@ -17,11 +16,67 @@ ID、帳號 ID、主機路徑與本機應用程式清單）。repo 帶的是 `*.
 
 | 檔案 | 重讀時機 | 需要重啟？ |
 |---|---|---|
-| `batch_config.json` | webrunner 每個角色迴圈開頭重讀；bot 在 `/gen progress` / `/eta` / `/config show` 讀 | 否——下個角色生效（**例外**：`debug_screenshots` 只在 webrunner import 時讀一次，要 `/stop` + `/run`） |
+| `generation_config.json` | 啟動時固定 profile；讀寫佇列及產圖前檢查是否變更 | 是，先停止批次，修改後重啟所有平台行程、批次入口及獨立看板 |
+| `batch_config.json` | 批次數量與等待時間在每個角色開始時重讀 | 一般設定下個角色生效。`debug_screenshots` 要重啟批次；作為 profile 預設的 `model_candidates` 要重啟 bot 與批次 |
 | `bot_config.json` | bot 啟動時讀一次 | **是（`/sys restart`）**；缺席時 bot 拒絕啟動。少數幾個鍵可以用 `/config reload` 當場重讀，見下 |
 | `presence_games.json` | presence 探針每次 tick（約 8 秒）重讀 | 否 |
 | `presence_music.json` | 同上 | 否（壞 regex 印 stderr 並略過，不會崩） |
 | `presence_rpc.json` | 同上 | 否（`enabled: false` 或缺 `client_id` → 整段停用） |
+
+## generation_config.json
+
+先把 `generation_config.example.json` 複製為 `generation_config.json`，再用
+`active_profile` 選擇一組產圖設定。範本的 `v5` 沿用現有 todo 檔與產圖設定，
+`v4_5` 示範另一組版本專用檔案。profile 名稱可以自訂，實際選擇的模型由
+`model_candidates` 決定，名稱必須與網站選單一致。
+
+切換版本的步驟如下。
+
+1. 用 `/stop` 停止目前批次。獨立啟動器也要先停止。
+2. 編輯 `generation_config.json` 的 `active_profile`，並準備該 profile 指定的 todo 檔。
+3. 重新啟動所有啟用的平台行程，再用 `/run` 開始。若使用本機入口，重新啟動該入口。
+4. 另行執行的看板也要重啟，讓佇列數量對應新的 profile。
+
+| profile 欄位 | 說明 |
+|---|---|
+| `model_candidates` | 依序嘗試的模型選單字面。`null` 或省略時，取啟動當下 `batch_config.json` 的同名欄位 |
+| `settings` | 下表的產圖參數。省略欄位使用預設值 |
+| `todo` | `prompt`、`character1`、`character2`、`undesired` 各自的佇列路徑 |
+| `fallback` | 相同四個鍵。對應 todo 空白或不存在時讀取的預設提示詞路徑 |
+
+路徑以設定檔所在目錄為基準，也接受絕對路徑。`todo` 省略的鍵沿用根目錄
+`todo_prompt.md`、`todo_character1.md`、`todo_character2.md`、`todo_undesired.md`。
+`fallback` 省略的鍵沿用 `prompt.md`、`character1.md`、`character2.md`、`undesired.md`。
+若要完全隔離版本，請像 `v4_5` 範例一樣同時指定四個 todo 與四個 fallback。
+佇列不能共用同一路徑，也不能指向 fallback，以免消耗佇列時覆寫預設提示詞。
+
+| `settings` 欄位 | 預設 | 說明 |
+|---|---|---|
+| `resolution` | `Normal` | 網站的解析度等級選項 |
+| `orientation` | `Landscape` | 網站的圖片方向選項 |
+| `effort` | `High` | 模型列的運算選項 |
+| `sampler` | `Euler Ancestral` | 取樣器選單字面 |
+| `steps` | `23` | 正整數步數 |
+| `guidance` | `6` | 非負提示詞引導值 |
+| `guidance_rescale` | `0` | 非負引導縮放值 |
+| `transparent_background` | `true` | 透明背景開關 |
+| `quality_tags` | `Standard` | 品質預設選單字面 |
+| `variety_plus` | `true` | 多樣性開關，版本沒有此控制項時略過 |
+
+除了 `resolution` 與 `orientation`，各設定均可用 `null` 表示不操作該控制項。
+`false` 表示確實關閉開關，與 `null` 不同。選擇 `Medium` effort 時，必須把
+`steps`、`sampler`、`guidance_rescale` 設為 `null`，因為該模式不提供這些控制項。
+這是依既有頁面能力提供的設定方式，未保證任意模型都支援角色欄位與全部參數。
+
+todo 格式維持一行一筆。Character 2 的空白列仍代表該配對不用第二個角色。
+bot 的佇列編輯、預覽與批次消耗使用同一組路徑。執行期間修改 profile，程式會拒絕
+後續生成與佇列寫入；看板會把尚未重新載入的佇列數量標成未知。
+
+續跑檢查包含模型候選、產圖參數與檔案路徑。換版本或改設定後會建立新批次，
+不接續舊設定的圖片資料夾。升級前沒有這些識別資訊的舊檢查點也不會接續。
+`webrunner_generation.json` 是程式自動產生的行程識別檔，不需手動編輯。
+
+設定檔與佇列內容屬於本機資料，不加入版本庫。未建立設定檔時沿用既有預設。
 
 ## batch_config.json
 
@@ -42,7 +97,7 @@ ID、帳號 ID、主機路徑與本機應用程式清單）。repo 帶的是 `*.
 | `min_save_ratio` | 0.9 | 角色批次「算做完、可 pop 佇列」的實存張數門檻比例（`ceil(target × ratio)`、下限 1）。容忍零星暫時性失敗（例如 239/240 仍算完成）；`1.0` 恢復精確達標才 pop。每角色熱重讀 |
 | `debug_screenshots` | `false` | 開啟後 `snap()` 才會寫 `debug_*.png`。webrunner import 時讀一次，改了要 `/stop` + `/run` |
 | `quota_wait_poll_sec` | 3600 | 額度用完時，關掉購買視窗後每隔幾秒重試一次（預設 1 小時）。等待期間**不算失敗**、也不會結束背景程式，所以監督器不會介入、不會重跑登入。**⚠️ 這不是吞吐量旋鈕，調小不會讓批次跑更快。** 實測跨兩個設定值、214 次被擋：約 14 分鐘輪詢 **7.87 張/小時**、約 60 分鐘輪詢 **7.84 張/小時**——差 0.4%。上限在帳號那一側，我們這一側的輪詢間隔影響不到它；調小只是把同樣的圖切成更多更小的爆發，而每次醒來都要多付一次「關購買視窗 → 關不掉 → 整頁重新整理 → 重填欄位」 |
-| `model_candidates` | `["NAI Diffusion V5 Full", "NAI Diffusion V5", "Diffusion V5 Full"]` | 產圖模型的候選字面，**依序**嘗試、第一個在下拉選單裡命中的就採用。站方改寫選項字面時不必動碼，補一個候選即可；全部落空時 log 會 dump 當下看得到的選項，那行就是該填什麼的答案。**只能編輯檔案**——不在 `/config show` / `/config set` 的清單裡，因為值是外部服務的模型名，印進頻道會踩到對外揭露規則。每次 setup 重讀（`restart_chrome_every_n_characters: 1` 時等於每個角色一次）。⚠️ 換模型會改變畫質，也可能改變吞吐量：站方的方案政策對不同模型可能套不同的使用量上限 |
+| `model_candidates` | `["NAI Diffusion V5 Full", "NAI Diffusion V5", "Diffusion V5 Full"]` | 產圖模型的候選字面，**依序**嘗試、第一個在下拉選單裡命中的就採用。站方改寫選項字面時不必動碼，補一個候選即可；全部落空時 log 會 dump 當下看得到的選項，那行就是該填什麼的答案。**只能編輯檔案**——不在 `/config show` / `/config set` 的清單裡，因為值是外部服務的模型名，印進頻道會踩到對外揭露規則。僅在啟動時讀取，且只在 profile 的 `model_candidates` 為 `null` 或省略時使用。⚠️ 換模型會改變畫質，也可能改變吞吐量：站方的方案政策對不同模型可能套不同的使用量上限 |
 | `quota_wait_max_sec` | 0 | 等待總秒數上限，**0 = 一直等到額度回復**（預設）。設正值時超過就停止並通知——那代表不是會自己回補的額度，而是方案／帳號問題 |
 
 ```{note}

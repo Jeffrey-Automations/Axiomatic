@@ -986,6 +986,14 @@ def _evaluate_path(node: ast.AST, env: dict, module_file: Path):
     """
     if isinstance(node, ast.Name):
         return env.get(node.id)
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "GENERATION_PROFILE"
+            and node.value.attr in {"todo", "fallback"}):
+        from _generation_config import GENERATION_PROFILE
+        files = getattr(GENERATION_PROFILE, node.value.attr)
+        value = getattr(files, node.attr, None)
+        return value if isinstance(value, Path) else None
     if isinstance(node, ast.Attribute) and node.attr == "parent":
         base = _evaluate_path(node.value, env, module_file)
         return None if base is None else base.parent
@@ -1080,6 +1088,7 @@ def test_a_path_constant_names_the_same_file_in_every_process():
         f"only {len(shared)} path constants shared across modules -- the extraction is broken, "
         "or the scan scope shrank.")
     assert "WEBRUNNER_PAUSE_FILE" in shared, "the bot and the batch both define the pause marker"
+    assert {"TODO_PROMPT_FILE", "TODO_FILE_1", "TODO_FILE_2", "TODO_UNDESIRED_FILE"} <= shared
     unexpected, opaque = _unexplained_findings(disagreements, uncomparable,
                                                _SAME_NAME_DIFFERENT_FILE)
     assert not unexpected, (
@@ -1099,6 +1108,20 @@ def test_every_same_name_exemption_still_names_two_different_files():
         assert reason.strip(), f"the exemption for `{name}` has no reason"
     stale = _stale_exemptions(disagreements, uncomparable, _SAME_NAME_DIFFERENT_FILE)
     assert not stale, f"these exemptions now name one file (or are no longer shared); delete them: {stale}"
+
+
+def test_profile_paths_participate_in_path_parity():
+    repo = PKG_ROOT.parent.resolve()
+    sources = {
+        repo / "a.py": "TODO_FILE = GENERATION_PROFILE.todo.prompt\n",
+        repo / "b.py": "TODO_FILE = GENERATION_PROFILE.todo.character1\n",
+    }
+    differences, opaque, shared = _path_parity(sources, repo)
+    assert "TODO_FILE" in differences
+    assert shared == {"TODO_FILE"}
+    assert not opaque
+    sources[repo / "b.py"] = sources[repo / "a.py"]
+    assert _path_parity(sources, repo)[0] == {}
 
 
 def test_the_path_parity_check_sees_what_it_claims_to():

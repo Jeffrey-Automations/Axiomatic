@@ -92,7 +92,7 @@ def _atomic_write(payload: dict) -> None:
 
 
 def write_progress(prompt: str, char1: str, char2: str, undesired: str,
-                   folder: str, target: int) -> None:
+                   folder: str, target: int, *, generation: str | None = None) -> None:
     """Record the in-progress pair at character start. `saved` starts at 0 and
     is bumped live by `update_saved`. Best-effort; never raises."""
     _atomic_write({
@@ -100,6 +100,7 @@ def write_progress(prompt: str, char1: str, char2: str, undesired: str,
         "char1": char1,
         "char2": char2,
         "undesired": undesired,
+        "generation": generation,
         "folder": folder,
         "target": target,
         "saved": 0,
@@ -147,13 +148,13 @@ def clear_progress() -> None:
         print(f"_run_progress: clear failed: {error!r}", file=sys.stderr)
 
 
-# 決定「同一個配對」的四個身分欄位。`matches` / `mismatch_fields` /
+# 決定「同一個配對」的提示詞與生成設定身分欄位。`matches` / `mismatch_fields` /
 # `diagnose_mismatch` 全部走這一份，順序也是對外顯示的順序。
-IDENTITY_FIELDS = ("prompt", "char1", "char2", "undesired")
+IDENTITY_FIELDS = ("prompt", "char1", "char2", "undesired", "generation")
 
 
 def mismatch_fields(progress: dict | None, prompt: str, char1: str,
-                    char2: str, undesired: str) -> list[str]:
+                    char2: str, undesired: str, *, generation: str | None = None) -> list[str]:
     """回傳「檢查點與目前這個配對不一致」的欄位**名稱**清單（空 = 完全一致）。
 
     只回名稱、不回內容：呼叫端要把它寫進 `events.ndjson` 這種跨行程、可能被
@@ -165,18 +166,21 @@ def mismatch_fields(progress: dict | None, prompt: str, char1: str,
     if not progress:
         return []
     current = {"prompt": prompt, "char1": char1,
-               "char2": char2, "undesired": undesired}
+               "char2": char2, "undesired": undesired, "generation": generation}
     return [name for name in IDENTITY_FIELDS
             if progress.get(name) != current[name]]
 
 
 def matches(progress: dict | None, prompt: str, char1: str, char2: str,
-            undesired: str) -> bool:
-    """True when `progress` describes exactly this pair (all four fields). An
-    edited queue therefore does NOT resume — it starts the character fresh."""
+            undesired: str, *, generation: str | None = None) -> bool:
+    """Match the four prompt fields and the generation profile identity.
+
+    Edited prompts or settings start the character fresh.
+    """
     if not progress:
         return False
-    return not mismatch_fields(progress, prompt, char1, char2, undesired)
+    return not mismatch_fields(progress, prompt, char1, char2, undesired,
+                               generation=generation)
 
 
 # `folder` 欄位裡不該出現的字元。三個都要擋，而且要**自己列**不能靠
@@ -217,8 +221,8 @@ def resume_folder(progress: dict | None, output_root: Path) -> Path | None:
     """把檢查點的 `folder` 欄位翻成一個**可以安全寫入**的輸出資料夾，翻不出來
     回 None（＝這一輪不接續，從第 1 張重新產）。
 
-    為什麼需要這一層：`matches()` 只比對四個身分欄位（prompt / char1 / char2 /
-    undesired），**完全不看 `folder`**。所以一份身分欄位對得上、但 `folder`
+    為什麼需要這一層：`matches()` 比對提示詞與生成設定身分，**完全不看 `folder`**。
+    所以一份身分欄位對得上、但 `folder`
     壞掉的檢查點會讓 `matches()` 回 True，呼叫端接著 `output_root / prog["folder"]`
     ——實測六種壞法全部中招：欄位不存在 → `KeyError`；值是 None／int／list →
     `TypeError`；值是 `"../../Windows/Temp/x"` 或 `"C:/Windows/Temp/x"` → 路徑
@@ -264,7 +268,7 @@ def resume_folder(progress: dict | None, output_root: Path) -> Path | None:
 
 
 def diagnose_mismatch(progress: dict | None, prompt: str, char1: str,
-                      char2: str, undesired: str) -> list[str]:
+                      char2: str, undesired: str, *, generation: str | None = None) -> list[str]:
     """Return one human-readable line per diverging field between the stored
     checkpoint and the current first pair. Empty list when `progress` is falsy
     or every field matches. Pure diagnostic — does NOT change the resume
@@ -274,9 +278,10 @@ def diagnose_mismatch(progress: dict | None, prompt: str, char1: str,
     if not progress:
         return []
     current_by_name = {"prompt": prompt, "char1": char1,
-                       "char2": char2, "undesired": undesired}
+                       "char2": char2, "undesired": undesired, "generation": generation}
     lines: list[str] = []
-    for name in mismatch_fields(progress, prompt, char1, char2, undesired):
+    for name in mismatch_fields(progress, prompt, char1, char2, undesired,
+                                generation=generation):
         stored = progress.get(name)
         current = current_by_name[name]
         # `read_progress` only validates that the TOP level is a dict — the
