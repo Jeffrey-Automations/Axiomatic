@@ -54,6 +54,11 @@ _CROSS_PROCESS_CONSTANTS = {
     # （同 `FAVORITES_FILE`）。半寫入的檔在下次啟動讀到就是一份安靜退回內建表的
     # 目錄，而使用者只會發現「昨天選得到的模型今天不見了」，沒有任何錯誤訊息。
     "DOROSSI_MODEL_CATALOG_FILE",
+    # `wake_autostart.py --profile` 寫、監督者啟動時讀掉的一次性生成設定選擇（bot 那份
+    # 一個平台一個，常數是它們的基底名）。真的跨行程。半寫入的檔讀起來是「格式不對」，
+    # 監督者會安靜退回預設那一套——使用者指定的版本沒有生效，而批次照常產圖，只是產錯
+    # 了版本。
+    "BOT_GENERATION_SELECTION_FILE", "BATCH_GENERATION_SELECTION_FILE",
 }
 
 # 允許的寫入方式（同目錄 temp → os.replace 的各家實作）。

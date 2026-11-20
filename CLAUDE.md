@@ -749,7 +749,8 @@ truncate-then-write. Enforced by `test/test_atomic_writes.py`.
 `BATCH_LABEL_FILE`, `SCHEDULE_FILE`, `PROGRESS_FILE`,
 `SINGLE_IMAGE_REQUEST_FILE`, `EVENTS_FILE`, `AUDIT_FILE`, `FAVORITES_FILE`,
 `RECENT_IMAGE_MSGS_FILE`, `SCHEDULED_RUN_FILE`, `NETWORK_RESUME_FILE`,
-`DOROSSI_MODEL_CATALOG_FILE`, `DOROSSI_QUEUE_FILE`.
+`DOROSSI_MODEL_CATALOG_FILE`, `DOROSSI_QUEUE_FILE`,
+`BOT_GENERATION_SELECTION_FILE`, `BATCH_GENERATION_SELECTION_FILE`.
 Adding a cross-process file
 means adding it here **and** to `test_atomic_writes._CROSS_PROCESS_CONSTANTS`;
 the two are reconciled in both directions, so editing one alone goes red. The extractor keys off the literal heading above and reads the
