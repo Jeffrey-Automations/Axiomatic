@@ -97,10 +97,11 @@ bot、批次、監督者已在執行（那時選別套也會被拒絕）。
 | `transparent_background` | `true` | 透明背景開關 |
 | `quality_tags` | `Standard` | 品質預設選單字面 |
 | `variety_plus` | `true` | 多樣性開關，版本沒有此控制項時略過 |
+| `noise_schedule` | `null` | Advanced Settings 的 Noise Schedule 選單字面（如 `karras`，不分大小寫）。`null` 不操作；版本沒有此控制項（V5）時略過 |
 
 除了 `resolution` 與 `orientation`，各設定均可用 `null` 表示不操作該控制項。
 `false` 表示確實關閉開關，與 `null` 不同。選擇 `Medium` effort 時，必須把
-`steps`、`sampler`、`guidance_rescale` 設為 `null`，因為該模式不提供這些控制項。
+`steps`、`sampler`、`guidance_rescale`、`noise_schedule` 設為 `null`，因為該模式不提供這些控制項。
 這是依既有頁面能力提供的設定方式，未保證任意模型都支援角色欄位與全部參數。
 
 todo 格式維持一行一筆。Character 2 的空白列仍代表該配對不用第二個角色。
@@ -109,6 +110,8 @@ bot 的佇列編輯、預覽與批次消耗使用同一組路徑。執行期間�
 
 續跑檢查包含模型候選、產圖參數與檔案路徑。換版本或改設定後會建立新批次，
 不接續舊設定的圖片資料夾。升級前沒有這些識別資訊的舊檢查點也不會接續。
+`noise_schedule` 保持 `null` 時不列入識別資訊，所以升級本身不會讓既有設定開新批次；
+改成非 `null` 的值則和其他設定一樣會開新批次。
 `webrunner_generation.json` 是程式自動產生的行程識別檔，不需手動編輯。
 
 設定檔與佇列內容屬於本機資料，不加入版本庫。未建立設定檔時沿用既有預設。
@@ -133,7 +136,8 @@ bot 的佇列編輯、預覽與批次消耗使用同一組路徑。執行期間�
         "quality_tags": null,
         "steps": 23,
         "guidance": 6,
-        "guidance_rescale": 0
+        "guidance_rescale": 0,
+        "noise_schedule": "karras"
       },
       "todo": {
         "prompt": "todo_prompt_v4_5.md",

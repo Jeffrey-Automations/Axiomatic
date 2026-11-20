@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import types
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(
@@ -2967,10 +2968,11 @@ def test_no_interval_is_measured_with_the_adjustable_wall_clock():
 
 # ---------- DOM 輪詢逾時：截止時刻必須用單調時鐘 -----------------------------
 #
-# 形狀是 `end = <時鐘>() + timeout` 配 `while <時鐘>() < end`，共用模組有 7 處：
+# 形狀是 `end = <時鐘>() + timeout` 配 `while <時鐘>() < end`，下面的表收了 8 處：
 # `select_model`（等下拉觸發器、等選項各一）、`_click_gender`、
 # `click_add_character_control`、`_click_option_by_text`、`select_sampler`、
-# `click_generate`。這些全是「量經過多久」→ 一律單調時鐘。
+# `select_noise_schedule`、`click_generate`。這些全是「量經過多久」→ 一律單調
+# 時鐘。（`select_quality_tags` 也是這個形狀但不在表裡；下面那支形狀守門照樣掃得到它。）
 #
 # 為什麼值得專門測：牆鐘往回跳一小時，一次幾秒的 DOM 逾時就變成一小時的停頓
 # ——**卡住比失敗更難查**，監督者看到的是一個還活著、卻什麼都不做的行程；往前
@@ -3137,6 +3139,21 @@ def _case_select_sampler(hits):
         return ws.select_sampler(port, "DPM++ 2M", timeout=10.0)
 
 
+def _case_select_noise_schedule(hits):
+    port = _DeadlineProbePort()
+
+    def _no_option(_port, _target, **_k):
+        hits.append(1)
+        return None
+
+    with _ws_patched(_noise_schedule_control=lambda _p, _t: {"element": _FakeElement("DIV"),
+                                                             "value": "native"},
+                     _find_sampler_option=_no_option,
+                     _dump_sampler_options=lambda *_a, **_k: None,
+                     snap=lambda *_a, **_k: None):
+        return ws.select_noise_schedule(port, "karras", timeout=10.0)
+
+
 def _case_click_generate(hits):
     port = _DeadlineProbePort()
 
@@ -3158,6 +3175,7 @@ _DEADLINE_CASES = (
     ("click_add_character_control:end", 8.0, 0.3, _case_add_character),
     ("_click_option_by_text:end", 5.0, 0.2, _case_click_option_by_text),
     ("select_sampler:end", 10.0, 0.3, _case_select_sampler),
+    ("select_noise_schedule:end", 10.0, 0.3, _case_select_noise_schedule),
     ("click_generate:end", 15.0, 0.3, _case_click_generate),
 )
 
@@ -3205,7 +3223,7 @@ def _run_deadline_case(case, wall_jump: float = 0.0, jump_after: int = 3,
 
 
 def test_dom_poll_timeouts_ignore_a_wall_clock_jump():
-    """7 處逾時迴圈：牆鐘怎麼跳都不得改變判定，而且逾時仍然要正確觸發。
+    """`_DEADLINE_CASES` 的每個逾時迴圈：牆鐘怎麼跳都不得改變判定，而且逾時仍然要正確觸發。
 
     四個方向缺一不可，各自蓋不同的改壞方式：
 
@@ -10705,6 +10723,170 @@ def test_the_label_dump_names_the_effort_and_section_headers():
                    "Steps", "Sampler", "Prompt Guidance Rescale", "Seed"):
         assert rx.search(wanted), wanted
     assert not rx.search("Character 1")  # 對照組：過濾式不是全放行
+
+
+# ---- Noise Schedule（`noise_schedule`）——只有 V4.5 的 Advanced Settings 有 ----
+
+def _noise_harness(monkeypatch, readings, option=None):
+    """`readings`：`_noise_schedule_control` 依序回的值（最後一個重複用）。"""
+    seq = list(readings)
+    log = {"clicks": [], "dispatched": [], "snaps": [], "dumps": 0, "option_queries": []}
+
+    def control(_port, _target):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    def find_option(_port, target, *, ignore_case=False):
+        log["option_queries"].append((target, ignore_case))
+        return option
+
+    class Port:
+        TRANSPORT_ERRORS = ()
+
+        def execute_script(self, *_a):
+            return None
+
+        def click(self, element):
+            log["clicks"].append(element)
+
+    monkeypatch.setattr(ws, "_noise_schedule_control", control)
+    monkeypatch.setattr(ws, "_find_sampler_option", find_option)
+    monkeypatch.setattr(ws, "robust_click", lambda _p, el: log["clicks"].append(el) or True)
+    monkeypatch.setattr(ws, "dispatch_mouse_sequence",
+                        lambda _p, el: log["dispatched"].append(el))
+    monkeypatch.setattr(ws, "human_pause", lambda *_a, **_k: None)
+    monkeypatch.setattr(ws, "snap", lambda _p, tag: log["snaps"].append(tag))
+    monkeypatch.setattr(ws, "_dump_sampler_options",
+                        lambda *_a, **_k: log.__setitem__("dumps", log["dumps"] + 1))
+    monkeypatch.setattr(ws, "_NOISE_SCHEDULE_ABSENT_WARNED", set())
+    return Port(), log
+
+
+def test_noise_schedule_is_selected_and_read_back(monkeypatch):
+    trigger, option = object(), object()
+    port, log = _noise_harness(monkeypatch, [
+        {"element": trigger, "value": "native"},
+        {"element": trigger, "value": "karras"}], option=option)
+    with _fake_clock():
+        assert ws.select_noise_schedule(port, "karras") is True
+    assert log["clicks"] == [trigger, option]
+    assert log["option_queries"][0] == ("karras", True)
+    assert log["dispatched"] == [] and log["snaps"] == []
+
+
+def test_noise_schedule_already_set_is_left_alone(monkeypatch):
+    # must-allow：V4.5 的現況就是顯示 `karras`；大小寫不同也算同一個值。
+    port, log = _noise_harness(monkeypatch, [{"element": object(), "value": "Karras"}])
+    assert ws.select_noise_schedule(port, "karras") is True
+    assert ws.select_noise_schedule(port, "karras") is True
+    assert log["clicks"] == [] and log["option_queries"] == []
+
+
+def test_a_page_without_noise_schedule_is_skipped_not_failed(monkeypatch):
+    # must-allow：V5 沒有這個控制項。回 False 會讓 setup 失敗、監督者無限重生瀏覽器。
+    port, log = _noise_harness(monkeypatch, [None])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert ws.select_noise_schedule(port, "karras") is True
+        assert ws.select_noise_schedule(port, "karras") is True
+    assert log["clicks"] == [] and log["snaps"] == []
+    out = buf.getvalue()
+    assert out.count("no Noise Schedule control on this page") == 1, "警告每個行程只印一次"
+
+
+def test_a_noise_schedule_readback_mismatch_is_a_failure(monkeypatch):
+    trigger, option = object(), object()
+    port, log = _noise_harness(monkeypatch, [
+        {"element": trigger, "value": "native"}], option=option)
+    with _fake_clock():
+        assert ws.select_noise_schedule(port, "karras") is False
+    assert log["clicks"] == [trigger, option]
+    assert log["dispatched"] == [option], "第一次點選沒生效要補完整滑鼠事件序列再試"
+    assert log["snaps"] == ["noise_schedule_verify_failed"] and log["dumps"] == 1
+
+
+def test_a_missing_noise_schedule_option_is_a_failure(monkeypatch):
+    trigger = object()
+    port, log = _noise_harness(monkeypatch, [{"element": trigger, "value": "native"}])
+    with _fake_clock():
+        assert ws.select_noise_schedule(port, "karras", timeout=2.0) is False
+    assert log["clicks"] == [trigger]
+    assert log["snaps"] == ["noise_schedule_option_not_found"] and log["dumps"] == 1
+
+
+def test_a_noise_schedule_without_a_trigger_is_a_failure(monkeypatch):
+    port, log = _noise_harness(monkeypatch, [{"element": None, "value": None}])
+    assert ws.select_noise_schedule(port, "karras") is False
+    assert log["clicks"] == [] and log["snaps"] == ["no_noise_schedule_selector"]
+
+
+def test_noise_schedule_is_checked_after_the_sampler_and_only_when_set(monkeypatch):
+    actions = []
+    for name in ("select_model_effort", "set_transparent_background",
+                 "select_quality_tags", "select_sampler", "select_noise_schedule"):
+        monkeypatch.setattr(ws, name, lambda _p, *args, name=name, **kwargs:
+                            actions.append((name, args)) or True)
+    unset = ws.GenerationSettings()
+    assert ws.ensure_generation_options(None, unset)
+    assert [a for a, _ in actions] == ["select_model_effort", "set_transparent_background",
+                                       "select_quality_tags", "select_sampler"]
+    actions.clear()
+    assert ws.ensure_generation_options(None, replace(unset, noise_schedule="karras"))
+    assert actions[-1] == ("select_noise_schedule", ("karras",))
+    assert [a for a, _ in actions][-2] == "select_sampler"
+
+
+def test_a_failed_noise_schedule_blocks_generation(monkeypatch):
+    for name in ("select_model_effort", "set_transparent_background",
+                 "select_quality_tags", "select_sampler"):
+        monkeypatch.setattr(ws, name, lambda *_a, **_k: True)
+    monkeypatch.setattr(ws, "select_noise_schedule", lambda *_a: False)
+    monkeypatch.setattr(ws, "snap", lambda *_a: None)
+    settings = replace(ws.GenerationSettings(), noise_schedule="karras")
+    assert ws.ensure_generation_options(None, settings) is False
+
+
+def test_noise_schedule_alone_still_expands_advanced_settings(monkeypatch):
+    # `guidance_rescale: null` 的 profile 仍要展開 Advanced Settings，否則 Noise Schedule
+    # 看不到、會被當成「控制項不存在」而安靜略過。
+    expanded = []
+    monkeypatch.setattr(ws, "select_model_effort", lambda *_a: True)
+    monkeypatch.setattr(ws, "ensure_rescale_visible", lambda _p: expanded.append(1) or True)
+    monkeypatch.setattr(ws, "dump_advanced_labels", lambda _p: None)
+    monkeypatch.setattr(ws, "ensure_generation_options", lambda *_a: True)
+    monkeypatch.setattr(ws, "first_present_numeric_label", lambda *_a: None)
+    monkeypatch.setattr(ws, "set_numeric_setting_verified", lambda *_a, **_k: True)
+    monkeypatch.setattr(ws, "_has_variety_plus", lambda _p: False)
+    monkeypatch.setattr(ws, "human_pause", lambda *_a, **_k: None)
+    base = replace(ws.GenerationSettings(), guidance_rescale=None)
+    assert ws.configure_sampler_settings(FakeBrowserPort(), base) is True
+    assert expanded == []
+    assert ws.configure_sampler_settings(
+        FakeBrowserPort(), replace(base, noise_schedule="karras")) is True
+    assert expanded == [1]
+
+
+def test_the_noise_schedule_probe_asks_for_its_label_and_known_values():
+    port = _ScriptRecorder()
+    assert ws._noise_schedule_control(port, "Karras") is None
+    script, args = port.scripts[0]
+    assert "t === 'Noise Schedule'" in script
+    assert args == (["native", "karras", "exponential", "polyexponential"],)
+    port = _ScriptRecorder()
+    ws._noise_schedule_control(port, "beta")
+    assert port.scripts[0][1][0][-1] == "beta", "設定的目標值也要認得出來"
+    # 不能撞上假 port 的子字串分類器（尤其取樣器讀取的 `return pick(document.body)`）。
+    for marker in ("return pick(document.body)", "Generate", "scrollIntoView",
+                   "naturalWidth", "blob:", "trash", "Quality Preset"):
+        assert marker not in script, marker
+
+
+def test_the_option_lookup_folds_case_only_when_asked():
+    port = _ScriptRecorder()
+    ws._find_sampler_option(port, "Euler")
+    ws._find_sampler_option(port, "karras", ignore_case=True)
+    assert port.scripts[0][1] == ("Euler", False)
+    assert port.scripts[1][1] == ("karras", True)
+    assert "toLowerCase" in port.scripts[0][0]
 
 
 if __name__ == "__main__":

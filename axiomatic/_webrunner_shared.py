@@ -5987,10 +5987,14 @@ def _find_sampler_trigger(port):
     )
 
 
-def _dump_sampler_options(port) -> None:
+def _dump_sampler_options(port, what: str = "sampler") -> None:
     """Diagnostic: print the sampler labels currently visible into the log. For the same
     reason as `_dump_model_options`, when the site changes the labels this is the only
-    evidence that directly shows what `TARGET_SAMPLER` should be changed to."""
+    evidence that directly shows what `TARGET_SAMPLER` should be changed to.
+
+    The Noise Schedule dropdown uses this one too (`what="noise schedule"`): the filter
+    already accepts `karras` / `native`, plus `exponential` (which also covers
+    `polyexponential`)."""
     try:
         names = port.execute_script(
             """
@@ -5999,21 +6003,25 @@ def _dump_sampler_options(port) -> None:
               if (el.offsetParent === null) continue;
               const t = (el.innerText || '').split('\\n')[0].trim();
               if (!t || t.length > 40) continue;
-              if (!/euler|dpm|ddim|ancestral|heun|lms|karras|sde|native/i.test(t)) continue;
+              if (!/euler|dpm|ddim|ancestral|heun|lms|karras|sde|native|exponential/i.test(t)) continue;
               out.push(t);
             }
             return Array.from(new Set(out)).slice(0, 30);
             """
         )
     except Exception as error:  # pylint: disable=broad-except
-        print(f"  [warn] could not dump sampler options: {type(error).__name__}")
+        print(f"  [warn] could not dump {what} options: {type(error).__name__}")
         return
-    print(f"  visible sampler options: {names}")
+    print(f"  visible {what} options: {names}")
 
 
-def _find_sampler_option(port, target: str):
+def _find_sampler_option(port, target: str, *, ignore_case: bool = False):
     """Return the option element in the dropdown whose text **exactly equals** `target`; None
     if not found.
+
+    `ignore_case=True` relaxes only the letter case; it is still whole-text equality (used
+    by Noise Schedule: the site shows lower-case `karras`, and the case of the menu labels
+    has not been measured). The sampler keeps the strict default.
 
     Two deliberate choices:
 
@@ -6028,7 +6036,8 @@ def _find_sampler_option(port, target: str):
     """
     return port.execute_script(
         """
-        const want = arguments[0];
+        const fold = arguments[1] ? ((s) => s.toLowerCase()) : ((s) => s);
+        const want = fold(arguments[0]);
         const pref = Array.from(document.querySelectorAll('[role="option"]'));
         const rest = Array.from(
           document.querySelectorAll('li, [role="listitem"], div, span, button'));
@@ -6036,7 +6045,7 @@ def _find_sampler_option(port, target: str):
           let best = null, bestLen = Infinity;
           for (const el of pool) {
             if (el.offsetParent === null) continue;
-            if ((el.innerText || '').trim() !== want) continue;
+            if (fold((el.innerText || '').trim()) !== want) continue;
             const len = el.outerHTML.length;
             if (len < bestLen) { best = el; bestLen = len; }
           }
@@ -6044,7 +6053,7 @@ def _find_sampler_option(port, target: str):
         }
         return null;
         """,
-        target,
+        target, bool(ignore_case),
     )
 
 
@@ -6280,6 +6289,137 @@ def select_quality_tags(port, timeout: float = 5.0,
     return False
 
 
+# The Noise Schedule dropdown (setting `noise_schedule`). Only V4.5's Advanced Settings
+# has it, in the same section as Prompt Guidance Rescale (the production log's
+# `Rescale matches:` reads `'Prompt Guidance Rescale\nNoise Schedule\nkarras'`, i.e. the
+# label is followed directly by the current value, in lower case); V5 has no such label at
+# all. The known labels are used to "recognise which one is currently shown", the same
+# approach as `_KNOWN_SAMPLERS`; the configured target is recognised too even when it is
+# not listed here (the caller merges it in). Comparison is always case-insensitive.
+_KNOWN_NOISE_SCHEDULES = ("native", "karras", "exponential", "polyexponential")
+
+# None = the page has no `Noise Schedule` label; otherwise `{"element", "value"}`:
+# `element` is what opens the dropdown when clicked (None if not found), `value` is the
+# label currently shown (None if unrecognised). Read-only. Deliberately contains none of
+# the substrings the fake port's classifier keys on (`return pick(document.body)` is the
+# sampler read's marker).
+_NOISE_SCHEDULE_JS = r"""
+const known = arguments[0].map((s) => s.toLowerCase());
+const labels = [];
+for (const el of document.querySelectorAll('label, div, span')) {
+  if (el.offsetParent === null) continue;
+  const t = (el.innerText || '').trim();
+  if (t === 'Noise Schedule' || t === 'Noise Schedule:') labels.push(el);
+}
+if (labels.length === 0) return null;
+const smallestKnown = (root) => {
+  let best = null, bestLen = Infinity;
+  for (const el of root.querySelectorAll('div, span, button')) {
+    if (el.offsetParent === null) continue;
+    const t = (el.innerText || '').trim().toLowerCase();
+    if (known.indexOf(t) === -1) continue;
+    const len = el.outerHTML.length;
+    if (len < bestLen) { best = el; bestLen = len; }
+  }
+  return best;
+};
+for (const lab of labels) {
+  let scope = lab;
+  for (let i = 0; i < 5 && scope; i++, scope = scope.parentElement) {
+    const found = smallestKnown(scope);
+    if (found) return {element: found, value: (found.innerText || '').trim()};
+  }
+}
+for (const lab of labels) {
+  let scope = lab.parentElement;
+  for (let i = 0; i < 4 && scope; i++, scope = scope.parentElement) {
+    const ctl = scope.querySelector(
+      "[role='combobox'], [class*='control'], button, [role='button'], select");
+    if (ctl && ctl.offsetParent !== null) return {element: ctl, value: null};
+  }
+}
+return {element: null, value: null};
+"""
+
+# "This page has no Noise Schedule" is said once per process: `ensure_generation_options`
+# runs for every image, and a V5 profile with this value set would otherwise print one line
+# per image, which is the same as having no log.
+_NOISE_SCHEDULE_ABSENT_WARNED: set[str] = set()
+
+
+def _noise_schedule_control(port, target: str):
+    known = list(dict.fromkeys([*_KNOWN_NOISE_SCHEDULES, target.strip().lower()]))
+    return port.execute_script(_NOISE_SCHEDULE_JS, known)
+
+
+def _same_schedule(value, target: str) -> bool:
+    return isinstance(value, str) and value.strip().lower() == target.strip().lower()
+
+
+def select_noise_schedule(port, target: str, timeout: float = 10.0) -> bool:
+    """Switch the Noise Schedule dropdown to `target` and **read it back**; True only once
+    verified.
+
+    * The page has no such control (V5, or Advanced Settings not expanded) -> print a
+      warning and return True. Same reason as Variety+: returning False would make
+      `_setup_session` fail, and the supervisor would then respawn the browser forever.
+      Only "present but cannot be set" is a real failure.
+    * Already the target -> do not open the dropdown (opening it and clicking the same
+      label again just closes the menu).
+    * Otherwise click the trigger, wait for the option (case-insensitive, whole-text
+      equality), click it for real and read back; if the first click did not take, add the
+      full mouse event sequence and try once more, the same recipe as `select_sampler`.
+    Trigger / option not found or read-back mismatch -> dump the visible options + snap,
+    return False.
+    """
+    control = _noise_schedule_control(port, target)
+    if not control:
+        if target not in _NOISE_SCHEDULE_ABSENT_WARNED:
+            _NOISE_SCHEDULE_ABSENT_WARNED.add(target)
+            print(f"  WARN: no Noise Schedule control on this page (V5 has none, or "
+                  f"Advanced Settings is not expanded); configured {target!r} skipped")
+        return True
+    if _same_schedule(control.get("value"), target):
+        return True
+    trigger = control.get("element")
+    if not trigger:
+        print(f"  could not locate the noise schedule dropdown "
+              f"(shows {control.get('value')!r})")
+        _dump_sampler_options(port, what="noise schedule")
+        snap(port, "no_noise_schedule_selector")
+        return False
+    port.execute_script("arguments[0].scrollIntoView({block:'center'});", trigger)
+    port.click(trigger)
+    human_pause(0.6, 1.1)
+    end = time.monotonic() + timeout
+    option = None
+    while time.monotonic() < end:
+        option = _find_sampler_option(port, target, ignore_case=True)
+        if option is not None:
+            break
+        time.sleep(0.3)
+    if option is None:
+        print(f"  noise schedule option {target!r} not found")
+        _dump_sampler_options(port, what="noise schedule")
+        snap(port, "noise_schedule_option_not_found")
+        return False
+    robust_click(port, option)
+    human_pause(0.6, 1.0)
+    after = _noise_schedule_control(port, target)
+    if not _same_schedule((after or {}).get("value"), target):
+        dispatch_mouse_sequence(port, option)
+        human_pause(0.6, 1.0)
+        after = _noise_schedule_control(port, target)
+    actual = (after or {}).get("value")
+    if _same_schedule(actual, target):
+        print(f"  noise schedule -> {actual!r} verified")
+        return True
+    print(f"  noise schedule verify failed: wanted {target!r}, got {actual!r}")
+    _dump_sampler_options(port, what="noise schedule")
+    snap(port, "noise_schedule_verify_failed")
+    return False
+
+
 def ensure_generation_options(port, settings: GenerationSettings | None = None) -> bool:
     """Read back the required options before every generation; a failed setting must not
     press Generate.
@@ -6294,6 +6434,11 @@ def ensure_generation_options(port, settings: GenerationSettings | None = None) 
         ("Quality Tags", settings.quality_tags,
          lambda: select_quality_tags(port, target=settings.quality_tags)),
         ("Sampler", settings.sampler, lambda: select_sampler(port, settings.sampler)),
+        # After the sampler: switching the sampler may change Noise Schedule along with it.
+        # When the control does not exist (V5) `select_noise_schedule` returns True by
+        # itself and does not block generation.
+        ("Noise Schedule", settings.noise_schedule,
+         lambda: select_noise_schedule(port, settings.noise_schedule)),
     ):
         if value is not None and not configure():
             print(f"generation setting verification failed: {label}")
@@ -6315,7 +6460,13 @@ def configure_sampler_settings(port, settings: GenerationSettings | None = None)
     settings = settings or GENERATION_PROFILE.settings
     effort_ok = (settings.effort is None
                  or select_model_effort(port, settings.effort))
-    all_ok = settings.guidance_rescale is None or with_retry("ensure_rescale_visible",
+    # Noise Schedule sits in the same Advanced Settings section as Rescale, so it has to be
+    # expanded as soon as either one is set; looking at Rescale alone would make a
+    # `guidance_rescale: null` profile treat Noise Schedule as "control absent" and skip it
+    # silently.
+    needs_advanced = (settings.guidance_rescale is not None
+                      or settings.noise_schedule is not None)
+    all_ok = not needs_advanced or with_retry("ensure_rescale_visible",
                         lambda: ensure_rescale_visible(port),
                         max_attempts=3, sleep_range=(1, 2))
     all_ok = effort_ok and all_ok

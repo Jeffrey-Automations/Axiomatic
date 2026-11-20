@@ -27,7 +27,11 @@
       "settings": {
         "effort": null,
         "transparent_background": null,
-        "quality_tags": null
+        "quality_tags": null,
+        "steps": 23,
+        "guidance": 6,
+        "guidance_rescale": 0,
+        "noise_schedule": "karras"
       },
       "todo": {
         "prompt": "todo_prompt_v4_5.md",

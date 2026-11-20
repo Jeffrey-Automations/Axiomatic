@@ -51,6 +51,19 @@ class GenerationSettings:
     transparent_background: bool | None = True
     quality_tags: str | None = "Standard"
     variety_plus: bool | None = True
+    # 預設 None＝不碰這個下拉；V4.5 的 Advanced Settings 才有它，V5 沒有。
+    # **新欄位一律要預設 None 並列進 `_IDENTITY_OMIT_WHEN_NONE`**，理由見那裡。
+    noise_schedule: str | None = None
+
+
+# 識別值是 `asdict(GenerationProfile)` 的雜湊，送進續跑檢查點、單張請求與
+# `webrunner_generation.json`。`GenerationSettings` 每多一個欄位，`asdict()` 就多一個
+# 鍵，**所有既有 profile 的識別值一起變**：正在跑的批次會把自己的檢查點判成「別的設
+# 定」、開新資料夾重頭產圖；新舊兩版程式（還沒重啟的 bot 對上新的批次）算出的值也會
+# 對不上而互相拒絕。所以後來加的欄位預設一律是 None（＝不操作），值是 None 時不放進
+# 識別值——設定沒用到這個欄位的 profile，識別值與加欄位之前逐位元組相同。
+# `test_generation_config` 用改動前算出的雜湊值釘住這件事。
+_IDENTITY_OMIT_WHEN_NONE = ("noise_schedule",)
 
 
 @dataclass(frozen=True)
@@ -72,6 +85,9 @@ class GenerationProfile:
     def identity(self, model_candidates: list[str] | tuple[str, ...]) -> str:
         payload = asdict(self)
         payload["model_candidates"] = list(model_candidates)
+        for key in _IDENTITY_OMIT_WHEN_NONE:
+            if payload["settings"].get(key) is None:
+                payload["settings"].pop(key, None)
         return hashlib.sha256(json.dumps(payload, sort_keys=True,
                                          default=str).encode("utf-8")).hexdigest()
 
@@ -124,10 +140,13 @@ def _settings(data: object) -> GenerationSettings:
                 raise ValueError(f"generation config: invalid {key}")
         else:
             result[key] = _text(value, key)
+    # Medium 是另一個模型：Steps／Sampler 不渲染，Advanced Settings 整段消失，
+    # 所以底下的 Rescale 與 Noise Schedule 也一樣設不到。
     if result["effort"] == "Medium" and any(
-            result[key] is not None for key in ("steps", "sampler", "guidance_rescale")):
-        raise ValueError("generation config: Medium effort requires steps, sampler "
-                         "and guidance_rescale to be null")
+            result[key] is not None
+            for key in ("steps", "sampler", "guidance_rescale", "noise_schedule")):
+        raise ValueError("generation config: Medium effort requires steps, sampler, "
+                         "guidance_rescale and noise_schedule to be null")
     return GenerationSettings(**result)
 
 

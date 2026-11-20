@@ -105,6 +105,10 @@
    `configure_sampler_settings` 套用啟動時載入的 `GenerationProfile`。
    `generation_config.json` 以 `active_profile` 選擇模型候選、產圖設定、todo 與 fallback 路徑，
    所有平台與批次共用同一份設定。`ensure_generation_options` 與數值讀回在每次產圖前驗證；
+   設了 `noise_schedule` 時，Noise Schedule 下拉在取樣器之後核對（`select_noise_schedule`，
+   頁面沒有這個控制項時警告一次並略過），它與 Rescale 同在 Advanced Settings，任一有設定就展開。
+   後加的設定欄位預設 `null`，值為 `null` 時不列入識別值（`_IDENTITY_OMIT_WHEN_NONE`），
+   既有 profile 的識別值因此不變；
    續跑檢查點包含模型、設定及路徑的識別值，避免混用不同設定的圖片。設定變更後須先停止
    批次並重啟所有平台行程及批次入口；程序間的預期識別與 `webrunner_generation.json`
    防止新舊設定合作。明確無效的設定停止啟動，缺檔則沿用預設。

@@ -1,6 +1,7 @@
 """Generation profiles keep settings, queue routing and resume identity together."""
+import hashlib
 import json
-from dataclasses import replace
+from dataclasses import asdict, fields, replace
 
 import pytest
 
@@ -45,12 +46,81 @@ def test_selected_profile_resolves_its_own_files_independent_of_cwd(tmp_path, mo
     {"settings": {"transparent_background": "false"}},
     {"model_candidates": []}, {"model_candidates": "model"},
     {"settings": {"effort": "Medium"}},
+    {"settings": {"noise_schedule": ""}}, {"settings": {"noise_schedule": "  "}},
+    {"settings": {"noise_schedule": 1}}, {"settings": {"noise_schedule": True}},
+    {"settings": {"effort": "Medium", "steps": None, "sampler": None,
+                  "guidance_rescale": None, "noise_schedule": "karras"}},
     {"todo": {"prompt": "same.md", "character1": "same.md"}},
     {"todo": {"prompt": "prompt.md"}},
 ])
 def test_explicit_invalid_profile_fails_before_consuming(tmp_path, profile):
     with pytest.raises(ValueError):
         gc.load_generation_profile(_write_config(tmp_path, profile))
+
+
+def test_noise_schedule_defaults_to_untouched_and_accepts_text(tmp_path):
+    assert gc.GenerationSettings().noise_schedule is None
+    assert gc.load_generation_profile(_write_config(tmp_path)).settings.noise_schedule is None
+    profile = gc.load_generation_profile(_write_config(tmp_path, {"settings": {
+        "noise_schedule": " karras "}}))
+    assert profile.settings.noise_schedule == "karras"
+    explicit_null = gc.load_generation_profile(_write_config(tmp_path, {"settings": {
+        "noise_schedule": None}}))
+    assert explicit_null.settings == gc.GenerationSettings()
+
+
+# 這兩個雜湊值是**加入 `noise_schedule` 之前**的程式算出來的。識別值進
+# 續跑檢查點、單張請求與 `webrunner_generation.json`；新欄位讓它們變動的話，正在跑的
+# 批次會把自己的檢查點判成別的設定、開新資料夾重產，還沒重啟的 bot 也會跟新批次互相
+# 拒絕。路徑刻意用相對字串，雜湊才不隨機器與暫存目錄變。
+_LEGACY_IDENTITIES = {
+    "v5": "fb71eb40bcf474822fc04758c2683996e29d0ee25381ecfbbee30211b404ec43",
+    "v4_5": "8a39357bbaf947a3a9b565174037627facb8ca95147d9c74d528ec9f88dde691",
+}
+_LEGACY_SETTING_KEYS = ("resolution", "orientation", "effort", "sampler", "steps",
+                        "guidance", "guidance_rescale", "transparent_background",
+                        "quality_tags", "variety_plus")
+
+
+def _fixed_profiles(**settings_overrides):
+    todo = gc.QueueFiles("t/p.md", "t/c1.md", "t/c2.md", "t/u.md")
+    fallback = gc.QueueFiles("f/p.md", "f/c1.md", "f/c2.md", "f/u.md")
+    v5 = gc.GenerationProfile("v5", None, gc.GenerationSettings(**settings_overrides),
+                              todo, fallback)
+    v4_5 = gc.GenerationProfile(
+        "v4_5", ("NAI Diffusion V4.5 Full",),
+        gc.GenerationSettings(effort=None, steps=28, guidance=7, guidance_rescale=0.6,
+                              transparent_background=None, quality_tags=None,
+                              **settings_overrides),
+        todo, fallback)
+    return {"v5": (v5, ["Model A"]), "v4_5": (v4_5, ["NAI Diffusion V4.5 Full"])}
+
+
+def test_an_unset_noise_schedule_keeps_every_existing_identity():
+    for name, (profile, models) in _fixed_profiles().items():
+        assert profile.settings.noise_schedule is None
+        assert profile.identity(models) == _LEGACY_IDENTITIES[name], name
+        # 同一件事換個角度：照改動前的 payload 形狀（只有十個舊鍵）重算也要相等。
+        payload = {"name": profile.name, "model_candidates": list(models),
+                   "settings": {k: getattr(profile.settings, k) for k in _LEGACY_SETTING_KEYS},
+                   "todo": asdict(profile.todo), "fallback": asdict(profile.fallback)}
+        legacy = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str)
+                                   .encode("utf-8")).hexdigest()
+        assert profile.identity(models) == legacy, name
+
+
+def test_a_set_noise_schedule_is_part_of_the_identity():
+    karras = _fixed_profiles(noise_schedule="karras")
+    native = _fixed_profiles(noise_schedule="native")
+    for name, (profile, models) in karras.items():
+        assert profile.identity(models) != _LEGACY_IDENTITIES[name]
+        assert profile.identity(models) != native[name][0].identity(models)
+    # 只有 None 被省略；其他新欄位（若哪天有）沒列進省略清單就會改到全部識別值。
+    assert gc._IDENTITY_OMIT_WHEN_NONE == ("noise_schedule",)
+    assert set(gc._IDENTITY_OMIT_WHEN_NONE) | set(_LEGACY_SETTING_KEYS) == {
+        field.name for field in fields(gc.GenerationSettings)}, (
+        "GenerationSettings 多了新欄位：預設必須是 None，並列進 _IDENTITY_OMIT_WHEN_NONE，"
+        "否則每一個既有 profile 的識別值都會變")
 
 
 def test_unknown_selected_profile_is_an_error(tmp_path):
