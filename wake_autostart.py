@@ -8,6 +8,10 @@
     py -3 wake_autostart.py --list-profiles  # 列出生成設定並標出預設，不啟動工作
     py -3 wake_autostart.py --profile v4_5   # 這次叫醒的監督者改用 v4_5（不改預設）
 
+在終端機直接執行、沒帶 `--profile` 時會先列出生成 profile 讓人選（Enter ＝ 預設）；
+選到的等同 `--profile NAME`。不是互動終端機（排程器、bot 的主機指令、管線）時不問，
+照預設；`--presence-only` 不產圖，也不問；本專案已有行程在跑時也不問（選別套會被拒）。
+
 **叫醒的是排程器裡現在真的有的工作**，不是設定檔算出來的那一份。bot 的工作是
 **一個平台一筆**（`\\Axiomatic\\Bot-<平台>`），而剛被關掉的平台，它的工作仍然留在
 排程器裡——用「現在開著哪些」去算要叫醒誰，那一筆就會變成永遠叫不醒也刪不掉。
@@ -282,6 +286,54 @@ def _prepare_profile(name: str, targets: list[str]) -> list[str]:
     return written
 
 
+def _interactive() -> bool:
+    """有人在終端機前面：stdin 與 stdout 都是主控台。
+
+    排程器、bot 的主機指令、管線、`pythonw` 都不是——那些情境絕不能停下來等輸入，
+    否則叫醒就卡死在一個沒有人會回答的提示上。
+    """
+    try:
+        return bool(sys.stdin and sys.stdout and sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _ask_profile() -> str | None:
+    """直接執行、沒有 `--profile` 時讓人選這次叫醒的生成 profile。
+
+    回傳選到的名字，交給 `_prepare_profile` 照 `--profile` 的路走（驗證、只管這一次）。
+    回傳 None ＝ 不顯示選單、照預設：設定讀不到、只有一套、或本專案已有行程在跑——
+    那時選別套也只會被 `_prepare_profile` 拒絕，先問再拒只是白問一次。
+    Enter 選預設；EOF／Ctrl+C 往上拋，由呼叫端當作取消。
+    """
+    try:
+        _raw, config = _read_profile_config()
+    except (OSError, ValueError) as error:
+        print(f"讀不到生成設定（{error}），不顯示版本選單，照預設啟動。", file=sys.stderr)
+        return None
+    names = list(config["profiles"])
+    default = config.get("active_profile")
+    if len(names) < 2:
+        return None
+    pids, complete = _profile_processes()
+    if pids or not complete:
+        print("本專案的 bot、批次或監督者已在執行（或無法確認行程狀態），不顯示版本選單；"
+              "新叫醒的照預設啟動。要換版本請先全部停止。")
+        return None
+    print("這次叫醒要用哪一套生成 profile？（直接按 Enter 用預設）")
+    for number, name in enumerate(names, 1):
+        print(f"  {number}) {name}{'（預設）' if name == default else ''}")
+    while True:
+        answer = input(f"編號或名稱 [{default}]：").strip()
+        if not answer:
+            return default if default in names else None
+        if answer in names:
+            return answer
+        if answer.isdecimal() and 1 <= int(answer) <= len(names):
+            return names[int(answer) - 1]
+        print(f"沒有 {answer!r} 這個選項。", file=sys.stderr)
+
+
 def _discard_selections(targets: list[str]) -> None:
     """清掉這些工作的監督者的選擇檔（best-effort；清不掉只印一行，靠時效兜底）。"""
     for task_name in targets:
@@ -341,9 +393,17 @@ def main(argv: list[str] | None = None) -> int:
               "py -3 install_autostart.py --install", file=sys.stderr)
         return 1
     selected: list[str] = []
-    if args.profile is not None:
+    profile = args.profile
+    # 直接執行（有人在終端機前、沒帶 --profile）→ 問一次。只偵測狀態的 bot 不產圖，不問。
+    if profile is None and not args.presence_only and _interactive():
         try:
-            selected = _prepare_profile(args.profile, targets)
+            profile = _ask_profile()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消，沒有叫醒任何工作。", file=sys.stderr)
+            return 1
+    if profile is not None:
+        try:
+            selected = _prepare_profile(profile, targets)
         except (OSError, ValueError, RuntimeError) as error:
             print(f"無法指定生成設定：{error}", file=sys.stderr)
             return 1

@@ -215,6 +215,8 @@ py -3 install_autostart.py --remove     # 移除
 v4_5（含當機重生與 bot 用 `/run` 開始的批次），`generation_config.json` 不會被改寫，
 之後的登入、重新開機與不帶 `--profile` 的叫醒都回到 `active_profile` 的預設；完整規則見
 {doc}`config`。
+在終端機直接執行 `py -3 wake_autostart.py` 而不帶 `--profile` 時，會先列出版本讓你選
+（Enter 用預設），效果與 `--profile` 相同；排程器等非互動執行或已有行程在跑時不會詢問。
 
 先只叫醒 bot、稍後再開始產圖時，可依序執行：
 

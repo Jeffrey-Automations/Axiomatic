@@ -35,6 +35,14 @@ from axiomatic import _supervisor as sup  # noqa: E402  與 wake_autostart 同�
 BOT_TASK = ia.bot_task("discord")[0]
 BOT_SCRIPT = "start_discord_bot.py"
 BATCH_TASK = ia.BATCH_TASK[0]
+_REAL_INTERACTIVE = wa._interactive
+
+
+@pytest.fixture(autouse=True)
+def _no_terminal(monkeypatch):
+    """預設當作沒有人在終端機前：`pytest -s` 底下 stdin 是真的主控台，不關掉的話
+    每一支不帶 `--profile` 的 `main()` 都會停在版本選單等一個不會來的輸入。"""
+    monkeypatch.setattr(wa, "_interactive", lambda: False)
 
 
 class _Scheduler:
@@ -355,6 +363,144 @@ def test_the_selection_is_validated_even_if_the_shell_carries_another_override(
     monkeypatch.setattr(wa, "_profile_processes", lambda: pytest.fail("must validate first"))
     monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
     assert wa.main(["--profile", "v4_5"]) == 1
+
+
+class _Answers:
+    """`input()` 的替身：依序回答；答完還被問就是多問了一次。"""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.prompts: list[str] = []
+
+    def __call__(self, prompt=""):
+        self.prompts.append(prompt)
+        if not self.answers:
+            pytest.fail("選單多問了一次")
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+def _terminal(monkeypatch, *answers):
+    asked = _Answers(*answers)
+    monkeypatch.setattr(wa, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", asked)
+    monkeypatch.setattr(wa, "_schtasks", _Scheduler())
+    return asked
+
+
+def _record_wakes(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def wake(name):
+        seen[name] = _selection(name)
+        return 0
+    monkeypatch.setattr(wa, "wake", wake)
+    return seen
+
+
+@pytest.mark.parametrize("answer", ["2", "v4_5", "２"])
+def test_a_direct_run_offers_the_profiles_and_hands_the_choice_on(
+        profile_config, monkeypatch, capsys, answer):
+    """直接執行 `wake_autostart.py` 也要能選版本。選到的等同 `--profile`。"""
+    path, _data = profile_config
+    original = path.read_bytes()
+    asked = _terminal(monkeypatch, answer)
+    seen = _record_wakes(monkeypatch)
+    assert wa.main([]) == 0
+    assert len(asked.prompts) == 1
+    out = capsys.readouterr().out
+    assert "1) v5（預設）" in out and "2) v4_5" in out
+    assert {name: sel["profile"] for name, sel in seen.items()} == {
+        name: "v4_5" for name in _REGISTERED}
+    assert path.read_bytes() == original, "選單和 --profile 一樣，不改預設"
+
+
+def test_enter_takes_the_default_and_leaves_no_selection(profile_config, monkeypatch):
+    sup.write_generation_selection("batch", "v4_5")          # 先前失敗的叫醒留下來的
+    _terminal(monkeypatch, "")
+    seen = _record_wakes(monkeypatch)
+    assert wa.main(["--batch-only"]) == 0
+    assert seen == {BATCH_TASK: None}
+
+
+def test_a_wrong_answer_is_asked_again_not_guessed(profile_config, monkeypatch):
+    asked = _terminal(monkeypatch, "3", "v4", "0", "v4_5")
+    seen = _record_wakes(monkeypatch)
+    assert wa.main(["--bot-only"]) == 0
+    assert len(asked.prompts) == 4
+    assert seen[BOT_TASK]["profile"] == "v4_5"
+
+
+@pytest.mark.parametrize("abort", [EOFError(), KeyboardInterrupt()])
+def test_cancelling_the_menu_wakes_nothing(profile_config, monkeypatch, abort):
+    _terminal(monkeypatch, abort)
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("cancelled menu must not wake"))
+    assert wa.main([]) == 1
+    assert _no_selections()
+
+
+@pytest.mark.parametrize("processes", [([123], True), ([], False)])
+def test_no_menu_while_project_processes_run(profile_config, monkeypatch, capsys, processes):
+    """有行程在跑時選別套只會被拒；不問，照原本的方式（預設）叫醒。"""
+    monkeypatch.setattr(wa, "_profile_processes", lambda: processes)
+    _terminal(monkeypatch)                                   # 一問就 fail
+    seen = _record_wakes(monkeypatch)
+    assert wa.main(["--batch-only"]) == 0
+    assert seen == {BATCH_TASK: None}
+    assert "不顯示版本選單" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv", [["--presence-only"], ["--profile", "v4_5"], ["--list-profiles"]])
+def test_no_menu_when_the_choice_is_already_made_or_moot(profile_config, monkeypatch, argv):
+    _terminal(monkeypatch)                                   # 一問就 fail
+    monkeypatch.setattr(wa, "_registered_presence_only", lambda: True)
+    monkeypatch.setattr(wa, "wake", lambda *_a: 0)
+    assert wa.main(argv) == 0
+
+
+def test_no_menu_without_a_terminal(profile_config, monkeypatch):
+    """排程器、bot 的主機指令、管線：沒有人會回答，停下來等就是卡死。"""
+    monkeypatch.setattr("builtins.input", lambda *_a: pytest.fail("must not prompt"))
+    seen = _record_wakes(monkeypatch)
+    assert wa.main([]) == 0
+    assert seen == {name: None for name in _REGISTERED}
+
+
+def test_a_single_profile_or_unreadable_config_is_not_a_menu(profile_config, monkeypatch, capsys):
+    path, data = profile_config
+    _terminal(monkeypatch)                                   # 一問就 fail
+    monkeypatch.setattr(wa, "wake", lambda *_a: 0)
+    del data["profiles"]["v4_5"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert wa.main([]) == 0
+    path.write_text("{", encoding="utf-8")
+    assert wa.main([]) == 0
+    assert "讀不到生成設定" in capsys.readouterr().err
+
+
+class _Stream:
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        if isinstance(self.tty, BaseException):
+            raise self.tty
+        return self.tty
+
+
+@pytest.mark.parametrize("stdin, stdout, expected", [
+    (_Stream(True), _Stream(True), True),
+    (_Stream(True), _Stream(False), False),
+    (_Stream(False), _Stream(True), False),
+    (None, _Stream(True), False),
+    (_Stream(ValueError("closed")), _Stream(True), False),
+])
+def test_only_a_real_console_counts_as_interactive(monkeypatch, stdin, stdout, expected):
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert _REAL_INTERACTIVE() is expected
 
 
 def test_unregistered_task_writes_no_selection(profile_config, monkeypatch):

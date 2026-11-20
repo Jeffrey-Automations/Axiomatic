@@ -117,7 +117,11 @@
    選擇時連呼叫端帶著的值也拿掉。`stream_child` 每次 spawn 都從 `os.environ` 複製，所以
    重生的子行程與 bot 自己 spawn 的批次都用同一套，`_generation_config` 以這個變數蓋過
    `active_profile`，`require_current_profile` 也拿啟動時的同一個值重讀。`--list-profiles`
-   只讀取設定。
+   只讀取設定。在互動終端機（`_interactive()`：stdin 與 stdout 都是主控台）直接執行、沒帶
+   `--profile`、不是 `--presence-only` 時，`_ask_profile()` 先列出 profile 讓人選，結果交給
+   `_prepare_profile`，與 `--profile NAME` 同一條路；Enter ＝ 預設，EOF／Ctrl+C ＝ 取消、一筆都
+   不叫醒。本專案已有行程在跑（或掃描不完整）時不問。非互動執行（排程器、bot 的主機指令、
+   管線）絕不能停下來等輸入，否則叫醒會卡死在沒人回答的提示上。
 2. **單張產圖（`/gen image`）**：bot 以記憶體 FIFO 序列化請求 → 寫 `single_image_request.json`
    （單槽）→ 正在跑的批次帶內服務、既有單圖伺服器接手，或 bot 以
    `SINGLE_IMAGE_SERVER_FLAG` spawn 新的單圖伺服器 → 發 `single_image_done` 並刪除請求檔 →

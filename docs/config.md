@@ -60,6 +60,12 @@ py -3 wake_autostart.py --profile v4_5 --batch-only
 等同沒有指定。選擇只在兩分鐘內有效，排程器拒絕執行時會立即清掉，不會在之後的登入或
 開機冒出來。不帶 `--profile` 的叫醒會先清掉殘留的選擇。
 
+在終端機直接執行 `py -3 wake_autostart.py`（不帶 `--profile`）時，會先列出版本並標出預設，
+輸入編號或名稱選擇，直接按 Enter 用預設，Ctrl+C 取消且不叫醒任何工作；選到的等同
+`--profile NAME`，同樣只管這一次。以下情況不詢問、照預設叫醒：不是互動終端機（工作排程器、
+bot 的主機指令、管線）、`--presence-only`、只有一個 profile、設定檔讀不到，或本專案的
+bot、批次、監督者已在執行（那時選別套也會被拒絕）。
+
 先叫醒 bot、晚點才開始產圖時，用 `--profile v4_5 --bot-only` 叫醒 bot，之後用 `/run`
 開始；bot 開始的批次沿用 bot 的版本。bot 已經在跑時再執行
 `--profile v4_5 --batch-only` 會被拒絕，因為看不出在跑的 bot 用的是哪一套。
