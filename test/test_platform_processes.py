@@ -130,15 +130,11 @@ def test_computing_a_platform_path_does_not_touch_the_disk(tmp_path, monkeypatch
 _DELIBERATELY_SHARED = {
     "TOKEN_FILE": "憑證，使用者自己放的檔案（逐平台的憑證檔由各自的 transport 宣告）",
     "BATCH_SUPERVISOR_LOCK_FILE": "批次監督權——**全機一把就是它的重點**，見下面那一節",
-    "PROMPT_FILE": "使用者內容：佇列空時的 fallback 提示詞",
+    # 四個 todo 佇列與四個 fallback 提示詞（`TODO_PROMPT_FILE`、`TODO_FILE_1`… 那八個）
+    # 已經不是根目錄常數：路徑改由 `generation_config.json` 的生成 profile 決定
+    # （`_generation_config.QueueFiles`），所以不在這份清單裡。它們仍是全機共用的批次
+    # 磁碟契約——那個保證現在由 profile 解析負責，不是靠這裡。
     "DEFAULT_PROMPT_FILE": "使用者內容：主提示詞範本",
-    "CHARACTER1_FILE": "使用者內容：角色 1 的 fallback",
-    "CHARACTER2_FILE": "使用者內容：角色 2 的 fallback",
-    "UNDESIRED_FILE": "使用者內容：負面提示詞的 fallback",
-    "TODO_PROMPT_FILE": "批次佇列，bot 寫、webrunner 讀（磁碟契約）",
-    "TODO_FILE_1": "同上，批次佇列的磁碟契約",
-    "TODO_FILE_2": "同上（而且是位置性的，兩份會讓配對整個錯開）",
-    "TODO_UNDESIRED_FILE": "同上，批次佇列的磁碟契約",
     "TEMPLATES_DIR": "使用者自己放的提示詞範本，bot 只讀",
     "LAUNCHER_SCRIPT": "程式檔，不是狀態",
     "WEBRUNNER_LOG": "批次的記錄檔（一次批次一份，不是一個平台一份）",
