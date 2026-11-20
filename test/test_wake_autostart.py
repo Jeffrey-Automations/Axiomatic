@@ -193,11 +193,37 @@ def test_it_wakes_the_very_tasks_the_installer_registers():
 @pytest.mark.parametrize("task, script, platform", [
     (ia.bot_task("discord")[0], "start_discord_bot.py", "discord"),
     (ia.bot_task("telegram")[0], "start_discord_bot.py", "telegram"),
+    # 平台名本身可以含 `-`：從最後一個 `-` 切會取成 `plat`／`c`，對到別的平台。
+    (ia.bot_task("my-plat")[0], "start_discord_bot.py", "my-plat"),
+    (ia.bot_task("a-b-c")[0], "start_discord_bot.py", "a-b-c"),
     (ia.BATCH_TASK[0], ia.BATCH_TASK[1], None),
 ])
 def test_each_task_maps_back_to_its_script_and_platform(task, script, platform):
     """工作名 →（腳本, 平台）。平台那一半就是「它在跑嗎」問得準不準的關鍵。"""
     assert wa.task_script(task) == (script, platform)
+
+
+def test_a_dashed_platform_gets_its_own_selection_file():
+    assert wa.selection_target(ia.bot_task("my-plat")[0]) == ("bot", "my-plat")
+
+
+@pytest.mark.parametrize("task", [
+    "\\Axiomatic\\Bot", "\\Axiomatic\\Bot-", "\\Axiomatic\\BotX", "\\Other\\Bot-discord",
+])
+def test_an_unrecognised_task_name_is_refused_not_guessed(task):
+    with pytest.raises(ValueError):
+        wa.task_script(task)
+
+
+def test_an_unrecognised_registered_task_is_skipped_not_fatal(monkeypatch, capsys):
+    """排程器裡手動建立或舊式命名的工作不得讓整次叫醒當掉；其他工作照叫。"""
+    good = ia.bot_task("discord")[0]
+    monkeypatch.setattr(ia, "registered_tasks", lambda: ["\\Axiomatic\\Bot", good])
+    woken = []
+    monkeypatch.setattr(wa, "wake", lambda name: woken.append(name) or 0)
+    assert wa.main(["--bot-only"]) == 0
+    assert woken == [good]
+    assert "\\Axiomatic\\Bot" in capsys.readouterr().err
 
 
 def test_the_running_probe_is_asked_about_this_platform_only():

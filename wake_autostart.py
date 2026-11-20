@@ -83,15 +83,23 @@ def _pid_text(pids: list[int]) -> str:
     return "、".join(str(pid) for pid in pids)
 
 
+# bot 工作名的固定前綴（`\Axiomatic\Bot-`），從 `bot_task` 本身推出來，不另抄一份字面值。
+_BOT_TASK_PREFIX = bot_task("x")[0].removesuffix("x")
+
+
 def task_script(task_name: str) -> tuple[str, str | None]:
     """工作名 →（那筆工作跑的腳本, 用來分辨平台的那個參數）。
 
     bot 那幾筆共用同一個腳本檔名，所以「它在跑嗎」不能只比檔名——否則其中一個平台
-    的那一支會替別的平台回答「在跑」。平台名從工作名的後綴取回來。
+    的那一支會替別的平台回答「在跑」。平台名是工作名去掉固定前綴之後的**整段**：
+    平台名本身可以含 `-`（`my-plat`），從最後一個 `-` 切的話會取成 `plat`，選擇檔與
+    「是否在跑」都會對到別的平台。認不出來的工作名直接報錯，不猜。
     """
     if task_name == BATCH_TASK[0]:
         return BATCH_TASK[1], None
-    return "start_discord_bot.py", task_name.rsplit("-", 1)[-1]
+    if not task_name.startswith(_BOT_TASK_PREFIX) or task_name == _BOT_TASK_PREFIX:
+        raise ValueError(f"不是本專案的 bot 或批次工作：{task_name!r}")
+    return "start_discord_bot.py", task_name[len(_BOT_TASK_PREFIX):]
 
 
 def selection_target(task_name: str) -> tuple[str, str | None]:
@@ -388,6 +396,16 @@ def main(argv: list[str] | None = None) -> int:
         targets = [bot_task("discord")[0]]
     else:
         targets = _wanted_task_names(which)
+    # 排程器裡可能有手動建立或舊式命名、認不出平台的工作：略過並講出來，不讓整次叫醒當掉。
+    recognised = []
+    for task_name in targets:
+        try:
+            task_script(task_name)
+        except ValueError:
+            print(f"略過認不出平台的工作：{task_name}", file=sys.stderr)
+            continue
+        recognised.append(task_name)
+    targets = recognised
     if not targets:
         print("`\\Axiomatic\\` 底下沒有符合的工作。先執行 "
               "py -3 install_autostart.py --install", file=sys.stderr)
