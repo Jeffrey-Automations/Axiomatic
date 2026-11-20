@@ -9,7 +9,10 @@ bot 的工作是一個平台一筆，而它們共用同一個腳本檔名，所�
 問——不然其中一個平台的那一支會替別的平台回答「在跑」，而那個平台就永遠叫不醒。
 
 測試不碰真的工作排程器，也不看真的行程表：排程器呼叫、啟動器探測、睡眠與時鐘
-全部是注入的替身。
+全部是注入的替身。選擇檔的路徑由 `conftest._SIDE_EFFECT_LOGS` 導到暫存目錄。
+
+`--profile` 的語意：只管這次叫醒起來的行程，`active_profile` 是持久的預設值，這支
+腳本不改它。
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import install_autostart as ia  # noqa: E402
 import wake_autostart as wa  # noqa: E402
+from axiomatic import _supervisor as sup  # noqa: E402  與 wake_autostart 同一個模組物件
 
 # 合成的工作名：這幾支不碰真的排程器，所以名字只要形狀對就好。
 BOT_TASK = ia.bot_task("discord")[0]
@@ -212,50 +216,111 @@ def profile_config(tmp_path, monkeypatch):
     return path, data
 
 
+def _selection(task_name):
+    """那筆工作的監督者的選擇檔內容；不在 → None。"""
+    key, platform = wa.selection_target(task_name)
+    path = sup.generation_selection_file(key, platform)
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def _no_selections():
+    return all(_selection(name) is None for name in _REGISTERED)
+
+
+def test_selection_files_are_redirected_out_of_the_repo():
+    """下面每一支都會寫選擇檔；它們必須落在暫存目錄（`conftest._SIDE_EFFECT_LOGS`）。"""
+    for name in _REGISTERED:
+        key, platform = wa.selection_target(name)
+        assert REPO_ROOT not in sup.generation_selection_file(key, platform).parents
+
+
+@pytest.mark.parametrize("task, expected", [
+    (ia.bot_task("discord")[0], ("bot", "discord")),
+    (ia.bot_task("telegram")[0], ("bot", "telegram")),
+    (ia.BATCH_TASK[0], ("batch", None)),
+])
+def test_each_task_hands_its_selection_to_its_own_supervisor(task, expected):
+    """bot 的監督者一個平台一支，所以選擇也是一個平台一份；批次全機一份。"""
+    assert wa.selection_target(task) == expected
+
+
 def test_list_profiles_never_touches_scheduler(profile_config, monkeypatch, capsys):
     path, _data = profile_config
     original = path.read_bytes()
     monkeypatch.setattr(wa, "_schtasks", lambda *_a: pytest.fail("listing must not query scheduler"))
     monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("listing must not wake"))
     assert wa.main(["--list-profiles"]) == 0
-    assert capsys.readouterr().out.splitlines() == ["* v5", "  v4_5"]
+    assert capsys.readouterr().out.splitlines() == ["* v5（預設）", "  v4_5"]
     assert path.read_bytes() == original
+    assert _no_selections()
 
 
 @pytest.mark.parametrize("scope, expected", [
     ([], _REGISTERED), (["--bot-only"], _REGISTERED[:2]),
     (["--batch-only"], _REGISTERED[2:]), (["--presence-only"], [BOT_TASK]),
 ])
-def test_profile_is_saved_before_selected_tasks_wake(profile_config, monkeypatch, scope, expected):
-    path, data = profile_config
+def test_profile_is_handed_to_exactly_the_woken_tasks(profile_config, monkeypatch, scope, expected):
+    """`--profile` **不改** `generation_config.json`，只替這次叫醒的每一筆工作的監督者各寫
+    一個選擇檔，而且在叫醒之前就寫好（監督者一起來就會去讀）。"""
+    path, _data = profile_config
+    original = path.read_bytes()
     scheduler = _Scheduler()
     monkeypatch.setattr(wa, "_schtasks", scheduler)
     monkeypatch.setattr(wa, "_registered_presence_only", lambda: True)
     woken = []
-    def wake(key):
-        assert json.loads(path.read_text(encoding="utf-8"))["active_profile"] == "v4_5"
-        woken.append(key)
+
+    def wake(name):
+        selection = _selection(name)
+        assert selection is not None, f"{name} 被叫醒的時候選擇檔還沒寫好"
+        key, platform = wa.selection_target(name)
+        assert selection["profile"] == "v4_5"
+        assert selection["task"] == sup.generation_selection_tag(key, platform)
+        woken.append(name)
         return 0
     monkeypatch.setattr(wa, "wake", wake)
     assert wa.main([*scope, "--profile", "v4_5"]) == 0
     assert woken == expected
-    saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved == {**data, "active_profile": "v4_5"}
+    assert path.read_bytes() == original, "預設值不得被 --profile 改寫"
+    for name in _REGISTERED:
+        assert (_selection(name) is not None) == (name in expected), (
+            f"{name}：只有這次叫醒的監督者可以拿到選擇")
     assert scheduler.calls == [("/Query", "/TN", name) for name in expected]
-    assert not list(path.parent.glob(".generation-selection-*.tmp"))
+    assert not list(sup.BOT_GENERATION_SELECTION_FILE.parent.glob(".generation-selection-*.tmp"))
 
 
-def test_same_profile_keeps_bytes_and_does_not_require_idle(profile_config, monkeypatch):
+def test_the_default_profile_writes_nothing_and_does_not_require_idle(profile_config, monkeypatch):
     path, _data = profile_config
     original = path.read_bytes()
-    monkeypatch.setattr(wa, "_profile_processes", lambda: pytest.fail("not switching"))
+    sup.write_generation_selection("bot", "v4_5", platform="discord")   # 先前失敗的叫醒留下來的
+    monkeypatch.setattr(wa, "_profile_processes", lambda: pytest.fail("not selecting"))
     monkeypatch.setattr(wa, "wake", lambda *_a: 0)
     assert wa.main(["--profile", "v5"]) == 0
     assert path.read_bytes() == original
+    assert _selection(BOT_TASK) is None, "指定的就是預設，殘留的選擇要清掉"
+
+
+def test_a_wake_without_profile_clears_leftover_selections(profile_config, monkeypatch):
+    """沒有指定 → 照預設。先前叫醒失敗留下、還沒過期的選擇不得冒出來。"""
+    for name in _REGISTERED:
+        key, platform = wa.selection_target(name)
+        sup.write_generation_selection(key, "v4_5", platform=platform)
+    seen = []
+    monkeypatch.setattr(wa, "wake", lambda name: seen.append(_selection(name)) or 0)
+    assert wa.main(["--bot-only"]) == 0
+    assert seen == [None, None]
+    assert _selection(BATCH_TASK) is not None, "沒有叫醒的那一支不該被動到"
+
+
+def test_a_refused_wake_does_not_leave_its_selection_behind(profile_config, monkeypatch):
+    monkeypatch.setattr(wa, "_schtasks", _Scheduler())
+    monkeypatch.setattr(wa, "wake", lambda name: 1 if name == BATCH_TASK else 0)
+    assert wa.main(["--profile", "v4_5"]) == 1
+    assert _selection(BOT_TASK) is not None
+    assert _selection(BATCH_TASK) is None, "排程器沒接受，留著只會讓下一次啟動撿到"
 
 
 @pytest.mark.parametrize("processes", [([123], True), ([], False)])
-def test_busy_or_unknown_process_state_blocks_switch(profile_config, monkeypatch, processes):
+def test_busy_or_unknown_process_state_blocks_selection(profile_config, monkeypatch, processes):
     path, _data = profile_config
     original = path.read_bytes()
     monkeypatch.setattr(wa, "_profile_processes", lambda: processes)
@@ -263,10 +328,11 @@ def test_busy_or_unknown_process_state_blocks_switch(profile_config, monkeypatch
     monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
     assert wa.main(["--profile", "v4_5"]) == 1
     assert path.read_bytes() == original
+    assert _no_selections()
 
 
 @pytest.mark.parametrize("name, invalid", [("absent", False), ("v4_5", True)])
-def test_invalid_selection_does_not_modify_or_wake(profile_config, monkeypatch, name, invalid):
+def test_invalid_selection_does_not_write_or_wake(profile_config, monkeypatch, name, invalid):
     path, data = profile_config
     if invalid:
         data["profiles"]["v4_5"]["settings"]["steps"] = 0
@@ -276,40 +342,47 @@ def test_invalid_selection_does_not_modify_or_wake(profile_config, monkeypatch, 
     monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
     assert wa.main(["--profile", name]) == 1
     assert path.read_bytes() == original
+    assert _no_selections()
 
 
-def test_unregistered_task_keeps_profile(profile_config, monkeypatch):
+def test_the_selection_is_validated_even_if_the_shell_carries_another_override(
+        profile_config, monkeypatch):
+    """驗證的是 NAME 本身，不是呼叫端環境裡剛好帶著的另一個名字。"""
+    path, data = profile_config
+    data["profiles"]["v4_5"]["settings"]["steps"] = 0
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv(sup.GENERATION_PROFILE_ENV, "v5")
+    monkeypatch.setattr(wa, "_profile_processes", lambda: pytest.fail("must validate first"))
+    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
+    assert wa.main(["--profile", "v4_5"]) == 1
+
+
+def test_unregistered_task_writes_no_selection(profile_config, monkeypatch):
     path, _data = profile_config
     original = path.read_bytes()
     monkeypatch.setattr(wa, "_schtasks", _Scheduler(registered=False))
     monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
     assert wa.main(["--profile", "v4_5"]) == 1
     assert path.read_bytes() == original
+    assert _no_selections()
 
 
-def test_failed_atomic_replace_keeps_original_and_removes_temp(profile_config, monkeypatch):
-    path, _data = profile_config
-    original = path.read_bytes()
+def test_failed_atomic_replace_writes_nothing_and_removes_temp(profile_config, monkeypatch):
     monkeypatch.setattr(wa, "_schtasks", _Scheduler())
     monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
-    def denied(*_a):
-        raise PermissionError("denied")
-    monkeypatch.setattr(wa.os, "replace", denied)
-    assert wa.main(["--profile", "v4_5"]) == 1
-    assert path.read_bytes() == original
-    assert not list(path.parent.glob(".generation-selection-*.tmp"))
+    real_replace = os.replace
+    calls = []
 
-
-def test_concurrent_config_edit_is_not_overwritten(profile_config, monkeypatch):
-    path, data = profile_config
-    changed = {**data, "active_profile": "another edit"}
-    def query(*args):
-        path.write_text(json.dumps(changed), encoding="utf-8")
-        return subprocess.CompletedProcess(args, 0)
-    monkeypatch.setattr(wa, "_schtasks", query)
-    monkeypatch.setattr(wa, "wake", lambda *_a: pytest.fail("must not wake"))
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == len(_REGISTERED):              # 最後一支（批次）寫不進去
+            raise PermissionError("denied")
+        return real_replace(src, dst)
+    monkeypatch.setattr(sup.os, "replace", flaky)
     assert wa.main(["--profile", "v4_5"]) == 1
-    assert json.loads(path.read_text(encoding="utf-8")) == changed
+    assert len(calls) == len(_REGISTERED)
+    assert _no_selections(), "寫到一半失敗，已經寫好的那幾支也要收回"
+    assert not list(sup.BOT_GENERATION_SELECTION_FILE.parent.glob(".generation-selection-*.tmp"))
 
 
 class _ProfileProcess:

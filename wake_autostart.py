@@ -5,8 +5,8 @@
     py -3 wake_autostart.py                  # 全部叫醒（已經在跑的略過）
     py -3 wake_autostart.py --bot-only       # 只叫醒平台的監督者（每個平台一支）
     py -3 wake_autostart.py --batch-only     # 只叫醒批次的監督者（會開始產圖）
-    py -3 wake_autostart.py --list-profiles  # 列出生成設定，不啟動工作
-    py -3 wake_autostart.py --profile v4_5   # 選定生成設定後叫醒已註冊工作
+    py -3 wake_autostart.py --list-profiles  # 列出生成設定並標出預設，不啟動工作
+    py -3 wake_autostart.py --profile v4_5   # 這次叫醒的監督者改用 v4_5（不改預設）
 
 **叫醒的是排程器裡現在真的有的工作**，不是設定檔算出來的那一份。bot 的工作是
 **一個平台一筆**（`\\Axiomatic\\Bot-<平台>`），而剛被關掉的平台，它的工作仍然留在
@@ -26,6 +26,12 @@
 **預設兩支都叫醒**（擁有者 2026-09-22 裁定），和登入時自動啟動的那一組一樣。批次一起來
 就開始消耗佇列產圖，所以刻意用 `/stop` 停掉批次、只想把 bot 拉回來時，要用 `--bot-only`。
 
+**`--profile NAME` 只管這一次叫醒。** `generation_config.json` 的 `active_profile` 是
+持久的預設值，這支腳本不改它；NAME 經由每支監督者各一個一次性選擇檔交過去（排程器
+不轉送環境變數），bot 的監督者一個平台一支，所以也是一個平台一份。監督者啟動時讀掉，
+整個生命週期的子孫（重生的子行程、週期重啟的瀏覽器、bot 自己 spawn 的批次）都用 NAME。
+之後沒有指定的叫醒、登入觸發、重新開機一律照預設。
+
 **不會多開。** 已經有啟動器在跑的那一支直接略過（`_supervisor.other_launcher_pids`，
 只是診斷用）；就算這個判斷失準，排程器的 `IgnoreNew` 與啟動器自己的單一實例鎖也會
 擋掉第二份。
@@ -34,7 +40,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 from pathlib import Path
 import os
 import shlex
@@ -44,7 +49,10 @@ import time
 
 from install_autostart import (BATCH_TASK, bot_task, _schtasks,
                                _wanted_task_names)
-from axiomatic._supervisor import other_launcher_pids
+from axiomatic._supervisor import (
+    GENERATION_SELECTION_TTL_SEC, discard_generation_selection, other_launcher_pids,
+    write_generation_selection,
+)
 from axiomatic._process_control import (
     cmdline_runs_script, looks_like_python_process, python_script_argument,
 )
@@ -80,6 +88,15 @@ def task_script(task_name: str) -> tuple[str, str | None]:
     if task_name == BATCH_TASK[0]:
         return BATCH_TASK[1], None
     return "start_discord_bot.py", task_name.rsplit("-", 1)[-1]
+
+
+def selection_target(task_name: str) -> tuple[str, str | None]:
+    """工作名 → 那支監督者讀的選擇檔（`_supervisor.generation_selection_file` 的引數）。
+
+    批次 → `("batch", None)`；bot → `("bot", 平台)`：bot 的監督者一個平台一支，各讀
+    自己那個平台的那一份。"""
+    _script, platform = task_script(task_name)
+    return ("batch", None) if platform is None else ("bot", platform)
 
 
 def wake(task_name: str, *, run=_schtasks, running=other_launcher_pids,
@@ -218,36 +235,62 @@ def _python_module_argument(cmdline: list[str]) -> str | None:
     return None
 
 
-def _select_profile(name: str, targets: list[str]) -> None:
-    raw, data = _read_profile_config()
+def _prepare_profile(name: str, targets: list[str]) -> list[str]:
+    """驗證 NAME，替這次要叫醒的每一筆工作的監督者各寫一個一次性選擇檔，回寫了哪些工作。
+
+    **不改 `generation_config.json`**：`active_profile` 是持久的預設值，`--profile` 只管
+    這一次叫醒起來的行程。排程器的 `/Run` 不轉送環境變數與參數，所以選擇經由磁碟交給
+    監督者（`_supervisor.write_generation_selection`）；監督者啟動時讀掉、刪掉，放進自己
+    的環境變數，整個生命週期的子孫都繼承它。bot 的監督者一個平台一支，所以一個平台一份。
+
+    NAME 就是預設時什麼都不寫，只把殘留的選擇清掉——跟沒有指定一樣。
+    """
+    _raw, data = _read_profile_config()
     if name not in data["profiles"]:
         raise ValueError(f"找不到 profile {name!r}；請用 --list-profiles 查看名稱。")
     from axiomatic._generation_config import parse_generation_profile
-    candidate = {**data, "active_profile": name}
-    parse_generation_profile(candidate, GENERATION_CONFIG_FILE.parent)
-    if data.get("active_profile") == name:
-        print(f"生成 profile 已是 {name}，沿用目前設定。")
-        return
+    parse_generation_profile(data, GENERATION_CONFIG_FILE.parent, profile=name)
+    default = data.get("active_profile")
+    if default == name:
+        _discard_selections(targets)
+        print(f"生成 profile {name} 就是預設，照預設啟動。")
+        return []
+    # 有行程在跑就不指定：在跑的那些用的是它們啟動時的那一套，這次叫醒會略過它們，於是
+    # 只有一部分換成 NAME（bot 與批次、平台與平台之間各用一套，bot 也收養不了那個批次）。
+    # 看不出哪一套在跑（行程的環境變數不一定讀得到，監督者的轉接殼也沒有那個值），所以
+    # 一律拒絕。先叫醒 bot、晚點才產圖的話，用 bot 的 `/run`：它 spawn 的批次繼承 bot 那一套。
     pids, complete = _profile_processes()
     if pids or not complete:
-        raise RuntimeError("無法切換生成 profile：請先停止本專案的 bot、批次及監督者，"
-                           "並確認行程掃描權限後重試。")
+        raise RuntimeError("無法指定生成 profile：本專案的 bot、批次或監督者仍在執行"
+                           "（它們沿用啟動時的生成設定），或無法確認行程狀態。"
+                           "要用已在跑的 bot 那一套開始產圖，請改用 /run；"
+                           "要換一套，先全部停止再重試。")
     for task_name in targets:
         if _schtasks("/Query", "/TN", task_name).returncode != 0:
-            raise RuntimeError("要叫醒的工作尚未註冊或無法查詢，生成設定未變更。")
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
-                                     dir=GENERATION_CONFIG_FILE.parent,
-                                     prefix=".generation-selection-", suffix=".tmp") as handle:
-        temporary = Path(handle.name)
-        json.dump(candidate, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
+            raise RuntimeError("要叫醒的工作尚未註冊或無法查詢，沒有指定生成設定。")
+    written: list[str] = []
     try:
-        if GENERATION_CONFIG_FILE.read_bytes() != raw:
-            raise RuntimeError("生成設定已被其他程序修改，請重新選擇。")
-        os.replace(temporary, GENERATION_CONFIG_FILE)
-    finally:
-        temporary.unlink(missing_ok=True)
-    print(f"生成 profile 已切換為 {name}；之後的啟動也會沿用此設定。")
+        for task_name in targets:
+            key, platform = selection_target(task_name)
+            write_generation_selection(key, name, platform=platform)
+            written.append(task_name)
+    except OSError:
+        _discard_selections(written)
+        raise
+    print(f"這次叫醒的行程使用生成 profile {name}；之後沒有指定 --profile 的啟動"
+          f"（含登入、重新開機）照預設 {default} 啟動。")
+    return written
+
+
+def _discard_selections(targets: list[str]) -> None:
+    """清掉這些工作的監督者的選擇檔（best-effort；清不掉只印一行，靠時效兜底）。"""
+    for task_name in targets:
+        key, platform = selection_target(task_name)
+        try:
+            discard_generation_selection(key, platform=platform)
+        except OSError as error:
+            print(f"{task_name}：舊的生成設定選擇刪不掉（{error!r}），"
+                  f"{GENERATION_SELECTION_TTL_SEC:.0f} 秒後會自動失效。", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,17 +305,18 @@ def main(argv: list[str] | None = None) -> int:
                        help="只叫醒已註冊為僅狀態模式的 discord 工作")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--profile", metavar="NAME",
-                           help="先將 generation_config.json 的 active_profile 改為 NAME")
+                           help="這次叫醒的行程改用生成 profile NAME（不改預設；"
+                                "之後沒有指定的啟動照預設）")
     selection.add_argument("--list-profiles", action="store_true",
-                           help="列出生成 profile 與目前選擇，不啟動工作")
+                           help="列出生成 profile 並標出預設，不啟動工作")
     args = parser.parse_args(argv or [])
 
     if args.list_profiles:
         try:
             _raw, config = _read_profile_config()
             for name in config["profiles"]:
-                marker = "*" if name == config.get("active_profile") else " "
-                print(f"{marker} {name}")
+                default = name == config.get("active_profile")
+                print(f"* {name}（預設）" if default else f"  {name}")
             return 0
         except (OSError, ValueError) as error:
             print(f"無法讀取生成設定：{error}", file=sys.stderr)
@@ -296,15 +340,23 @@ def main(argv: list[str] | None = None) -> int:
         print("`\\Axiomatic\\` 底下沒有符合的工作。先執行 "
               "py -3 install_autostart.py --install", file=sys.stderr)
         return 1
+    selected: list[str] = []
     if args.profile is not None:
         try:
-            _select_profile(args.profile, targets)
+            selected = _prepare_profile(args.profile, targets)
         except (OSError, ValueError, RuntimeError) as error:
-            print(f"無法選擇生成設定：{error}", file=sys.stderr)
+            print(f"無法指定生成設定：{error}", file=sys.stderr)
             return 1
+    else:
+        # 沒有指定 → 這次照預設。先前某次叫醒失敗留下、還沒過期的選擇不得冒出來。
+        _discard_selections(targets)
     rc = 0
     for task_name in targets:
-        rc |= wake(task_name)
+        result = wake(task_name)
+        if result != 0 and task_name in selected:
+            # 排程器沒接受（或工作不見了）：監督者不會起來讀它，留著只會讓下一次啟動撿到。
+            _discard_selections([task_name])
+        rc |= result
     return rc
 
 

@@ -14,6 +14,26 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GENERATION_CONFIG_FILE = PROJECT_ROOT / "generation_config.json"
 GENERATION_STATE_FILE = PROJECT_ROOT / "webrunner_generation.json"
 
+# 這一個行程（與它的子孫）用哪一套生成設定，蓋過 `active_profile`。
+#
+# `active_profile` 是**持久的預設值**，只有人手改設定檔時才會變。`wake_autostart.py --profile
+# NAME` 不改寫它，而是讓那一次叫醒的每一支監督者（每個平台的 bot 監督者與批次監督者）
+# 在啟動時把 NAME 放進這個環境變數；之後的
+# 子行程重生、Chrome 週期重啟、bot 自己 spawn 的批次（`{**os.environ, …}`）全部繼承同一個
+# 值，所以那一整串行程從頭到尾都是 NAME；下一次沒有指定的啟動又回到預設。
+# 監督者那一端的名字是 `_supervisor.GENERATION_PROFILE_ENV`——兩份字面值由
+# `test_generation_selection` 釘成同一個，刻意不互相 import：監督者匯入本模組的話，
+# 模組層的 `load_generation_profile()` 會在它還沒設好這個變數之前就先跑一次。
+PROFILE_OVERRIDE_ENV = "WEBRUNNER_GENERATION_PROFILE"
+
+
+def profile_override() -> str | None:
+    """環境變數指定的 profile 名稱；沒設或只有空白 → None（＝用 `active_profile`）。"""
+    value = os.environ.get(PROFILE_OVERRIDE_ENV)
+    if value is None or not value.strip():
+        return None
+    return value.strip()
+
 
 class GenerationProfileChanged(RuntimeError):
     """A profile change requires stopping and restarting the generating processes."""
@@ -111,10 +131,12 @@ def _settings(data: object) -> GenerationSettings:
     return GenerationSettings(**result)
 
 
-def load_generation_profile(path: Path = GENERATION_CONFIG_FILE) -> GenerationProfile:
+def load_generation_profile(path: Path = GENERATION_CONFIG_FILE, *,
+                            profile: str | None = None) -> GenerationProfile:
     """Resolve paths relative to the config, never to the caller's cwd.
 
     Missing files retain legacy defaults. Explicit invalid config is an error.
+    `profile` 見 `parse_generation_profile`。
     """
     path = Path(path).resolve()
     try:
@@ -126,40 +148,57 @@ def load_generation_profile(path: Path = GENERATION_CONFIG_FILE) -> GenerationPr
             data = json.loads(text)
         except (ValueError, UnicodeError) as error:
             raise ValueError("generation config: invalid JSON") from error
-    return parse_generation_profile(data, path.parent)
+    return parse_generation_profile(data, path.parent, profile=profile)
 
 
-def parse_generation_profile(data: object, root: Path) -> GenerationProfile:
-    """Validate an in-memory config before publishing a profile selection."""
+def parse_generation_profile(data: object, root: Path, *,
+                             profile: str | None = None) -> GenerationProfile:
+    """Validate an in-memory config before publishing a profile selection.
+
+    選哪一套：`profile` 引數 → 環境變數 `PROFILE_OVERRIDE_ENV` → `active_profile`。
+    指定的名字不在 `profiles` 裡是錯誤（`ValueError`），不會安靜退回預設。
+    `active_profile` 本身**照樣驗證**（必須是 `profiles` 裡的一個名字）：它是之後每一次
+    沒有指定的啟動要用的預設，壞掉的話應該現在就講，不是等到下一次開機。
+    """
     data = _object(data, "root", {"active_profile", "profiles"})
+    selected = profile if profile is not None else profile_override()
     if not data:
-        name, profile = "legacy", {}
+        if selected not in (None, "legacy"):
+            raise ValueError("generation config: selected profile is absent from profiles")
+        name, entry = "legacy", {}
     else:
-        name = _text(data.get("active_profile"), "active_profile")
+        default = _text(data.get("active_profile"), "active_profile")
         profiles = data.get("profiles")
-        if not isinstance(profiles, dict) or name not in profiles:
+        if not isinstance(profiles, dict) or default not in profiles:
             raise ValueError("generation config: active_profile is absent from profiles")
-        profile = _object(profiles[name], "profile",
-                          {"model_candidates", "settings", "todo", "fallback"})
-    candidates = profile.get("model_candidates")
+        name = default if selected is None else _text(selected, "selected profile")
+        if name not in profiles:
+            raise ValueError("generation config: selected profile is absent from profiles")
+        entry = _object(profiles[name], "profile",
+                        {"model_candidates", "settings", "todo", "fallback"})
+    candidates = entry.get("model_candidates")
     if candidates is not None:
         if not isinstance(candidates, list) or not candidates:
             raise ValueError("generation config: model_candidates must be a nonempty list")
         candidates = tuple(_text(value, "model_candidates") for value in candidates)
-    todo = _paths(profile.get("todo", {}), root, todo=True)
-    fallback = _paths(profile.get("fallback", {}), root, todo=False)
+    todo = _paths(entry.get("todo", {}), root, todo=True)
+    fallback = _paths(entry.get("fallback", {}), root, todo=False)
     if set(asdict(todo).values()) & set(asdict(fallback).values()):
         raise ValueError("generation config: todo paths cannot overwrite fallback files")
-    return GenerationProfile(name, candidates, _settings(profile.get("settings", {})),
+    return GenerationProfile(name, candidates, _settings(entry.get("settings", {})),
                              todo, fallback)
 
 
-GENERATION_PROFILE = load_generation_profile()
+# 行程啟動當下的覆寫值。`require_current_profile` 拿**同一個值**重讀，比的是「同一套設定
+# 有沒有被改」，不是「預設值是不是剛好也是這套」——否則一個用 `--profile` 叫醒的行程，
+# 每次重讀都會把預設那套當成「設定變了」而拒絕動佇列。
+STARTUP_PROFILE_OVERRIDE = profile_override()
+GENERATION_PROFILE = load_generation_profile(profile=STARTUP_PROFILE_OVERRIDE)
 
 
 def require_current_profile(profile: GenerationProfile = GENERATION_PROFILE) -> None:
     try:
-        current = load_generation_profile()
+        current = load_generation_profile(profile=STARTUP_PROFILE_OVERRIDE)
     except (OSError, ValueError) as error:
         raise GenerationProfileChanged("Generation profile is invalid; stop and restart both processes.") from error
     if current != profile:

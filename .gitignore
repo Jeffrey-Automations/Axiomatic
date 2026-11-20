@@ -228,6 +228,14 @@ generation_config.json
 generation_config.json.tmp
 webrunner_generation.json
 .generation-*.tmp
+# `wake_autostart.py --profile` 留給監督者的一次性生成設定選擇（批次一個、bot 一個平台一個，
+# 啟動時讀掉並刪除，兩分鐘後失效）。本機執行期產物。前兩條是 AST 抽得到的基底檔名，
+# 第三條蓋住每個平台的那一份（`.generation_selection_bot.<平台>.json`）；暫存檔由上一條
+# `.generation-*.tmp` 蓋到。
+.generation_selection_bot.json
+.generation_selection_batch.json
+.generation_selection_*.json
+.generation_selection_*.json.tmp
 todo_*_v*.md
 prompt_v*.md
 character1_v*.md

@@ -208,23 +208,25 @@ py -3 install_autostart.py --remove     # 移除
 拿到的環境和登入自動啟動那一份一樣。只要平台那幾筆就加 `--bot-only`，只要批次那一筆
 就加 `--batch-only`。
 
-要選擇產圖設定，可先執行 `py -3 wake_autostart.py --list-profiles`，再執行
-`py -3 wake_autostart.py --profile v4_5`。`--profile` 可與 `--bot-only` 或
-`--batch-only` 一起使用。切換前須停止所有平台的 bot、批次及其監督者。
-選擇會寫回 `generation_config.json` 的 `active_profile`，之後登入自動啟動也沿用。
-`--list-profiles` 只列出設定，不會叫醒工作；不帶新選項時維持原本行為。
+要讓這一次叫醒的行程改用另一個產圖版本時，先執行
+`py -3 wake_autostart.py --list-profiles` 查看名稱。停止所有平台的 bot、批次及其監督者
+後，執行 `py -3 wake_autostart.py --profile v4_5`，即可用 v4_5 叫醒已註冊的工作，也能
+搭配 `--bot-only` 或 `--batch-only`。這個選擇**只管這一次**：叫醒起來的行程從頭到尾用
+v4_5（含當機重生與 bot 用 `/run` 開始的批次），`generation_config.json` 不會被改寫，
+之後的登入、重新開機與不帶 `--profile` 的叫醒都回到 `active_profile` 的預設；完整規則見
+{doc}`config`。
 
 先只叫醒 bot、稍後再開始產圖時，可依序執行：
 
 ```powershell
 py -3 wake_autostart.py --list-profiles
 py -3 wake_autostart.py --profile v4_5 --bot-only
-py -3 wake_autostart.py --profile v4_5 --batch-only
 ```
 
-第一行只顯示版本，`*` 是目前選擇。第二行切換版本並啟動已註冊的平台 bot，第三行
-沿用相同版本啟動批次並開始產圖。若要改成其他版本，須再次停止所有平台 bot、批次
-及監督者。`--list-profiles` 與 `--profile` 不能同時使用。列出名稱成功只表示設定
+第一行只顯示版本，`*` 是預設。第二行用 v4_5 啟動已註冊的平台 bot；之後用 `/run` 開始
+產圖，bot 開始的批次沿用 v4_5。bot 已經在跑時再執行 `--profile v4_5 --batch-only` 會被
+拒絕（看不出在跑的 bot 用的是哪一套）。若要改成其他版本，須再次停止所有平台 bot、
+批次及監督者。`--list-profiles` 與 `--profile` 不能同時使用。列出名稱成功只表示設定
 可列舉，不代表排程已註冊、提示詞已備妥或網站支援所有設定。
 
 ## 建置本文件（選用）

@@ -315,16 +315,15 @@ boot: the batch needs a real interactive desktop for the browser.
 <!-- section: configuration-files -->
 ## Configuration files
 
-Copy `generation_config.example.json` to `generation_config.json`. Its `active_profile` selects the generation version; each profile defines `model_candidates`, `settings`, four `todo` files and their `fallback` files. The `v5` example keeps existing queues, while `v4_5` uses separate filenames. Stop the batch before editing, then restart every enabled platform process, the webrunner and any standalone dashboard. See the [configuration reference](docs/config.md) for fields and examples.
+Copy `generation_config.example.json` to `generation_config.json`. Its `active_profile` selects the default generation version; every start without an explicit choice (automatic logon start, reboot, running a launcher directly) uses it. Each profile defines `model_candidates`, `settings`, four `todo` files and their `fallback` files. The `v5` example keeps existing queues, while `v4_5` uses separate filenames. Stop the batch before changing the default, then restart every enabled platform process, the webrunner and any standalone dashboard. See the [configuration reference](docs/config.md) for fields and examples.
 
-Run `py -3 wake_autostart.py --list-profiles` to list profiles, or `py -3 wake_autostart.py --profile v4_5` to select one and wake scheduled tasks. Selection updates `active_profile` for future automatic starts too. Stop every platform bot, the batch and their supervisors before switching.
+Run `py -3 wake_autostart.py --list-profiles` to list profiles (`*` marks the default), or `py -3 wake_autostart.py --profile v4_5` to make the platform bots and batch started by **this** wake use v4_5. The choice is not written back to `active_profile`: the woken processes use v4_5 for their whole lifetime (including crash restarts and batches a bot starts with `/run`), while later logons, reboots, and wakes without `--profile` return to the default. Stop every platform bot, the batch and their supervisors first.
 
-Run these commands from the project root. Stop the bot, batch, and supervisors before switching profiles; the last command starts image generation. Without `--profile`, the saved selection is used without a menu.
+Run these commands from the project root. Stop the bots, batch, and supervisors before choosing a profile. The second command wakes only the platform bots; start generation later with `/run` and the batch keeps the bot's version. `--profile` is refused while a bot is already running. Without `--profile`, the default is used without a menu.
 
 ```powershell
 py -3 wake_autostart.py --list-profiles
 py -3 wake_autostart.py --profile v4_5 --bot-only
-py -3 wake_autostart.py --profile v4_5 --batch-only
 ```
 
 

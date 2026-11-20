@@ -108,9 +108,16 @@
    續跑檢查點包含模型、設定及路徑的識別值，避免混用不同設定的圖片。設定變更後須先停止
    批次並重啟所有平台行程及批次入口；程序間的預期識別與 `webrunner_generation.json`
    防止新舊設定合作。明確無效的設定停止啟動，缺檔則沿用預設。
-   `wake_autostart.py --profile` 驗證指定的 profile 與已註冊工作，確認本專案的 bot、
-   批次與監督者已停止，再原子更新 `active_profile` 並叫醒所選工作。排程器不繼承呼叫端
-   環境，所以選擇存於設定檔，後續登入啟動也沿用。`--list-profiles` 只讀取設定。
+   `active_profile` 是持久的預設值；`wake_autostart.py --profile NAME` 只管那一次叫醒，
+   不改寫設定檔。它驗證 NAME 與已註冊工作、確認本專案的 bot、批次與監督者已停止，再替
+   每一筆要叫醒的工作的監督者原子寫一個一次性選擇檔（`_supervisor.write_generation_selection`；
+   批次一份、bot 一個平台一份，120 秒時效），然後叫醒。排程器不轉送呼叫端環境，所以經由
+   磁碟交棒：每支監督者拿到單一實例鎖之後讀掉並刪除自己那一份
+   （`apply_generation_selection`），放進環境變數 `WEBRUNNER_GENERATION_PROFILE`；沒有新鮮
+   選擇時連呼叫端帶著的值也拿掉。`stream_child` 每次 spawn 都從 `os.environ` 複製，所以
+   重生的子行程與 bot 自己 spawn 的批次都用同一套，`_generation_config` 以這個變數蓋過
+   `active_profile`，`require_current_profile` 也拿啟動時的同一個值重讀。`--list-profiles`
+   只讀取設定。
 2. **單張產圖（`/gen image`）**：bot 以記憶體 FIFO 序列化請求 → 寫 `single_image_request.json`
    （單槽）→ 正在跑的批次帶內服務、既有單圖伺服器接手，或 bot 以
    `SINGLE_IMAGE_SERVER_FLAG` spawn 新的單圖伺服器 → 發 `single_image_done` 並刪除請求檔 →

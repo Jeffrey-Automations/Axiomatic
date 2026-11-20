@@ -25,23 +25,46 @@ ID、帳號 ID、主機路徑與本機應用程式清單）。repo 帶的是 `*.
 
 ## generation_config.json
 
-先把 `generation_config.example.json` 複製為 `generation_config.json`，再用
-`active_profile` 選擇一組產圖設定。範本的 `v5` 沿用現有 todo 檔與產圖設定，
+先把 `generation_config.example.json` 複製為 `generation_config.json`。
+`active_profile` 是**預設**的產圖設定：沒有另外指定的啟動（登入自動啟動、重新開機、
+不帶 `--profile` 的叫醒、直接執行啟動器）一律用它。範本的 `v5` 沿用現有 todo 檔與產圖設定，
 `v4_5` 示範另一組版本專用檔案。profile 名稱可以自訂，實際選擇的模型由
 `model_candidates` 決定，名稱必須與網站選單一致。
 
-切換版本的步驟如下。
+更改預設版本的步驟如下。
 
 1. 用 `/stop` 停止目前批次。獨立啟動器也要先停止。
 2. 編輯 `generation_config.json` 的 `active_profile`，並準備該 profile 指定的 todo 檔。
 3. 重新啟動所有啟用的平台行程，再用 `/run` 開始。若使用本機入口，重新啟動該入口。
 4. 另行執行的看板也要重啟，讓佇列數量對應新的 profile。
 
-也可用叫醒腳本選擇版本。先用 `py -3 wake_autostart.py --list-profiles` 列出設定，
-停止所有平台的 bot、批次及其監督者後，再用 `py -3 wake_autostart.py --profile v4_5`
-選擇並叫醒已註冊的工作。選擇會原子寫回 `active_profile`，保留其他設定，往後自動啟動
-也使用這個版本。可加 `--bot-only` 或 `--batch-only` 限定叫醒範圍。
-名稱不存在、設定無效、工作未註冊，或無法確認舊程序已停止時，不會切換。
+已註冊自動啟動工作時，也可以只讓**這一次**叫醒起來的行程改用另一個版本，不改預設。
+
+```powershell
+py -3 wake_autostart.py --list-profiles
+py -3 wake_autostart.py --profile v4_5
+py -3 wake_autostart.py --profile v4_5 --batch-only
+```
+
+`--list-profiles` 只列出名稱，以 `*` 標示預設，不啟動工作，也不改任何檔案。
+`--profile NAME` 先驗證設定，再替這次要叫醒的每一筆工作的監督者各留一個一次性的選擇
+（每個平台的 bot 監督者各一份、批次監督者一份），最後叫醒所選工作；
+`generation_config.json` 不會被改寫。監督者啟動時讀走自己那一份，它與它之後啟動的一切
+都用 NAME：當機後重生的 bot 或批次、週期重啟的瀏覽器、bot 用 `/run` 開始的批次。
+之後沒有指定的啟動（登入、重新開機、不帶 `--profile` 的叫醒）回到預設。
+可加 `--bot-only` 或 `--batch-only` 限定叫醒範圍。
+
+指定前必須停止本專案所有平台的 bot、批次及其監督者：在跑的行程沿用它們啟動時的版本，
+叫醒時會被略過，只換一部分會讓 bot 與批次、平台與平台之間各用一套。名稱不存在、設定
+無效、工作未註冊，或無法確認行程狀態時，不留下選擇，也不啟動工作。指定的就是預設時
+等同沒有指定。選擇只在兩分鐘內有效，排程器拒絕執行時會立即清掉，不會在之後的登入或
+開機冒出來。不帶 `--profile` 的叫醒會先清掉殘留的選擇。
+
+先叫醒 bot、晚點才開始產圖時，用 `--profile v4_5 --bot-only` 叫醒 bot，之後用 `/run`
+開始；bot 開始的批次沿用 bot 的版本。bot 已經在跑時再執行
+`--profile v4_5 --batch-only` 會被拒絕，因為看不出在跑的 bot 用的是哪一套。
+
+另行執行的看板（`dashboard_server.py`）一律顯示預設版本的佇列。
 
 | profile 欄位 | 說明 |
 |---|---|

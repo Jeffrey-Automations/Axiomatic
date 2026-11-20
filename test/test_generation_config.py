@@ -111,7 +111,7 @@ def test_medium_profile_only_sets_supported_numeric_controls(tmp_path, monkeypat
 def test_profile_drift_refuses_queue_write_and_child_start(tmp_path, monkeypatch):
     path = _write_config(tmp_path)
     profile = gc.load_generation_profile(path)
-    monkeypatch.setattr(gc, "load_generation_profile", lambda: replace(profile, name="new"))
+    monkeypatch.setattr(gc, "load_generation_profile", lambda **_k: replace(profile, name="new"))
     monkeypatch.setattr(ws, "GENERATION_PROFILE", profile)
     queue = tmp_path / "todo_prompt.md"
     queue.write_text("unchanged\n", encoding="utf-8")

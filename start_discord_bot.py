@@ -42,6 +42,7 @@ from pathlib import Path
 from axiomatic import _platform_runtime
 from axiomatic._supervisor import (
     acquire_single_instance_lock,
+    apply_generation_selection,
     child_exit_is_fatal,
     other_launcher_pids,
     restart_backoff,
@@ -91,6 +92,11 @@ LOG_KEEP_BYTES = 4 * 1024 * 1024    # 修剪後保留的尾段
 # we don't hammer Discord if something is wrong (e.g. bad token).
 RESTART_DELAY_MIN = 5    # seconds — first retry
 RESTART_DELAY_MAX = 300  # seconds — cap (5 minutes)
+
+# `wake_autostart.py --profile` 寫給這支監督者的一次性生成設定選擇只認這個鍵加上
+# 這支服務的平台（`_supervisor.generation_selection_file("bot", PLATFORM)`）——
+# 一個平台一支監督者，所以一個平台一份，別的平台的選擇不會被這一支吃掉。
+GENERATION_SELECTION_KEY = "bot"
 
 
 def python_command() -> list[str]:
@@ -169,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
             # 兩支啟動器的措辭刻意一致。
             say(log, "supervisor: 注意——這台機器上的單一實例保護沒有生效，"
                      "這次不會擋掉重複啟動，請自己確認只開了一個。")
+
+        # 這一次用哪一套生成設定：只在啟動時讀**一次**（拿到鎖之後——被鎖擋掉的那一份不該
+        # 把選擇吃掉），之後每一輪重生的 bot、以及 bot 自己 spawn 的批次都繼承同一個環境
+        # 變數。沒有 `wake_autostart.py --profile` 留給這個平台的新鮮選擇就用預設
+        # （`generation_config.json` 的 `active_profile`）。見 `_supervisor` 那一節。
+        apply_generation_selection(GENERATION_SELECTION_KEY, log, platform=PLATFORM)
 
         try:
             # 平台名走 argv（`_platform_runtime.platform_from_argv`）。**不靠環境

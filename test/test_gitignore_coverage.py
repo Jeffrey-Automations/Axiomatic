@@ -89,6 +89,8 @@ _TRACKED_ASSETS = frozenset({
     # 由 `audit_simplified_chars.py` 沿用同一份掃描範圍時翻出來。
     "run_batch.py",
     "install_autostart.py",  # 登入自動啟動的註冊/移除工具（開發者手動執行）
+    "wake_autostart.py",     # 從排程器直接叫醒監督者的入口腳本（開發者手動執行）
+    "start_platforms.py",    # 每個開著的平台各起一支監督者的外層啟動器
     "start_discord_bot.py",  # bot 監督啟動器
     "batch_config.json",
     "bot_prompts",
@@ -119,6 +121,10 @@ _TRACKED_ASSETS = frozenset({
 _IGNORED_RUNTIME = frozenset({
     "generation_config.json",
     "webrunner_generation.json",
+    # `wake_autostart.py --profile` 留給監督者的一次性生成設定選擇（啟動時讀掉並刪除）。
+    # bot 那一份一個平台一個檔，名字由基底推出來，`.gitignore` 另有一條萬用字元蓋住。
+    ".generation_selection_bot.json",
+    ".generation_selection_batch.json",
     "auth.md",                       # 出圖服務帳密（範本：auth.example.md）
     "discord_bot_token.md",          # Discord bot token（範本同上）
     # 第二個對話平台的 token（範本：telegram_bot_token.example.md）。與上面兩個

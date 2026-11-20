@@ -328,6 +328,12 @@ _SIDE_EFFECT_LOGS = (
     ("discord_bot", "GENERATE_HISTORY_FILE"),
     ("dorossi_backend", "DOROSSI_USAGE_FILE"),
     ("_webrunner_shared", "EVENTS_FILE"),
+    # 不是記錄檔：`wake_autostart.py --profile` 留給監督者的一次性生成設定選擇。
+    # 兩支啟動器的 `main()` 在測試裡跑的時候會讀掉並刪除它——正式的那一份若剛好在
+    # （叫醒失敗、兩分鐘內還沒過期），測試就會吃掉它，所以一樣導開。bot 那一份是一個
+    # 平台一個檔，名字由這個基底推出來，所以導開基底就全部導開。
+    ("_supervisor", "BOT_GENERATION_SELECTION_FILE"),
+    ("_supervisor", "BATCH_GENERATION_SELECTION_FILE"),
 )
 
 

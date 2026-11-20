@@ -292,16 +292,15 @@ py -3 install_autostart.py --remove
 <!-- section: configuration-files -->
 ## 配置文件
 
-先把 `generation_config.example.json` 复制为 `generation_config.json`。`active_profile` 选择出图版本，每个 profile 可指定 `model_candidates`、`settings`、四个 `todo` 文件及其 `fallback` 文件。`v5` 示例保留现有队列，`v4_5` 使用独立文件名。修改前先停止批处理，修改后重启所有启用的平台进程、webrunner 和独立仪表板。完整字段及示例见[配置说明](docs/config.md)。
+先把 `generation_config.example.json` 复制为 `generation_config.json`。`active_profile` 选择默认的出图版本，没有另行指定的启动（登录自动启动、重新开机、直接运行启动器）都使用它。每个 profile 可指定 `model_candidates`、`settings`、四个 `todo` 文件及其 `fallback` 文件。`v5` 示例保留现有队列，`v4_5` 使用独立文件名。更改默认前先停止批处理，修改后重启所有启用的平台进程、webrunner 和独立仪表板。完整字段及示例见[配置说明](docs/config.md)。
 
-用 `py -3 wake_autostart.py --list-profiles` 列出版本，再用 `py -3 wake_autostart.py --profile v4_5` 选择并唤醒计划任务。选择会写回 `active_profile`，后续自动启动也沿用。切换前须停止所有平台的 bot、批次及其监控进程。
+也可用 `py -3 wake_autostart.py --list-profiles` 列出版本（`*` 为默认），再用 `py -3 wake_autostart.py --profile v4_5` 让**这一次**唤醒的平台 bot 与批次改用 v4_5。该选择不会写回 `active_profile`：唤醒的进程从头到尾使用 v4_5（包括崩溃后重启以及 bot 通过 `/run` 开始的批次），之后的登录、重新开机与不带 `--profile` 的唤醒恢复默认。指定前须停止所有平台的 bot、批次及其监控进程。
 
-在项目根目录运行以下命令。切换版本前先停止 bot、批次及监控进程；最后一行会开始生成图片。不指定 `--profile` 时沿用已保存的选择，不显示菜单。
+在项目根目录运行以下命令。指定版本前先停止 bot、批次及监控进程；第二行只唤醒平台 bot，之后使用 `/run` 开始生成图片，批次沿用 bot 的版本。bot 已在运行时 `--profile` 会被拒绝。不指定 `--profile` 时使用默认，不显示菜单。
 
 ```powershell
 py -3 wake_autostart.py --list-profiles
 py -3 wake_autostart.py --profile v4_5 --bot-only
-py -3 wake_autostart.py --profile v4_5 --batch-only
 ```
 
 

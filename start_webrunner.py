@@ -89,6 +89,7 @@ from axiomatic._supervisor import (
     RC_ZERO_PROGRESS,
     webrunner_exit_made_no_progress,
     acquire_single_instance_lock,
+    apply_generation_selection,
     other_launcher_pids,
     restart_backoff,
     say,
@@ -144,6 +145,10 @@ SLOT_OWNER = "launcher"
 # 仍失敗代表需要人看一眼。
 SLOT_ACQUIRE_TIMEOUT_SEC = 300.0
 WEBRUNNER_PID_FILE = REPO_ROOT / "webrunner.pid"
+
+# `wake_autostart.py --profile` 寫給這支監督者的一次性生成設定選擇只認這個鍵
+# （`_supervisor.generation_selection_file`）。批次監督者全機一支，不分平台。
+GENERATION_SELECTION_KEY = "batch"
 
 
 def _save_pid(pid: int) -> None:
@@ -332,6 +337,11 @@ def main() -> int:
         # 兩支啟動器的措辭刻意一致。
         say(log, "supervisor: 注意——這台機器上的單一實例保護沒有生效，"
                  "這次不會擋掉重複啟動，請自己確認只開了一個。")
+
+    # 這一次用哪一套生成設定：只在啟動時讀**一次**（拿到鎖之後），之後每一輪重生的批次
+    # 都繼承同一個環境變數（`stream_child` 每次 spawn 都從 `os.environ` 複製）。沒有
+    # `wake_autostart.py --profile` 留下的新鮮選擇就用預設。見 `_supervisor` 那一節。
+    apply_generation_selection(GENERATION_SELECTION_KEY, log)
 
     try:
         return _supervise(cmd, args.variant, log, backoff_min=backoff_min,

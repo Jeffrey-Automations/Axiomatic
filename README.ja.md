@@ -313,16 +313,15 @@ py -3 install_autostart.py --remove
 <!-- section: configuration-files -->
 ## 設定ファイル
 
-`generation_config.example.json` を `generation_config.json` にコピーしてください。`active_profile` で生成バージョンを選び、各 profile に `model_candidates`、`settings`、4 つの `todo` ファイルと `fallback` ファイルを指定します。`v5` の例は既存のキューを使い、`v4_5` は別のファイル名を使います。編集前にバッチを停止し、編集後に有効な全プラットフォームのプロセス、webrunner、独立したダッシュボードを再起動してください。項目と例は[設定リファレンス](docs/config.md)を参照してください。
+`generation_config.example.json` を `generation_config.json` にコピーしてください。`active_profile` で既定の生成バージョンを選びます。明示的に指定しない起動（ログオン時の自動起動、再起動、起動スクリプトの直接実行）はすべてこれを使います。各 profile に `model_candidates`、`settings`、4 つの `todo` ファイルと `fallback` ファイルを指定します。`v5` の例は既存のキューを使い、`v4_5` は別のファイル名を使います。既定を変更する前にバッチを停止し、編集後に有効な全プラットフォームのプロセス、webrunner、独立したダッシュボードを再起動してください。項目と例は[設定リファレンス](docs/config.md)を参照してください。
 
-`py -3 wake_autostart.py --list-profiles` で一覧を表示し、`py -3 wake_autostart.py --profile v4_5` で選択してスケジュール済みタスクを起動できます。選択は `active_profile` に保存され、次回の自動起動にも使われます。切り替える前に全プラットフォームの bot、バッチとそれぞれの監視プロセスを停止してください。
+`py -3 wake_autostart.py --list-profiles` で一覧を表示し（`*` が既定）、`py -3 wake_autostart.py --profile v4_5` で**今回**起動するプラットフォームの bot とバッチだけを v4_5 にできます。この選択は `active_profile` に書き戻されません。起動したプロセスは終了まで v4_5 を使い（クラッシュ後の再起動や bot が `/run` で開始するバッチを含む）、以降のログオン、再起動、`--profile` なしの起動は既定に戻ります。指定する前に全プラットフォームの bot、バッチとそれぞれの監視プロセスを停止してください。
 
-プロジェクトのルートで次のコマンドを実行します。プロファイルを切り替える前に bot、バッチ、監視プロセスを停止してください。最後のコマンドは画像生成を開始します。`--profile` を省略すると、メニューを表示せず保存済みの選択を使います。
+プロジェクトのルートで次のコマンドを実行します。バージョンを指定する前に bot、バッチ、監視プロセスを停止してください。2 行目はプラットフォームの bot だけを起動します。その後 `/run` で画像生成を開始すると、バッチは bot のバージョンを引き継ぎます。bot がすでに動作中の場合、`--profile` は拒否されます。`--profile` を省略すると、メニューを表示せず既定を使います。
 
 ```powershell
 py -3 wake_autostart.py --list-profiles
 py -3 wake_autostart.py --profile v4_5 --bot-only
-py -3 wake_autostart.py --profile v4_5 --batch-only
 ```
 
 

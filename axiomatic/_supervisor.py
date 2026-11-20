@@ -8,15 +8,24 @@ running?").
 The landing of child-process output (`stream_child` / `trim_log` / `say` as a
 set) lives here too: both launchers must tee the child's stdout+stderr to the
 console and the log file at once, and there should be only one implementation.
+
+「這一次叫醒用哪一套生成設定」的交棒（`write_generation_selection` /
+`apply_generation_selection` 一組，檔案最後一節）也在這裡：`wake_autostart.py` 寫、
+每一支監督者（每個平台的 bot 監督者、批次監督者）各讀自己那一份。
 """
 from __future__ import annotations
 
 import errno
+import json
+import math
+import os
+import re
+import tempfile
+from pathlib import Path
 if __package__:
     from ._process_job import popen as _job_popen
 else:
     from _process_job import popen as _job_popen
-import os
 import subprocess  # nosec B404 — the supervisor's whole job is to spawn children
 import sys
 import threading
@@ -693,3 +702,168 @@ def webrunner_exit_made_no_progress(rc: int) -> bool:
     規則只有一份。
     """
     return rc in (RC_ZERO_PROGRESS, RC_SERVED_ONESHOT)
+
+
+# ---- 這一次叫醒用哪一套生成設定 -------------------------------------------------
+# `generation_config.json` 的 `active_profile` 是**持久的預設值**；`wake_autostart.py
+# --profile NAME` 只讓**那一次叫醒**起來的監督者（以及它們整個生命週期裡的子孫）用 NAME。
+#
+# 為什麼要經過磁碟：工作排程器的 `/Run` 不轉送呼叫端的環境變數，也不能臨時加參數——
+# 起來的命令列永遠是 `install_autostart.py` 註冊的那一條。所以叫醒端先寫一個一次性的
+# 選擇檔，監督者啟動時讀掉、刪掉，再把 NAME 放進自己的 `os.environ`；`stream_child` 每次
+# spawn 都從 `os.environ` 複製環境，所以重生的子行程、bot 自己 spawn 的批次都會繼承它。
+#
+# **一支監督者一個檔，不共用。** bot 的監督者是一個平台一支（`start_discord_bot.py
+# --platform <名稱>`，一個平台一筆排程工作），所以 bot 那一份再按平台分開：共用一個檔
+# 的話，先起來的那個平台會把選擇讀掉刪掉，其餘平台照預設起來，而 bot 與批次、平台與
+# 平台之間各用一套——沒有任何錯誤訊息。幾支同時啟動時也不會搶同一個檔。
+# 檔案有時效：叫醒失敗、監督者根本沒起來的話，那個選擇不能在下一次登入或開機時冒出來
+# （登入觸發本身有 30 秒延遲，開機再快也超過兩分鐘的大半）。
+#
+# 檔案放在 repo 根目錄，**不放** `state/<平台>/`：寫它的是 `wake_autostart.py`，不是那個
+# 平台的行程；而 `_platform_runtime.platform_file()` 只看平台名、不看基底路徑的目錄，
+# 測試把基底常數導到暫存目錄時，那條路徑仍會指回 repo。`.gitignore` 用
+# `.generation_selection_*.json` 一條蓋住每個平台的那一份。
+GENERATION_PROFILE_ENV = "WEBRUNNER_GENERATION_PROFILE"   # 與 `_generation_config` 同名
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BOT_GENERATION_SELECTION_FILE = PROJECT_ROOT / ".generation_selection_bot.json"
+BATCH_GENERATION_SELECTION_FILE = PROJECT_ROOT / ".generation_selection_batch.json"
+# 叫醒到監督者讀檔通常只要一兩秒（`wake_autostart` 等它出現的上限是 15 秒）。
+GENERATION_SELECTION_TTL_SEC = 120.0
+# 同一台機器、同一個時鐘，負的年齡只會來自時鐘被往回撥；容許一點點，再多就當作過期。
+_GENERATION_SELECTION_SKEW_SEC = 5.0
+# 平台名字的形狀，與 `_platform_runtime._VALID_NAME` 相同（`test_generation_selection`
+# 釘成同一個）。**刻意不 import** `_platform_runtime`：本模組在批次的 import 閉包裡，
+# 多拉一個模組進去，`_process_control.STALE_COMPONENTS` 的批次那幾列就得跟著改，而這裡
+# 只需要擋掉「會變成路徑的字串」。正規化由呼叫端做（`_platform_runtime.normalise_platform`）。
+_PLATFORM_NAME = re.compile(r"\A[a-z][a-z0-9_-]{0,31}\Z")
+
+
+def generation_selection_tag(key: str, platform: str | None = None) -> str:
+    """選擇檔裡記的「寫給誰」：`batch`，或 `bot:<平台>`。
+
+    `key` 是 `batch`（批次監督者，全機一支）或 `bot`（bot 監督者，一個平台一支，所以一定
+    要帶 `platform`）。其他組合 → `KeyError`：寫錯的鍵不該安靜地寫到一個沒有人讀的檔。"""
+    if key == "batch" and platform is None:
+        return "batch"
+    if key == "bot" and isinstance(platform, str) and _PLATFORM_NAME.match(platform):
+        return f"bot:{platform}"
+    raise KeyError((key, platform))
+
+
+def generation_selection_file(key: str, platform: str | None = None) -> Path:
+    """`key`／`platform`（見 `generation_selection_tag`）對應的選擇檔。
+
+    呼叫時才查模組層常數，所以測試把常數導到暫存目錄就生效；bot 那一份由基底檔名加上
+    平台名推出來（`.generation_selection_bot.<平台>.json`），跟著基底走。"""
+    generation_selection_tag(key, platform)
+    if key == "batch":
+        return BATCH_GENERATION_SELECTION_FILE
+    base = BOT_GENERATION_SELECTION_FILE
+    return base.with_name(f"{base.stem}.{platform}{base.suffix}")
+
+
+def write_generation_selection(key: str, profile: str, *, platform: str | None = None,
+                               now: float | None = None) -> Path:
+    """原子寫入那支監督者的一次性選擇（同目錄暫存檔 → `os.replace`）。
+
+    跨行程檔案（叫醒端寫、監督者讀），半寫入的檔會被讀成「格式不對」而安靜退回預設，
+    所以一律原子寫入。失敗時丟 `OSError`，暫存檔一定收掉。"""
+    path = generation_selection_file(key, platform)
+    created = time.time() if now is None else now
+    payload = json.dumps({"task": generation_selection_tag(key, platform),
+                          "profile": profile, "created": created},
+                         ensure_ascii=False)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                                     dir=path.parent, prefix=".generation-selection-",
+                                     suffix=".tmp") as handle:
+        temporary = Path(handle.name)
+        handle.write(payload + "\n")
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def discard_generation_selection(key: str, *, platform: str | None = None) -> bool:
+    """刪掉那支監督者的選擇檔；本來就不在 → False。刪不掉 → 丟 `OSError`。
+
+    先問存不存在再刪：不存在的時候什麼寫入都不發生（測試的 repo 寫入守門看的就是這個）。"""
+    path = generation_selection_file(key, platform)
+    if not path.exists():
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def take_generation_selection(key: str, *, platform: str | None = None,
+                              now: float | None = None) -> tuple[str | None, str | None]:
+    """讀掉並刪除那支監督者的選擇檔，回 `(profile, 記錄行)`。
+
+    `profile` 是 None ＝ 這次用預設（`active_profile`）。只有**新鮮、格式正確、而且是寫給
+    這一支**（同一個 `key`、同一個平台）的選擇才算數；其餘一律刪掉、退回預設、留一行說明。
+    刪不掉的新鮮選擇照樣採用（它本來就是寫給這一次的），但記錄行會講，因為兩分鐘內再起
+    一次會又讀到它。檔案不在 → `(None, None)`，什麼都不寫、什麼都不刪。
+    """
+    path = generation_selection_file(key, platform)
+    tag = generation_selection_tag(key, platform)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, None
+    except (OSError, UnicodeDecodeError) as error:
+        data = None
+        problem = f"讀不出來（{type(error).__name__}）"
+    else:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = None
+        problem = "格式不對"
+    try:
+        discard_generation_selection(key, platform=platform)
+        kept = ""
+    except OSError as error:
+        kept = f"；選擇檔刪不掉（{type(error).__name__}），兩分鐘內再啟動還會讀到它"
+    profile = data.get("profile") if isinstance(data, dict) else None
+    created = data.get("created") if isinstance(data, dict) else None
+    if (not isinstance(profile, str) or not profile.strip()
+            or data.get("task") != tag
+            or isinstance(created, bool) or not isinstance(created, (int, float))
+            or not math.isfinite(created)):
+        return None, (f"supervisor: 叫醒時留下的生成設定選擇{problem}，"
+                      f"這次用預設生成設定{kept}。")
+    age = (time.time() if now is None else now) - created
+    if not -_GENERATION_SELECTION_SKEW_SEC <= age <= GENERATION_SELECTION_TTL_SEC:
+        return None, (f"supervisor: 叫醒時留下的生成設定選擇（{profile.strip()}）已過期"
+                      f"（{age:.0f} 秒前寫的），這次用預設生成設定{kept}。")
+    return profile.strip(), (
+        f"supervisor: 這次啟動使用叫醒時指定的生成設定 {profile.strip()}"
+        f"（之後的重生都沿用；下一次沒有指定的啟動回到預設）{kept}。")
+
+
+def apply_generation_selection(key: str, log, *,
+                               platform: str | None = None) -> str | None:
+    """監督者啟動時呼叫**一次**（拿到單一實例鎖之後、第一次 spawn 之前）。
+
+    有新鮮的選擇 → 放進 `os.environ[GENERATION_PROFILE_ENV]`；沒有 → 把這個變數拿掉。
+    拿掉是刻意的：「沒有指定就用預設」要對**每一種**起法成立，不能取決於是誰、從哪個殼
+    把監督者點起來（與 `stream_child` 覆寫 `PYTHONIOENCODING` 同一個理由）。只有這裡會
+    設定它，所以之後每一次重生都拿到同一個值。回傳這次用的覆寫名稱（None ＝ 預設）。
+    """
+    profile, note = take_generation_selection(key, platform=platform)
+    if note:
+        say(log, note)
+    if profile is None:
+        inherited = os.environ.pop(GENERATION_PROFILE_ENV, None)
+        if inherited is not None:
+            say(log, f"supervisor: 不沿用呼叫端環境裡的 {GENERATION_PROFILE_ENV}；"
+                     f"只有 wake_autostart.py --profile 能指定這一次的生成設定，"
+                     f"這次用預設生成設定。")
+    else:
+        os.environ[GENERATION_PROFILE_ENV] = profile
+    return profile
