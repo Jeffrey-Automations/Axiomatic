@@ -43,7 +43,7 @@ def test_chat_command_gates_owner_and_streams_text(endpoint, monkeypatch, owner,
     if owner:
         response.defer.assert_awaited_once_with(thinking=True)
         assert endpoint.calls[0][1]["json"]["messages"][-1] == {"role": "user", "content": "嗨"}
-        assert sent.edit.call_args.kwargs["content"] == "一碗白飯就夠啦。"
+        assert sent.edit.call_args.kwargs["content"] == "你好！"
         assert sent.edit.call_args.kwargs["allowed_mentions"].to_dict()["parse"] == []
         assert interaction.followup.send.call_args.kwargs["allowed_mentions"].to_dict()["parse"] == []
         interaction.channel.send.assert_not_awaited()
@@ -66,7 +66,7 @@ def event(text=None, finish=None, **delta):
 def endpoint(monkeypatch):
     calls = []
     state = types.SimpleNamespace(
-        status=200, body={"choices": [{"message": {"content": "一碗白飯就夠啦。"}}]},
+        status=200, body={"choices": [{"message": {"content": "你好！"}}]},
         error=None, wait=None, chunks=None, after_chunk=None,
     )
 
@@ -122,8 +122,8 @@ def endpoint(monkeypatch):
     return state
 
 
-def test_request_contains_only_independent_persona_and_current_prompt(endpoint):
-    assert asyncio.run(chat.completion("你好")) == "一碗白飯就夠啦。"
+def test_request_contains_only_chat_instructions_and_current_prompt(endpoint):
+    assert asyncio.run(chat.completion("你好")) == "你好！"
     url, request = endpoint.calls[0]
     assert url == "https://integrate.api.nvidia.com/v1/chat/completions"
     assert request["headers"] == {"Authorization": "Bearer test-key"}
@@ -134,13 +134,18 @@ def test_request_contains_only_independent_persona_and_current_prompt(endpoint):
         {"role": "system", "content": chat.SYSTEM_PROMPT},
         {"role": "user", "content": "你好"},
     ]
-    assert "小鯨魚" in payload["messages"][0]["content"]
     assert "tools" not in payload
     assert payload["stream"] is True
     assert endpoint.timeout.total == chat.TIMEOUT_SECONDS
     asyncio.run(chat.completion("另一個人"))
     assert endpoint.calls[1][1]["json"]["messages"][-1]["content"] == "另一個人"
     assert len(endpoint.calls[1][1]["json"]["messages"]) == 2
+
+
+@pytest.mark.parametrize("instructions", [chat.SYSTEM_PROMPT, chat._DEFAULT_SYSTEM])
+def test_default_chat_instructions_omit_whale_persona(instructions):
+    for marker in ("鯨魚", "DeepSeek chan", "大肥魚"):
+        assert marker not in instructions
 
 
 def image_bytes(format="PNG", size=(32, 32)):
@@ -204,7 +209,7 @@ def test_chat_image_attachment_reaches_api_as_validated_data(endpoint, chat_inte
     with Image.open(io.BytesIO(base64.b64decode(data_url.split(",", 1)[1]))) as picture:
         assert picture.format == "JPEG" and picture.size == (32, 32)
     assert item.reads == 1
-    assert sent.edit.call_args.kwargs["content"] == "一碗白飯就夠啦。"
+    assert sent.edit.call_args.kwargs["content"] == "你好！"
 
 
 def test_image_transparency_is_composited_on_white():
@@ -468,7 +473,7 @@ def test_unknown_failure_reason_is_not_echoed(mention, monkeypatch):
 
     monkeypatch.setattr(chat, "completion", complete)
     asyncio.run(bot._handle_mention(message, question_entry=False))
-    assert sent[-1][0] == "小鯨魚暫時回不了話，請稍後再試。"
+    assert sent[-1][0] == "聊天服務暫時無法回覆，請稍後再試。"
 
 
 @pytest.mark.parametrize("is_bot,webhook", [(True, None), (False, 123)])
@@ -748,7 +753,7 @@ def test_failed_final_edit_resends_answer_without_mentions(mention, endpoint, mo
         return types.SimpleNamespace(edit=edit)
     monkeypatch.setattr(bot, "safe_reply", reply)
     asyncio.run(bot._handle_mention(message, question_entry=False))
-    assert sent[-1][0] == "一碗白飯就夠啦。"
+    assert sent[-1][0] == "你好！"
     assert all(kwargs["allowed_mentions"].to_dict()["parse"] == [] for _, kwargs in sent)
     assert all("private" not in text for text, _ in sent)
 

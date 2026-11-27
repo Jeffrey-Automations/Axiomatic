@@ -241,8 +241,8 @@ def armed(monkeypatch, tmp_path):
     async def chat(prompt, *, on_text=None):
         chats.append(prompt)
         if on_text is not None:
-            on_text("小鯨魚回覆")
-        return "小鯨魚回覆"
+            on_text("測試回覆")
+        return "測試回覆"
 
     monkeypatch.setattr(b._deepseek_chat, "completion", chat)
 
@@ -399,7 +399,7 @@ def test_non_owner_mentions_chat_instead_of_executing_commands(key, channel_id, 
     _deliver(message)
     assert armed.touched == []
     assert armed.chats == [key]
-    assert message.replies == ["小鯨魚回覆"]
+    assert message.replies == ["測試回覆"]
 
 
 @pytest.mark.parametrize("key", LOCKED_MENTIONS)
@@ -414,7 +414,7 @@ def test_public_chat_is_counted_without_entering_the_task_backend(armed, gallery
     _deliver(message)
     assert armed.touched == []
     assert armed.chats == ["今天天氣如何"]
-    assert message.replies == ["小鯨魚回覆"]
+    assert message.replies == ["測試回覆"]
     assert b._METRICS_CMD_COUNTS == Counter({"@(text)": 1})
 
 
@@ -509,7 +509,7 @@ def test_non_owner_prompt_reaches_only_public_chat(text, nickname_mention, armed
     _deliver(message)
     assert armed.chats == [text.strip()]
     assert armed.touched == []
-    assert message.replies == ["小鯨魚回覆"]
+    assert message.replies == ["測試回覆"]
 
 
 @pytest.mark.parametrize("text", _NOT_A_CONTROL_WORD,

@@ -50,7 +50,7 @@
     {
       "name": "/chat",
       "group": null,
-      "description": "與小鯨魚聊天、看圖或產圖（限擁有者）",
+      "description": "聊天、看圖或產圖（限擁有者）",
       "access": "owner",
       "owner_gate": "before_dispatch",
       "public": true,

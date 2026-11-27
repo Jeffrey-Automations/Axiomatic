@@ -14127,9 +14127,9 @@ _MENTION_QUESTION_KEYS = frozenset({"dorossi"})
 # 公開聊天與擁有者非控制文字共用的計數鍵；括號避免撞到控制字。
 _MENTION_TEXT_METRIC = "@(text)"
 _DEEPSEEK_ERROR_MESSAGES = {
-    "configuration": "小鯨魚還沒準備好，請稍後再試。",
-    "input": "這段太長啦，請縮短一點再傳給我。",
-    "busy": "小鯨魚現在有點忙，等一下再叫我吧。",
+    "configuration": "聊天服務尚未設定完成，請稍後再試。",
+    "input": "訊息過長，請縮短後再試。",
+    "busy": "聊天服務忙碌中，請稍後再試。",
     "timeout": "回覆等待逾時，這次連線已結束。請稍後再試。",
     "image": "圖片無法讀取。請附上 10 MB、1600 萬像素以內的單張 JPEG、PNG 或 WebP。",
     "generation": "這次未取得完整有效的產圖提示詞，沒有排入產圖佇列。請調整描述後再試。",
@@ -14219,7 +14219,7 @@ async def _reply_public_chat(message: discord.Message, payload: str, *,
             answer = await _deepseek_chat.completion(payload, on_text=on_text, **image_args)
         except _deepseek_chat.ChatUnavailable as error:
             answer = _DEEPSEEK_ERROR_MESSAGES.get(
-                error.args[0] if error.args else "", "小鯨魚暫時回不了話，請稍後再試。")
+                error.args[0] if error.args else "", "聊天服務暫時無法回覆，請稍後再試。")
             if partial:
                 answer = "（回覆中斷，以下內容尚未完成。）\n\n" + partial + "\n\n" + answer
         except asyncio.CancelledError:
@@ -26395,7 +26395,7 @@ async def slash_help(interaction: discord.Interaction, lang: str = "") -> None:
                      lang=_resolve_lang(lang))
 
 
-@tree.command(name="chat", description="與小鯨魚聊天、看圖或產圖（限擁有者）",
+@tree.command(name="chat", description="聊天、看圖或產圖（限擁有者）",
               extras={"public": True})
 @discord.app_commands.describe(
     prompt="提問或想產生的圖片描述", image="參考圖片：JPEG / PNG / WebP，最多 10 MB、1600 萬像素",

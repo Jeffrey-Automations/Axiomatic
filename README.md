@@ -465,8 +465,8 @@ random default gallery picture (general rating). Replying to one of its
 messages with the ping left on counts as a mention too.
 
 On the platform with a native slash menu, **anyone else** who mentions the bot
-with text gets a single-turn chat with a separate little-whale persona; command
-words are treated as chat text. The owner can use `/chat <prompt> [image]
+with text gets a single-turn reply in Traditional Chinese by default. The bot
+treats command words as chat text. The owner can use `/chat <prompt> [image]
 [mode]` in any channel: the default `mode=chat` streams an answer and can read
 one attached image, and `mode=image` turns the request (and the optional
 reference) into a prompt, queues one image and posts it when done. References
@@ -477,7 +477,7 @@ interrupted reply keeps the received text, marked incomplete.
 
 It needs `NVIDIA_API_KEY`, or `NVIDIA_API_KEY_FILE` pointing at a plain-text key
 file outside the repo (restart the launcher after changing its environment).
-The persona lives in `bot_prompts/deepseek_system.md`; restart the bot after
+The chat instructions are in `bot_prompts/deepseek_system.md`. Restart the bot after
 editing it. Error logs carry only fixed categories and status codes, never the
 key or the conversation.
 
