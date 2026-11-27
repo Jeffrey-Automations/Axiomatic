@@ -16,7 +16,7 @@ import aiohttp
 from _bot_prompts import load_prompt
 
 ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
-MODEL = "deepseek-ai/deepseek-v4.1-flash"
+MODEL = "moonshotai/kimi-k3.1-pro"
 MAX_PROMPT_CHARS = 8000
 MAX_REPLY_CHARS = 12000
 MAX_RESPONSE_BYTES = 262144

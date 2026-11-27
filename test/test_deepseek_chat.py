@@ -129,7 +129,7 @@ def test_request_contains_only_independent_persona_and_current_prompt(endpoint):
     assert request["headers"] == {"Authorization": "Bearer test-key"}
     assert request["allow_redirects"] is False
     payload = request["json"]
-    assert payload["model"] == "deepseek-ai/deepseek-v4.1-flash"
+    assert payload["model"] == "moonshotai/kimi-k3.1-pro"
     assert payload["messages"] == [
         {"role": "system", "content": chat.SYSTEM_PROMPT},
         {"role": "user", "content": "你好"},
@@ -321,7 +321,8 @@ def test_chat_generation_uses_existing_queue_and_returns_completed_image(endpoin
                                       attachment(image_bytes()) if with_image else None, "image")
         request = json.loads(bot.SINGLE_IMAGE_REQUEST_FILE.read_text(encoding="utf-8"))
         assert request["prompt"] == "a red cat, watercolor" + bot.DEFAULT_GENERATE_PROMPT_SUFFIX
-        assert set(request) == {"request_id", "prompt"}
+        assert set(request) == {"request_id", "prompt", "generation"}
+        assert request["generation"] == bot.GENERATION_IDENTITY
         request_id = request["request_id"]
         assert bot._generate_inflight == request_id
         assert bot._single_image_pending[request_id]["placeholder"] is sent
